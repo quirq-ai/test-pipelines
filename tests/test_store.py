@@ -513,8 +513,8 @@ def _failure_zip(tmp_path, repo="o/x", run_id="github/o/x/7/1/held-canary", subj
 DEMO = github.Trust(workflows=(".github/workflows/failure-demo.yml",))
 
 
-def _demo_run(**kw):
-    return workflow_run(7, **{"path": ".github/workflows/failure-demo.yml", **kw})
+def _demo_run(run_id=7, **kw):
+    return workflow_run(run_id, **{"path": ".github/workflows/failure-demo.yml", **kw})
 
 
 def test_collect_accepts_a_failure_from_a_default_branch_run(tmp_path):
@@ -590,6 +590,73 @@ def test_collect_refuses_a_malformed_failure_link(tmp_path):
     st = FileStore(tmp_path / "store")
     _, _, errors = _collect_zips(st, "o/x", [(name, buf.getvalue(), 7)], [_demo_run()], DEMO)
     assert "is not a {field, value, at} record" in errors[0]
+
+
+def _link_zip(fid, repo="o/x", run_id="github/o/x/8/1/link", links=(("culprit", "c0ffee1"),),
+              schema="quirq-results/1"):
+    """A link bundle as the link action uploads it (its contents at the zip's root), by default
+    from workflow run 8."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("target.json", json.dumps({"id": fid, "repo": repo, "run_id": run_id,
+                                              "schema": schema}))
+        for i, (field, value) in enumerate(links):
+            z.writestr(f"links/{i}.json", json.dumps(
+                {"field": field, "value": value, "at": "2026-10-04T10:00:00Z"}))
+    return f"qq-failure-{fid}-link-8-1-abcd0123", buf.getvalue()
+
+
+def test_collect_adds_a_link_bundle_to_its_stored_record(tmp_path):
+    from qqresults import failures
+    art = _failure_zip(tmp_path / "f")
+    fid = failures.failure_id("canary-held", "o/x", "planted")
+    st = FileStore(tmp_path / "store")
+    assert _collect_zips(st, "o/x", [(*art, 7), (*_link_zip(fid), 8)],
+                         [_demo_run(), _demo_run(8)], DEMO) == (2, 0, [])
+    assert st.failure(fid).links == {"culprit": "c0ffee1"}
+
+
+@pytest.mark.parametrize("run,kw,error", [
+    ({"event": "pull_request", "branch": "feature"}, {}, "not a pull_request run"),
+    ({"event": "merge_group"}, {}, "not a merge_group run"),
+    ({"branch": "side"}, {}, "default branch"),
+    ({"sha": "t1"}, {}, "commit on the default branch"),
+    ({"head_repo": "mallory/x"}, {}, "a fork's pull request"),
+    ({}, {"repo": "quirq-ai/xo-space"}, "are for 'quirq-ai/xo-space'"),
+    ({}, {"run_id": "github/o/x/7/1/link"}, "does not name workflow run 8"),
+    ({}, {"fid": "canary-held-xyz"}, "the id is not <kind>-<16 hex>"),
+    ({}, {"schema": "other/1"}, "schema is not"),
+    ({}, {"links": (("kind", "x"),)}, "is not a {field, value, at} record"),
+])
+def test_collect_refuses_forged_link_bundles(tmp_path, run, kw, error):
+    from qqresults import failures
+    art = _failure_zip(tmp_path / "f")
+    fid = failures.failure_id("canary-held", "o/x", "planted")
+    st = FileStore(tmp_path / "store")
+    assert _collect_zips(st, "o/x", [(*art, 7)], [_demo_run()], DEMO)[2] == []
+    new, _, errors = _collect_zips(st, "o/x", [(*_link_zip(**{"fid": fid, **kw}), 8)],
+                                   [_demo_run(), _demo_run(8, **run)], DEMO,
+                                   compare={"t1": "ahead"})
+    assert new == 0 and error in errors[0] and st.failure(fid).links == {}
+
+
+def test_a_record_reported_twice_keeps_its_first_report(tmp_path):
+    # GitHub lists artifacts newest first; collect reads them oldest first, so the second
+    # report (another run, a later opening time) does not replace the first.
+    from qqresults import failures
+    first = _failure_zip(tmp_path / "a")
+    second = _failure_zip(tmp_path / "b", run_id="github/o/x/8/1/held-canary")
+    first_record = failures.read(next((tmp_path / "a").iterdir())).record
+    second_dir = next((tmp_path / "b").iterdir())
+    second_record = failures.read(second_dir).record
+    assert first_record.run_id != second_record.run_id
+    st = FileStore(tmp_path / "store")
+    new, _, errors = _collect_zips(st, "o/x", [(*first, 7), (*second, 8)],
+                                   [_demo_run(), _demo_run(8)], DEMO)
+    assert errors == [] and new == 1
+    (stored,) = st.failures()
+    assert stored.record.run_id == first_record.run_id
+    assert stored.record.opened_at == first_record.opened_at
 
 
 # --- a bad stored record never breaks the scorecard -------------------------------------------

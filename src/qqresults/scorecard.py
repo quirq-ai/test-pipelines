@@ -10,7 +10,7 @@ import statistics
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 
-from qqresults.model import Run, RunKind, Verdict, VerdictStatus
+from qqresults.model import FailureKind, Run, RunKind, Verdict, VerdictStatus
 from qqresults.store import FileStore, RunFilter
 
 VERIFYING = (RunKind.PRESUBMIT.value, RunKind.GATE.value, RunKind.POSTSUBMIT.value)
@@ -229,14 +229,32 @@ def pass_rate(runs: list[tuple[Run, Verdict]], kind: str, name: str) -> Metric:
     return m
 
 
+# Plan §8's "failures fully recorded" counts held canaries, canary rollbacks, auto-reverts and
+# fuzz findings. A red run is recorded too, but is not one of them.
+RECORDED_KINDS = (FailureKind.CANARY_HELD.value, FailureKind.CANARY_ROLLBACK.value,
+                  FailureKind.AUTO_REVERT.value, FailureKind.FUZZ.value)
+
+
 def failures_recorded(states) -> Metric:
+    """The share of failure records that link culprit, fix and covering test. Planted demo
+    records (the demo mark) and red runs are left out. A security record (every fuzz finding)
+    is stored without its values, so it is counted by id: its links are stored as withheld, which
+    count as linked."""
     m = Metric("Failures fully recorded", "100%", unit="%")
-    if not states:
-        m.waiting_on = "failure records in the window (none opened)"
+    counted = {st.record.id: st for st in states
+               if st.record.kind in RECORDED_KINDS and not st.demo}
+    left_out = sum(1 for st in states if st.record.kind not in RECORDED_KINDS or st.demo)
+    note = f" ({left_out} red-run or demo record(s) not counted)" if left_out else ""
+    if not counted:
+        m.waiting_on = ("held canary, rollback, auto-revert or fuzz records in the window "
+                        "(none opened)" + note)
         return m
-    closed = sum(1 for st in states if st.closed)
-    m.value = round(100 * closed / len(states), 1)
-    m.detail = f"{closed} of {len(states)} records link culprit, fix and covering test"
+    closed = sum(1 for st in counted.values() if st.closed)
+    withheld = sum(1 for st in counted.values() if st.security)
+    m.value = round(100 * closed / len(counted), 1)
+    m.detail = f"{closed} of {len(counted)} records link culprit, fix and covering test" + note
+    if withheld:
+        m.detail += f"; {withheld} security record(s) counted by id, their links withheld"
     return m
 
 

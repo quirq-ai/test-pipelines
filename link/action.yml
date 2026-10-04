@@ -1,0 +1,94 @@
+# Link what was learned about a failure record (V0-TST-04, plan §5.10) and keep the links for the
+# results store. For the gardener, bisection or a person closing a record:
+#
+#   - uses: quirq-ai/test-pipelines/link@<commit>
+#     with:
+#       id: ${{ steps.failure.outputs.id }}            # the record id the failure action output
+#       culprit: quirq-ai/xo-space@<commit>
+#       fix: https://github.com/quirq-ai/xo-space/pull/12
+#       covering-test: <commit or URL>
+#
+# The record must be in `dir`: by default the directory the failure action keeps in this job, or
+# a checkout of the results branch's failures/. Links are added there, the issue is updated (and
+# closed once culprit, fix and covering test are linked), and the links this call added are
+# uploaded as a link bundle, which `collect` adds to the stored record. Only commits, digests,
+# own-org references and GitHub URLs are kept; any other value is stored as `withheld`. On a
+# security record no value is uploaded at all: each link goes up as `withheld`, next to the
+# record's security mark. Needs `issues: write` on the job's token.
+#
+# Every input (and the step's environment) is printed in the run log, which is public on a public
+# repo. Never put security detail in a link value there.
+name: qq failure link
+description: Link culprit, fix or covering test to a quirq infra failure record and keep the links.
+inputs:
+  id:
+    description: The failure record id (the failure action's `id` output).
+    required: true
+  culprit: {description: The culprit change., required: false, default: ""}
+  fix: {description: The fix (a pull request or commit)., required: false, default: ""}
+  covering-test: {description: The test that now covers it (a commit or URL)., required: false, default: ""}
+  operation: {description: Key of the operation that held or rolled it back., required: false, default: ""}
+  failure-class: {description: The failure class., required: false, default: ""}
+  postmortem: {description: The postmortem., required: false, default: ""}
+  dir: {description: Where the record is (default the failure action's directory in this job)., required: false, default: ""}
+  issue-repo:
+    description: Where the record's issue is (default this repository).
+    required: false
+    default: ${{ github.repository }}
+  token:
+    description: Token with issues write on issue-repo.
+    required: false
+    default: ${{ github.token }}
+outputs:
+  id: {description: The record id., value: "${{ steps.link.outputs.id }}"}
+  issue: {description: The issue URL (empty when withheld)., value: "${{ steps.link.outputs.issue }}"}
+runs:
+  using: composite
+  steps:
+    - id: link
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        QQ_ID: ${{ inputs.id }}
+        QQ_CULPRIT: ${{ inputs.culprit }}
+        QQ_FIX: ${{ inputs.fix }}
+        QQ_COVERING_TEST: ${{ inputs.covering-test }}
+        QQ_OPERATION: ${{ inputs.operation }}
+        QQ_FAILURE_CLASS: ${{ inputs.failure-class }}
+        QQ_POSTMORTEM: ${{ inputs.postmortem }}
+        QQ_DIR: ${{ inputs.dir }}
+        QQ_ISSUE_REPO: ${{ inputs.issue-repo }}
+      run: |
+        set -euo pipefail
+        python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || {
+          echo "::error::qq failure link needs Python 3.11 or newer as python3"; exit 1; }
+        # Run from this action's own source (no dependencies), as the sink does: nothing is
+        # fetched from PyPI.
+        qqresults() {
+          python3 -P -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from qqresults.cli import main; sys.exit(main(sys.argv[1:]))' \
+            "$GITHUB_ACTION_PATH/../src" "$@"
+        }
+        [[ "$QQ_ID" =~ ^[a-z]+(-[a-z]+)*-[0-9a-f]{16}$ ]] || {
+          echo "::error::qq failure link: id must be a record id like canary-held-<16 hex>"; exit 1; }
+        args=(--dir "${QQ_DIR:-$RUNNER_TEMP/qq-failures}"
+              --run-id "github/$GITHUB_REPOSITORY/$GITHUB_RUN_ID/${GITHUB_RUN_ATTEMPT:-1}/$GITHUB_JOB"
+              --mirror "$QQ_ISSUE_REPO")
+        for pair in culprit:QQ_CULPRIT fix:QQ_FIX covering-test:QQ_COVERING_TEST \
+                    operation:QQ_OPERATION failure-class:QQ_FAILURE_CLASS postmortem:QQ_POSTMORTEM; do
+          var="${pair#*:}"
+          value="${!var}"
+          [ -z "$value" ] || args+=("--${pair%%:*}" "$value")
+        done
+        # One artifact per call: every call uploads only the links it added.
+        call=$(python3 -P -c 'import secrets; print(secrets.token_hex(4))')
+        echo "call=$call" >> "$GITHUB_OUTPUT"
+        qqresults failure link "$QQ_ID" "${args[@]}" --link-copy "$RUNNER_TEMP/qq-failure-links/$call"
+    # The upload is the link bundle: the record id, this run, and the links this call added,
+    # filtered like the failure action's public copy (values withheld on a security record).
+    # It runs even when the link step failed after writing it (withdrawing an issue fails).
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      if: ${{ !cancelled() && steps.link.outputs.upload != '' }}
+      with:
+        name: ${{ steps.link.outputs.name }}-link-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.link.outputs.call }}
+        path: ${{ steps.link.outputs.upload }}
+        if-no-files-found: error

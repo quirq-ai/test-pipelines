@@ -16,7 +16,9 @@ goes public only as its id, subject digest and security mark (public_copy), so t
 the mark.
 
 The same layout is a failure bundle (kept by the backend, e.g. as a workflow artifact) and its
-place in the store (`<store>/failures/<dir>`).
+place in the store (`<store>/failures/<dir>`). Links added later, on another runner, travel as a
+link bundle (link_copy): the same layout with target.json in place of failure.json, naming the
+record and the run that linked it.
 """
 from __future__ import annotations
 
@@ -36,9 +38,11 @@ from qqresults.model import SCHEMA, Failure, FailureKind, canonical_json
 
 RECORD = "failure.json"
 LINKS = "links"
-# Marks are links whose value is "true": security (re-reported or flagged later as security)
-# and public_summary (the caller opted in to showing the summary publicly).
-MARKS = ("security", "public_summary")
+TARGET = "target.json"   # a link bundle's {"id", "repo", "run_id", "schema"}, instead of RECORD
+# Marks are links whose value is "true": security (re-reported or flagged later as security),
+# public_summary (the caller opted in to showing the summary publicly) and demo (a planted
+# record, such as failure-demo's, which the scorecard leaves out).
+MARKS = ("security", "public_summary", "demo")
 VALUE_LINKS = Failure.LINKS + ("issue",)   # links that carry a value
 LINK_FIELDS = VALUE_LINKS + MARKS          # every field a link file may have
 
@@ -264,6 +268,10 @@ class State:
         return bool(self.links.get("public_summary"))
 
     @property
+    def demo(self) -> bool:
+        return bool(self.links.get("demo"))
+
+    @property
     def missing(self) -> list[str]:
         cur = self.current
         return [n for n in Failure.NEEDED_TO_CLOSE if not getattr(cur, n)]
@@ -333,8 +341,9 @@ def import_dir(src: Path, parent: Path) -> bool:
     any links not yet there. The store is public, so only filtered values are ever written to it,
     whatever the bundle holds (an older action uploaded the full record).
 
-    The first record with an id wins; a later one (the same event reported again) adds nothing.
-    Returns True if anything was added.
+    The first record with an id wins; a later one (the same event reported again) adds nothing,
+    and neither does a link whose value the record already has (the same issue, linked again by
+    every report). Returns True if anything was added.
     """
     state = read(src)
     dest = parent / dirname(state.record.id)
@@ -351,9 +360,75 @@ def import_dir(src: Path, parent: Path) -> bool:
             added = True
         (dest / LINKS).mkdir(exist_ok=True)
         for link in sorted((pub / LINKS).glob("*.json")):
-            if not (dest / LINKS / link.name).exists():
-                shutil.copyfile(link, dest / LINKS / link.name)
-                added = True
+            body = json.loads(link.read_text(encoding="utf-8"))
+            if _repeats(dest, body["field"], body["value"], link.name):
+                continue
+            shutil.copyfile(link, dest / LINKS / link.name)
+            added = True
+    return added
+
+
+def _repeats(dest: Path, field: str, value: str, name: str) -> bool:
+    """Whether a link adds nothing to the stored record at dest: the same file is there, or the
+    field's current value is already value (later links win, so the state stays the same)."""
+    return (dest / LINKS / name).exists() or read(dest).links.get(field) == value
+
+
+@dataclass(frozen=True)
+class Target:
+    """What a link bundle's TARGET names: the record its links are for, and the run that linked."""
+    id: str
+    repo: str
+    run_id: str
+
+
+def read_target(path: Path) -> Target:
+    """A link bundle's target, checked like check_shape checks a record (untrusted input)."""
+    try:
+        data = json.loads((path / TARGET).read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError) as e:
+        raise FailureError(f"{path}: not a readable link bundle: {e}") from None
+    if not (isinstance(data, dict)
+            and all(isinstance(data.get(k), str) for k in ("id", "repo", "run_id", "schema"))):
+        raise FailureError(f"{path}: {TARGET} must hold the strings id, repo, run_id and schema")
+    fid = data["id"]
+    if not any(re.fullmatch(rf"{re.escape(k.value)}-[0-9a-f]{{16}}", fid) for k in FailureKind):
+        raise FailureError(f"link bundle for {fid[:40]!r}: the id is not <kind>-<16 hex>")
+    if data["schema"] != SCHEMA:
+        raise FailureError(f"link bundle for {fid}: schema is not {SCHEMA}")
+    return Target(fid, data["repo"], data["run_id"])
+
+
+def import_links(src: Path, parent: Path) -> bool:
+    """Add a link bundle's links to the stored record it targets, filtered as public_bundle
+    filters a record's links. The record must be stored already (collect reads artifacts oldest
+    first, and retries a bundle that came too early). On a record that is or turns security, no
+    value is stored: each link is stored as WITHHELD next to the security mark, so the record can
+    still close without publishing anything. Returns True if anything was added."""
+    target = read_target(src)
+    dest = parent / dirname(target.id)
+    if not (dest / RECORD).is_file():
+        raise FailureError(f"links for {target.id}: the record is not in the store yet")
+    state = read(dest)
+    if state.record.repo != target.repo:
+        raise FailureError(f"links for {target.id} name repo {target.repo[:60]!r}, but the "
+                           f"record is for {state.record.repo}")
+    try:
+        links = [json.loads(p.read_text(encoding="utf-8"))
+                 for p in sorted((src / LINKS).glob("*.json")) if (src / LINKS).is_dir()]
+        links = [link for link in links if isinstance(link, dict)]
+        shown = _public_links(links, target.repo, security=False)
+        security = state.security or looks_security_related(
+            state.record, {**state.links, **{f: v for f, v, _ in shown}})
+        if security:
+            shown = [("security", "true", now()), *_public_links(links, target.repo, security=True)]
+    except (OSError, ValueError, RecursionError) as e:
+        raise FailureError(f"links for {target.id}: {e}") from None
+    added = False
+    for field, value, at in shown:
+        if not _repeats(dest, field, value, _link_name(field, value, at)):
+            _write_link(dest, field, value, at)
+            added = True
     return added
 
 
@@ -440,12 +515,38 @@ def public_view(f: Failure, public_summary: bool = False) -> Failure:
 _TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
 
-def _write_link(dest: Path, field: str, value: str, at: str) -> None:
-    """Write a link file named from its own (public) body, as add_link names them."""
+def _link_name(field: str, value: str, at: str) -> str:
+    """A link file's name, from its own (public) body, as add_link names them."""
     body = canonical_json({"field": field, "value": value, "at": at})
-    digest = hashlib.sha256(body.encode()).hexdigest()[:8]
-    (dest / LINKS / f"{at.replace(':', '')}-{field}-{digest}.json").write_text(
-        body + "\n", encoding="utf-8")
+    return f"{at.replace(':', '')}-{field}-{hashlib.sha256(body.encode()).hexdigest()[:8]}.json"
+
+
+def _write_link(dest: Path, field: str, value: str, at: str) -> None:
+    body = canonical_json({"field": field, "value": value, "at": at})
+    (dest / LINKS).mkdir(parents=True, exist_ok=True)
+    (dest / LINKS / _link_name(field, value, at)).write_text(body + "\n", encoding="utf-8")
+
+
+def _public_links(links: list[dict], repo: str, security: bool) -> list[tuple[str, str, str]]:
+    """(field, value, at) of each link as it may be public. Marks are "true"; other values pass
+    public_value, or on a security record are all WITHHELD (and an issue link is dropped), so the
+    store learns which fields are linked and nothing else."""
+    out = []
+    for link in links:
+        field, at = link.get("field"), link.get("at")
+        if field not in LINK_FIELDS or not isinstance(at, str) or not _TIME.fullmatch(at):
+            continue   # not a link this version writes; nothing of it goes public
+        if field in MARKS:
+            value = "true"
+        elif security:
+            if field == "issue":
+                continue
+            value = WITHHELD
+        else:
+            value = public_value(str(link.get("value")), repo, field)
+        if value:
+            out.append((field, value, at))
+    return out
 
 
 def check_shape(f: Failure) -> None:
@@ -484,8 +585,8 @@ def _public_bundle(src: Path, dest: Path) -> None:
 
     A record that is not security-related gets its public view, with its links passed through the
     same filter and renamed from their public bodies. A security record gets a marks-only bundle:
-    its id, kind, subject digest and run, and one security mark, so whoever reads the bundle
-    learns the mark (and stops mirroring) and nothing else.
+    its id, kind, subject digest and run, one security mark and its demo mark if any, so whoever
+    reads the bundle learns the mark (and stops mirroring) and nothing else.
     """
     state = read(src)
     check_shape(state.record)
@@ -497,16 +598,14 @@ def _public_bundle(src: Path, dest: Path) -> None:
                          subject=subject_digest(state.record.subject),
                          opened_at=pub.opened_at, run_id=pub.run_id, security=True)
         _write_link(dest, "security", "true", state.record.opened_at)   # check_shape: a time
+        if state.demo:
+            _write_link(dest, "demo", "true", state.record.opened_at)
     else:
         record = public_view(state.record, state.public_summary)
-        for p in sorted((src / LINKS).glob("*.json")) if (src / LINKS).is_dir() else []:
-            link = json.loads(p.read_text(encoding="utf-8"))
-            field, at = link.get("field"), link.get("at")
-            if field not in LINK_FIELDS or not isinstance(at, str) or not _TIME.fullmatch(at):
-                continue   # not a link this version writes; nothing of it goes public
-            value = "true" if field in MARKS else public_value(str(link.get("value")), repo, field)
-            if value:
-                _write_link(dest, field, value, at)
+        links = [json.loads(p.read_text(encoding="utf-8"))
+                 for p in sorted((src / LINKS).glob("*.json")) if (src / LINKS).is_dir()]
+        for field, value, at in _public_links(links, repo, security=False):
+            _write_link(dest, field, value, at)
     (dest / RECORD).write_text(record.to_json() + "\n", encoding="utf-8")
 
 
@@ -519,6 +618,29 @@ def public_copy(state: State, parent: Path) -> Path:
     shutil.rmtree(dest, ignore_errors=True)
     dest.mkdir(parents=True)
     public_bundle(state.path, dest)
+    return dest
+
+
+def link_copy(state: State, before: set[str], run_id: str, parent: Path) -> Path:
+    """Write the links added to the record since `before` (the link file names it had) as a link
+    bundle under parent, to upload: TARGET names the record and run_id, the run that linked it.
+    Links are filtered as public_bundle filters them; a security record's carry no values
+    (_public_links) and come with its security mark. Rewritten on every call."""
+    f = state.record
+    if not run_id:
+        raise FailureError(f"{f.id}: a link bundle needs the run that linked it (--run-id)")
+    dest = parent / state.path.name
+    shutil.rmtree(dest, ignore_errors=True)
+    (dest / LINKS).mkdir(parents=True)
+    (dest / TARGET).write_text(canonical_json({"id": f.id, "repo": f.repo, "run_id": run_id,
+                                               "schema": SCHEMA}) + "\n", encoding="utf-8")
+    links = [json.loads(p.read_text(encoding="utf-8"))
+             for p in sorted((state.path / LINKS).glob("*.json")) if p.name not in before]
+    shown = _public_links(links, f.repo, state.security)
+    if state.security:
+        shown = [("security", "true", now()), *shown]
+    for field, value, at in shown:
+        _write_link(dest, field, value, at)
     return dest
 
 

@@ -157,6 +157,9 @@ class FileStore:
     def import_failure(self, path: Path) -> bool:
         return failures.import_dir(path, self.failures_dir)
 
+    def import_links(self, path: Path) -> bool:
+        return failures.import_links(path, self.failures_dir)
+
     def seen_artifact(self, name: str) -> bool:
         """Whether a failure artifact was already imported (artifacts are immutable once uploaded)."""
         return (self.failures_dir / ".artifacts" / name).is_file()

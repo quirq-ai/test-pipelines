@@ -174,7 +174,9 @@ def http_get(url: str, token: str) -> bytes:
 def list_result_artifacts(repo: str, token: str, get=http_get, max_pages: int = 20) -> list[dict]:
     """The repo's unexpired qq-results-* and qq-failure-* artifacts, oldest first.
 
-    Oldest first, so a later upload can never take a run's place by being listed before it.
+    Oldest first, so a later upload can never take a run's place by being listed before it, a
+    failure record reported again keeps the opened_at and run_id of its first report, and a link
+    bundle comes after the record it links to.
     """
     found = []
     for page in range(1, max_pages + 1):
@@ -356,15 +358,19 @@ def _check_bundle(origin: Origin, trust: Trust, b: bundle.Bundle) -> None:
         raise GitHubAPIError(f"run {run.id}: its results or verdict name another run")
 
 
-def _check_failure(origin: Origin, path: Path) -> None:
-    """A failure record must come from a default-branch run of its repo and name that run."""
-    from qqresults import failures
-
+def _check_failure_origin(origin: Origin) -> None:
     if origin.event not in FAILURE_EVENTS or not origin.on_default:
         raise GitHubAPIError(f"failure records are taken only from {', '.join(FAILURE_EVENTS)} "
                              "runs of a commit on the default branch, not a "
                              f"{origin.event or 'unknown'} run of {_short(origin.head_sha)} on "
                              f"{_short(origin.head_branch)}")
+
+
+def _check_failure(origin: Origin, path: Path) -> None:
+    """A failure record must come from a default-branch run of its repo and name that run."""
+    from qqresults import failures
+
+    _check_failure_origin(origin)
     f = failures.read(path).record
     if f.repo != origin.repo:
         raise GitHubAPIError(f"failure {_short(f.id)} is for {_short(f.repo)} but was found in "
@@ -375,16 +381,36 @@ def _check_failure(origin: Origin, path: Path) -> None:
         raise GitHubAPIError(f"failure {_short(f.id)}: the id does not match its kind, repo and "
                              "subject")
     origin.attempt_of(f"failure {f.id}: run", f.run_id)
+    _check_links(f.id, path)
+
+
+def _check_link_bundle(origin: Origin, path: Path) -> None:
+    """A link bundle (links added after the record was opened) is held to the same origin rules
+    as a record: a default-branch run of the record's repo, named as the run that linked."""
+    from qqresults import failures
+
+    _check_failure_origin(origin)
+    target = failures.read_target(path)
+    if target.repo != origin.repo:
+        raise GitHubAPIError(f"links for {_short(target.id)} are for {_short(target.repo)} but "
+                             f"were found in {origin.repo}")
+    origin.attempt_of(f"links for {target.id}: run", target.run_id)
+    _check_links(target.id, path)
+
+
+def _check_links(fid: str, path: Path) -> None:
+    from qqresults import failures
+
     links = path / failures.LINKS
     for p in sorted(links.glob("*.json")) if links.is_dir() else []:
         try:
             link = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError, RecursionError) as e:
-            raise GitHubAPIError(f"failure {f.id}: link {p.name}: {e}") from None
+            raise GitHubAPIError(f"failure {fid}: link {p.name}: {e}") from None
         if not (isinstance(link, dict) and link.get("field") in failures.LINK_FIELDS
                 and isinstance(link.get("value"), str) and link["value"]
                 and is_time(link.get("at"))):
-            raise GitHubAPIError(f"failure {f.id}: link {p.name} is not a "
+            raise GitHubAPIError(f"failure {fid}: link {p.name} is not a "
                                  "{field, value, at} record")
 
 
@@ -418,12 +444,20 @@ def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: T
         _unzip(data, tmp)
         root = Path(tmp)
         if art["name"].startswith(FAILURE_PREFIX):
-            recs = [d for d in [root, *sorted(root.iterdir())] if (d / "failure.json").is_file()]
-            if not recs:
-                raise GitHubAPIError("no failure record inside")
+            from qqresults import failures
+
+            dirs = [root, *sorted(root.iterdir())]
+            recs = [d for d in dirs if (d / failures.RECORD).is_file()]
+            links = [d for d in dirs if (d / failures.TARGET).is_file() and d not in recs]
+            if not recs and not links:
+                raise GitHubAPIError("no failure record or link bundle inside")
             for d in recs:        # all of them, before importing any
                 _check_failure(origin, d)
-            return any([store.import_failure(d) for d in recs])
+            for d in links:
+                _check_link_bundle(origin, d)
+            # Records first, so a bundle's links can find a record in the same artifact.
+            return any([store.import_failure(d) for d in recs]
+                       + [store.import_links(d) for d in links])
         # One bundle at the root, or (with retries, V0-TST-03) one bundle per directory.
         dirs = [root] if (root / "run.json").is_file() else sorted(
             d for d in root.iterdir() if (d / "run.json").is_file())

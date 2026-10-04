@@ -885,3 +885,202 @@ def test_an_overflow_next_to_a_parser_anywhere_fails_closed():
     # Bare "overflow" counts with an attack surface anywhere in the record, even an unrelated one.
     assert failures.new("canary-held", "o/x", "c0ffee0",
                         summary="build overflowed disk | parser tests pass").security
+
+
+# --- links reach the store (audit S4) ---------------------------------------------------------
+
+def _open_and_upload(tmp_path, monkeypatch, *extra, kind="canary-held", subject=DIGEST):
+    """failure open on a runner, as the failure action runs it: (state, its public copy zipped)."""
+    monkeypatch.setattr(github, "api", FakeGitHub())
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    out = tmp_path / "out"
+    out.write_text("")
+    assert cli.main(["failure", "open", "--dir", str(tmp_path / "f"), "--kind", kind, "--repo",
+                     "o/x", "--subject", subject, "--stage", "probe", "--run-id",
+                     "github/o/x/1/1/open", "--public-copy", str(tmp_path / "pub"),
+                     "--github-output", str(out), *extra]) == 0
+    upload = dict(l.split("=", 1) for l in out.read_text().splitlines())["upload"]
+    fid = failures.failure_id(kind, "o/x", subject)
+    return failures.read(tmp_path / "f" / failures.dirname(fid)), _zip(Path(upload))
+
+
+def _link_and_upload(tmp_path, fid, *links, job="link"):
+    """failure link on a runner, as the link action runs it: the link bundle zipped."""
+    out = tmp_path / "out"
+    out.write_text("")
+    code = cli.main(["failure", "link", fid, "--dir", str(tmp_path / "f"), *links,
+                     "--run-id", f"github/o/x/1/1/{job}", "--link-copy", str(tmp_path / job),
+                     "--github-output", str(out)])
+    upload = dict(l.split("=", 1) for l in out.read_text().splitlines())["upload"]
+    return code, Path(upload)
+
+
+def test_links_from_the_link_action_close_the_stored_record(tmp_path, monkeypatch):
+    state, record = _open_and_upload(tmp_path, monkeypatch)
+    fid = state.record.id
+    failures.add_link(state.path, "issue", "https://github.com/o/x/issues/1")   # already uploaded
+    code, bundle = _link_and_upload(tmp_path, fid, "--culprit", "o/x@c0ffee1", "--fix",
+                                    "https://github.com/o/x/pull/12", "--covering-test",
+                                    "tests/test_x.py::test_y")
+    assert code == 0 and not (bundle / failures.RECORD).exists()
+    target = json.loads((bundle / failures.TARGET).read_text())
+    assert target == {"id": fid, "repo": "o/x", "run_id": "github/o/x/1/1/link",
+                      "schema": "quirq-results/1"}
+    uploaded = {json.loads(p.read_text())["field"] for p in (bundle / "links").glob("*.json")}
+    assert uploaded == {"culprit", "fix", "covering_test"}       # only the links this call added
+    assert "issue" in failures.read(state.path).links
+    st = FileStore(tmp_path / "store")
+    name = failures.dirname(fid)
+    assert _collect(st, {f"{name}-1-1-a": record, f"{name}-link-1-1-b": _zip(bundle)})[2] == []
+    (stored,) = st.failures()
+    assert stored.closed and stored.links["culprit"] == "o/x@c0ffee1"
+    assert stored.links["covering_test"] == "withheld"      # a test id is free text
+    assert _collect(st, {f"{name}-1-1-a": record, f"{name}-link-1-1-b": _zip(bundle)}) == (0, 2, [])
+
+
+def test_a_link_bundle_waits_for_its_record(tmp_path, monkeypatch):
+    state, record = _open_and_upload(tmp_path, monkeypatch)
+    _, bundle = _link_and_upload(tmp_path, state.record.id, "--culprit", "c0ffee1")
+    st = FileStore(tmp_path / "store")
+    name = failures.dirname(state.record.id)
+    new, _, errors = _collect(st, {f"{name}-link-1-1-b": _zip(bundle)})
+    assert new == 0 and "not in the store yet" in errors[0] and st.failures() == []
+    # not marked as seen, so it is read again once the record is stored
+    assert _collect(st, {f"{name}-1-1-a": record, f"{name}-link-1-1-b": _zip(bundle)}) == (2, 0, [])
+    assert st.failures()[0].links == {"culprit": "c0ffee1"}
+
+
+def test_links_on_a_security_record_never_publish_their_values(tmp_path, monkeypatch):
+    state, record = _open_and_upload(tmp_path, monkeypatch, "--security")
+    _, bundle = _link_and_upload(tmp_path, state.record.id, "--culprit", "o/x@c0ffee1",
+                                 "--fix", "https://github.com/o/x/pull/12",
+                                 "--covering-test", "c0ffee2")
+    text = "".join(p.read_text() for p in bundle.rglob("*.json"))
+    assert "c0ffee" not in text and "pull/12" not in text
+    assert failures.read_target(bundle).id == state.record.id
+    shown = [json.loads(p.read_text()) for p in (bundle / "links").glob("*.json")]
+    assert {(l["field"], l["value"]) for l in shown} == {
+        ("security", "true"), ("culprit", "withheld"), ("fix", "withheld"),
+        ("covering_test", "withheld")}
+    st = FileStore(tmp_path / "store")
+    name = failures.dirname(state.record.id)
+    assert _collect(st, {f"{name}-1-1-a": record, f"{name}-link-1-1-b": _zip(bundle)})[2] == []
+    (stored,) = st.failures()
+    assert stored.security and stored.closed
+    stored_text = "".join(p.read_text() for p in stored.path.rglob("*.json"))
+    assert "c0ffee" not in stored_text and "pull/12" not in stored_text
+
+
+def test_a_crafted_link_bundle_cannot_publish_values_on_a_security_record(tmp_path, monkeypatch):
+    # The store, not the uploader, decides: a stored security record takes no values, and a
+    # bundle carrying a security mark withholds its own values too.
+    state, record = _open_and_upload(tmp_path, monkeypatch, "--security")
+    st = FileStore(tmp_path / "store")
+    name = failures.dirname(state.record.id)
+    assert _collect(st, {f"{name}-1-1-a": record})[2] == []
+    crafted = tmp_path / "crafted" / name
+    (crafted / "links").mkdir(parents=True)
+    (crafted / failures.TARGET).write_text(json.dumps(
+        {"id": state.record.id, "repo": "o/x", "run_id": "github/o/x/1/1/j",
+         "schema": "quirq-results/1"}))
+    (crafted / "links" / "a.json").write_text(json.dumps(
+        {"field": "culprit", "value": "o/x@c0ffee1", "at": "2026-10-04T10:00:00Z"}))
+    (crafted / "links" / "b.json").write_text(json.dumps(
+        {"field": "issue", "value": "https://github.com/o/x/issues/3", "at": "2026-10-04T10:00:00Z"}))
+    assert _collect(st, {f"{name}-link-1-1-c": _zip(crafted)})[2] == []
+    stored = st.failure(state.record.id)
+    assert stored.links["culprit"] == "withheld" and "issue" not in stored.links
+    # an ordinary record whose bundle carries a security mark
+    plain = FileStore(tmp_path / "plain")
+    state2, record2 = _open_and_upload(tmp_path / "p", monkeypatch)
+    name2 = failures.dirname(state2.record.id)
+    assert _collect(plain, {f"{name2}-1-1-a": record2})[2] == []
+    marked = tmp_path / "marked" / name2
+    (marked / "links").mkdir(parents=True)
+    (marked / failures.TARGET).write_text(json.dumps(
+        {"id": state2.record.id, "repo": "o/x", "run_id": "github/o/x/1/1/j",
+         "schema": "quirq-results/1"}))
+    for field, value in (("culprit", "o/x@c0ffee1"), ("security", "true")):
+        (marked / "links" / f"{field}.json").write_text(json.dumps(
+            {"field": field, "value": value, "at": "2026-10-04T10:00:00Z"}))
+    assert _collect(plain, {f"{name2}-link-1-1-c": _zip(marked)})[2] == []
+    stored2 = plain.failure(state2.record.id)
+    assert stored2.security and stored2.links["culprit"] == "withheld"
+
+
+def test_the_same_link_value_is_stored_once(tmp_path, monkeypatch):
+    # Every demo run links the same issue again: the store keeps one link, not one per run.
+    times = iter(f"2026-10-04T10:00:{s:02d}Z" for s in range(60))
+    monkeypatch.setattr(failures, "now", lambda: next(times))
+    st = FileStore(tmp_path / "store")
+    for run in ("run1", "run2", "run3"):
+        state, _ = held(tmp_path / run)
+        failures.add_link(state.path, "issue", "https://github.com/quirq-ai/xo-space/issues/7")
+        st.import_failure(state.path)
+    (stored,) = st.failures()
+    issue_links = [p for p in (stored.path / "links").glob("*.json")
+                   if json.loads(p.read_text())["field"] == "issue"]
+    assert len(issue_links) == 1
+    # a changed value is still added, and changing back is too (later links win)
+    for value in ("c0ffee1", "c0ffee2", "c0ffee1"):
+        state, _ = held(tmp_path / f"culprit-{value}-{len(stored.links)}")
+        failures.add_link(state.path, "culprit", value)
+        st.import_failure(state.path)
+        stored = st.failures()[0]
+        assert stored.links["culprit"] == value
+
+
+def test_the_demo_mark_reaches_the_store_and_the_scorecard_leaves_it_out(tmp_path, monkeypatch):
+    import datetime as dt
+    state, record = _open_and_upload(tmp_path, monkeypatch, "--demo")
+    assert state.demo
+    st = FileStore(tmp_path / "store")
+    name = failures.dirname(state.record.id)
+    assert _collect(st, {f"{name}-1-1-a": record})[2] == []
+    assert st.failures()[0].demo
+    now = dt.datetime.now(dt.UTC)
+    card = scorecard.compute(st, now - dt.timedelta(days=1), now + dt.timedelta(minutes=1))
+    m = next(m for m in card.repos["o/x"] if m.name == "Failures fully recorded")
+    assert not m.measured and "1 red-run or demo record(s) not counted" in m.waiting_on
+    # a security demo record keeps its demo mark in the marks-only copy
+    sec, _ = held(tmp_path / "sec", security=True)
+    failures.mark(sec.path, "demo")
+    assert failures.read(failures.public_copy(failures.read(sec.path), tmp_path / "pub2")).demo
+
+
+def test_scorecard_counts_canaries_rollbacks_reverts_and_fuzz_findings(tmp_path):
+    import datetime as dt
+    st = FileStore(tmp_path / "store")
+
+    def record(kind, subject, closed=False, **extra):
+        f = failures.new(kind, "o/x", subject, run_id="github/o/x/1/1/j", **extra)
+        state, _ = failures.open_record(f, tmp_path / "scratch")
+        if closed:
+            for field in ("culprit", "fix", "covering_test"):
+                failures.add_link(state.path, field, "c0ffee1")
+        st.import_failure(state.path)
+        return state
+
+    record("canary-held", "sha256:1", closed=True)
+    record("canary-rollback", "sha256:2")
+    record("auto-revert", "sha256:3", closed=True)
+    record("red-run", "sha256:4")                          # not one of plan §8's failures
+    fuzz = record("fuzz", "crash-1")                       # security: stored by id and marks only
+    failures.add_link(fuzz.path, "culprit", "c0ffee1")
+    stored_fuzz = st.failure(fuzz.record.id)
+    assert stored_fuzz.security and "culprit" not in stored_fuzz.links
+    now = dt.datetime.now(dt.UTC)
+    card = scorecard.compute(st, now - dt.timedelta(days=1), now + dt.timedelta(minutes=1))
+    m = next(m for m in card.repos["o/x"] if m.name == "Failures fully recorded")
+    assert m.value == 50.0 and m.detail.startswith("2 of 4 records")
+    assert "1 red-run or demo record(s) not counted" in m.detail
+    assert "1 security record(s) counted by id" in m.detail
+
+
+def test_cli_link_copy_needs_the_run_that_linked(tmp_path):
+    with pytest.raises(SystemExit):
+        cli.main(["failure", "link", "canary-held-0123456789abcdef", "--dir", str(tmp_path),
+                  "--culprit", "c0ffee1", "--link-copy", str(tmp_path / "out")])
+    with pytest.raises(SystemExit):
+        cli.main(["failure", "open", "--dir", str(tmp_path), "--kind", "canary-held", "--repo",
+                  "o/x", "--subject", "s", "--link-copy", str(tmp_path / "out")])
