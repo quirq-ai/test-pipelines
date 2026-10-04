@@ -65,6 +65,7 @@ class FileStore:
         self.root = Path(root)
         self.runs_dir = self.root / "runs"
         self.failures_dir = self.root / "failures"
+        self.skipped: dict[str, str] = {}   # stored records that did not read, by directory
 
     # --- writing ------------------------------------------------------------------------------
 
@@ -108,14 +109,25 @@ class FileStore:
             yield from sorted(p for p in self.runs_dir.iterdir() if (p / bundle.RUN).is_file())
 
     def runs(self, flt: RunFilter = RunFilter()) -> list[tuple[Run, Verdict]]:
-        """Matching runs with their verdicts, oldest first by finished_at."""
+        """Matching runs with their verdicts, oldest first by finished_at.
+
+        A stored run that does not read cleanly is skipped and named in `skipped`, so one bad
+        record cannot stop every later query or scorecard (the store is write-once).
+        """
         out = []
         for d in self._dirs():
-            run = Run.from_dict(json.loads((d / bundle.RUN).read_text(encoding="utf-8")))
-            v = Verdict.from_dict(json.loads((d / bundle.VERDICT).read_text(encoding="utf-8")))
+            try:
+                run = Run.from_dict(json.loads((d / bundle.RUN).read_text(encoding="utf-8")))
+                v = Verdict.from_dict(json.loads((d / bundle.VERDICT).read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError) as e:
+                self._skip(d, e)
+                continue
             if flt.matches(run, v):
                 out.append((run, v))
         return sorted(out, key=lambda rv: (rv[0].finished_at, rv[0].id))
+
+    def _skip(self, path: Path, error: Exception) -> None:
+        self.skipped[path.name] = f"{path}: not readable, skipped: {error}"
 
     def bundle(self, run_id: str) -> bundle.Bundle:
         path = self.runs_dir / bundle.dirname(Run(id=run_id, repo="", kind="", commit=""))
@@ -156,9 +168,14 @@ class FileStore:
     def failures(self) -> list[failures.State]:
         if not self.failures_dir.is_dir():
             return []
-        return sorted((failures.read(d) for d in self.failures_dir.iterdir()
-                       if (d / failures.RECORD).is_file()),
-                      key=lambda st: (st.record.opened_at, st.record.id))
+        out = []
+        for d in sorted(self.failures_dir.iterdir()):
+            if (d / failures.RECORD).is_file():
+                try:
+                    out.append(failures.read(d))
+                except Error as e:
+                    self._skip(d, e)
+        return sorted(out, key=lambda st: (st.record.opened_at, st.record.id))
 
     def failure(self, fid: str) -> failures.State:
         path = self.failures_dir / failures.dirname(fid)

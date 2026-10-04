@@ -69,9 +69,8 @@ branch. The `scorecard` workflow collects every `qq-results-*` artifact from the
 runs into it, commits only new files, and writes `scorecard.md` and `scorecard.json` next to them
 (and to the run's summary). It also collects perf's runs (V0-PRF-01): their Run names the
 measured repo with kind `other`, so they are stored and queryable but never counted as that
-repo's presubmit, gate or post-submit runs. `collect` refuses any other kind of run that names
-a repo other than the one it was found in. Importing a run that is already stored is a no-op; importing different
-bytes for the same run is an error.
+repo's presubmit, gate or post-submit runs. Importing a run that is already stored is a no-op;
+importing different bytes for the same run is an error.
 
 ```sh
 git fetch origin results && git worktree add .qq/store FETCH_HEAD
@@ -91,6 +90,63 @@ when its verdict failed; one without (a repo whose only check is a typecheck, or
 broke before its tests) is red only when the job itself failed, and a cancelled job, such as one
 superseded by a newer push, is not counted. The sink records the job's status for this. Every other plan §8 metric is
 listed as not measured, with the item that will measure it; nothing unmeasured shows as zero.
+
+### What collect trusts
+
+Any workflow run in a collected repo can upload an artifact, so `collect` takes who produced one
+from GitHub, never from the artifact's contents, and then requires the contents to agree. Each
+artifact's workflow run (`GET /repos/{repo}/actions/runs/{id}`, fetched once per run) must:
+
+- have run the repo's own code: its head repository is the repo, so a fork's pull request
+  never writes;
+- come from an allowed workflow file: `--workflow GLOB`, repeatable, by default
+  `.github/workflows/qq-*.yml` (infra-config's generated builders) and
+  `.github/workflows/presubmit.yml`. The `scorecard` workflow adds `failure-demo.yml` for this
+  repo and `perf-publish.yml` for perf.
+
+A run is on the default branch only when its head branch is the default branch's name and its
+head commit is in that branch's history (`GET /repos/{repo}/compare/refs/heads/{default}...{sha}`
+is `identical` or `behind`, fetched once per commit), so a tag named like the default branch is not.
+Every bundle in it must then name that run and one of its attempts in its id
+(`github/<repo>/<run id>/<attempt>/<job>`) and claim the kind its event gives: `merge_group` is
+`gate`, `pull_request` is `presubmit`, a push to the default branch is `postsubmit`, a schedule
+or dispatch on the default branch is `postsubmit`, `canary` or `other`, and a push, schedule or
+dispatch off it only `other`. Its `commit` must be the run's head commit (a dispatched backfill
+and V0-TST-03's base run are the exceptions). For a pull request, whose run tests GitHub's merge
+commit that the API does not name, `commit` is not checked; instead the change's `head_sha` must
+be the run's head commit, and its `number` one of the run's `pull_requests` when GitHub lists any
+(it does for a same-repo PR). A run may name another repo only as kind `other`, from a repo given
+with `--cross-repo` (the `scorecard` workflow passes `quirq-ai/perf`). Such a source can name any
+repo, so everything from it is held to more: `--workflow` must be given (its default globs never
+apply to it, and collecting it without one is an error), and only its push, schedule, dispatch
+and workflow_run runs on the default branch are read; every other artifact of it is refused. The
+artifacts API does not say which job uploaded an artifact, only which workflow run, so the job is not checked:
+a cross-repo source must upload from a workflow file of its own that holds only trusted jobs
+(no pull request triggers, no job running code under test). An uploader started by workflow_run
+vouches for the run that triggered it, which collect cannot see: it must filter on the default
+branch, check that run's event and head repository, and never republish that run's artifacts
+unchecked (perf-publish.yml reads perf's validated `perf-data` branch instead). Failure records are taken only from
+push, schedule or dispatch runs on the default branch; the record must be for the repo, its id
+must be the one its kind, repo and subject give (unless the subject is the public
+`sha256:<16 hex>` digest of a free-text one, which cannot be checked against the id; the id must
+then still be `<kind>-<16 hex>`), and its
+`run_id` must name the run. Records are type-checked (strings,
+finite non-negative numbers, booleans, RFC 3339 UTC times like `2026-10-04T10:00:00Z`);
+artifacts over 20 MB, zipped or not, and bundles over 50,000 results are refused. Artifacts are
+read oldest first. A refused artifact is a warning (`--strict` makes it fail the step). A stored
+record that does not read is left out of queries and the scorecard, with a warning and a count
+in the card, so it cannot break them.
+
+What this still trusts: a run's own code shapes its record. Anyone whose change runs in the merge
+queue (`merge_group`, including a fork's PR once it is approved into the queue) or as a same-repo
+pull request can make that run's bundle say what they like, within its kind, run and commit. A
+failure record's links are additive: a later default-branch run can add links (and so close the
+record) to a record an earlier run opened, and a record with a digested subject may carry any id,
+so a default-branch run of an allowed workflow can add to any record of its repo.
+
+The `results` branch is only ever added to, by the `scorecard` workflow.
+TODO(suraj): add a ruleset on the `results` branch that blocks force-pushes and deletion (only
+a repo admin can), so nothing can rewrite the stored history.
 
 ## Retry, then compare with base (V0-TST-03)
 
