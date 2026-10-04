@@ -1,34 +1,8 @@
 # quirq infra scorecard v0
 
-Window 2026-09-27T13:14:09Z to 2026-10-04T13:14:09Z, generated 2026-10-04T13:14:09Z from the results store.
+Window 2026-09-27T13:31:42Z to 2026-10-04T13:31:42Z, generated 2026-10-04T13:31:42Z from the results store.
 
 ## quirq-ai/innernet
-
-| Metric | Value | Target | Detail |
-|---|---|---|---|
-| Gate time-to-green | not measured | P1: p50 under 15 min, p90 under 30 min | waiting on V0-GAT-04 records queue-entry time on gate runs |
-| Main-red time | not measured | under 60 min/week | waiting on post-submit runs that store results (the sink on each repo's main) |
-| Flake rate | not measured | under 1% | waiting on presubmit, gate or post-submit runs in the store |
-| Gate runs passed | not measured | measured | waiting on gate runs in the store |
-| Post-submit runs passed | not measured | measured | waiting on postsubmit runs in the store |
-| Presubmit runs passed | not measured | measured | waiting on presubmit runs in the store |
-| Runs with no test results | 1 runs | 0 | of 1 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
-| Failures fully recorded | not measured | 100% | waiting on failure records in the window (none opened) |
-
-## quirq-ai/test-pipelines
-
-| Metric | Value | Target | Detail |
-|---|---|---|---|
-| Gate time-to-green | not measured | P1: p50 under 15 min, p90 under 30 min | waiting on V0-GAT-04 records queue-entry time on gate runs |
-| Main-red time | 0 min/week | under 60 min/week | 6 post-submit commits |
-| Flake rate | 0 % | under 1% | 0 of 27 runs passed only on retry |
-| Gate runs passed | not measured | measured | waiting on gate runs in the store |
-| Post-submit runs passed | 100 % | measured | 6 of 6 postsubmit runs passed |
-| Presubmit runs passed | 100 % | measured | 21 of 21 presubmit runs passed |
-| Runs with no test results | 0 runs | 0 | of 27 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
-| Failures fully recorded | 0 % | 100% | 0 of 1 records link culprit, fix and covering test |
-
-## quirq-ai/xo-space
 
 | Metric | Value | Target | Detail |
 |---|---|---|---|
@@ -37,8 +11,34 @@ Window 2026-09-27T13:14:09Z to 2026-10-04T13:14:09Z, generated 2026-10-04T13:14:
 | Flake rate | 0 % | under 1% | 0 of 1 runs passed only on retry |
 | Gate runs passed | not measured | measured | waiting on gate runs in the store |
 | Post-submit runs passed | not measured | measured | waiting on postsubmit runs in the store |
-| Presubmit runs passed | 100 % | measured | 1 of 1 presubmit runs passed |
-| Runs with no test results | 0 runs | 0 | of 1 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Presubmit runs passed | 100 % | measured | 1 of 1 presubmit runs passed (1 cancelled or unknown not counted) |
+| Runs with no test results | 2 runs | 0 | of 3 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Failures fully recorded | not measured | 100% | waiting on failure records in the window (none opened) |
+
+## quirq-ai/test-pipelines
+
+| Metric | Value | Target | Detail |
+|---|---|---|---|
+| Gate time-to-green | not measured | P1: p50 under 15 min, p90 under 30 min | waiting on V0-GAT-04 records queue-entry time on gate runs |
+| Main-red time | 0 min/week | under 60 min/week | 7 post-submit commits |
+| Flake rate | 0 % | under 1% | 0 of 34 runs passed only on retry |
+| Gate runs passed | not measured | measured | waiting on gate runs in the store |
+| Post-submit runs passed | 100 % | measured | 7 of 7 postsubmit runs passed |
+| Presubmit runs passed | 100 % | measured | 27 of 27 presubmit runs passed |
+| Runs with no test results | 0 runs | 0 | of 34 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Failures fully recorded | 0 % | 100% | 0 of 1 records link culprit, fix and covering test |
+
+## quirq-ai/xo-space
+
+| Metric | Value | Target | Detail |
+|---|---|---|---|
+| Gate time-to-green | not measured | P1: p50 under 15 min, p90 under 30 min | waiting on V0-GAT-04 records queue-entry time on gate runs |
+| Main-red time | 0 min/week | under 60 min/week | 1 post-submit commits |
+| Flake rate | 0 % | under 1% | 0 of 3 runs passed only on retry |
+| Gate runs passed | not measured | measured | waiting on gate runs in the store |
+| Post-submit runs passed | 100 % | measured | 1 of 1 postsubmit runs passed |
+| Presubmit runs passed | 100 % | measured | 2 of 2 presubmit runs passed |
+| Runs with no test results | 0 runs | 0 | of 3 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
 | Failures fully recorded | not measured | 100% | waiting on failure records in the window (none opened) |
 
 ## Not measured yet
