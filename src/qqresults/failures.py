@@ -62,10 +62,12 @@ LINK_FIELDS = VALUE_LINKS + MARKS          # every field a link file may have
 # certificate, a stack overflow in a recursion test, a dependency injection container, a token
 # bucket or an auth service timeout still gets its public issue.
 #
-# Memory-safety findings (use-after-free, double free, heap/stack buffer overflow, out-of-bounds
-# read or write, sanitizer and KASAN reports) match alone. A bare crash signal or bound error
-# (CRASH_WORDS: segfault, SIGSEGV, SIGABRT, SIGBUS, overflow, null dereference, out-of-bounds
-# index) is an ordinary crash unless the record's free text anywhere (subject, summary, labels,
+# Memory-safety findings (use-after-free, double free, invalid free, wild pointer, heap/stack
+# buffer overflow, out-of-bounds read or write, sanitizer and KASAN reports) match alone, as do
+# timing attacks and side channels, padding oracles, TLS downgrades, a skipped login, a hardcoded
+# key and a zip bomb. A bare crash signal or bound error (CRASH_WORDS: segfault, SIGSEGV, SIGABRT,
+# SIGBUS, SIGFPE, a general protection fault, a kernel oops, overflow, null dereference,
+# out-of-bounds index) is an ordinary crash unless the record's free text anywhere (subject, summary, labels,
 # link values) also names untrusted input (UNTRUSTED_INPUT: malformed, crafted, attacker,
 # untrusted, remote or user input, fuzzing) or an attack surface (ATTACK_SURFACE: tls, a
 # certificate, a decoder or parser, a codec or image library, a packet, http2 or grpc, a font,
@@ -134,15 +136,20 @@ _PHRASES = (
     r"race\s*condition\s*in\s*(?:the\s*)?(?:auth\w*|login|session|permission|access\s*check)",
     r"(?:signature|sig|auth\w*|login|sign\s*in|token|cert\w*|password|session|csrf|origin|"
     r"permission)s?\s*(?:is\s*|was\s*|are\s*)?(?:not|never|no\s*longer|un)\s*(?:required|checked|"
-    r"enforced|verified|validated)",
+    r"enforced|verified|validated)",    # audit R1: wordings that got through as labels and as opt-in summaries
+    r"wild\s*pointer", r"invalid\s*free", r"timing\s*(?:side\s*)?(?:attack|oracle|side\s*channel)",
+    r"side\s*channel", r"(?:non|not)\s*constant\s*time\s*compar", r"padding\s*oracle",
+    r"(?:tls|ssl|https|protocol|cipher)\s*downgrade", r"downgrade\s*attack",
+    r"(?:login|sign\s*in|authenticat\w*|authoriz\w*|password\s*check|2fa|mfa)\s*(?:step\s*|check\s*)?"
+    r"(?:is\s*|was\s*|got\s*|gets\s*)?skipped",
+    r"hard\s*coded\s*(?:\w+\s*)?(?:key|secret|token|password|credential|api\s*key)",
+    r"(?:zip|decompression|gzip|xml)\s*bomb", r"billion\s*laughs",
 )
 SECURITY_WORDS = re.compile("|".join(_PHRASES))
 # Ordinary crash signals that count only with UNTRUSTED_INPUT or ATTACK_SURFACE (see above).
-CRASH_WORDS = re.compile(r"segv|segfault|sigabrt|sigbus|out\s*of\s*bounds|\boob\b|"
-                         r"over\s*flow|null\s*(?:pointer\s*|ptr\s*)?deref")
-# A label (stage, signal, channel) that is itself a crash word is withheld, so a bare "segfault"
-# never shows next to a "decoder" label.
-LABEL_CRASH_WORDS = CRASH_WORDS
+CRASH_WORDS = re.compile(r"segv|segfault|sigabrt|sigbus|sigfpe|floating\s*point\s*exception|"
+                         r"\bgpf\b|general\s*protection\s*fault|kernel\s*oops|"
+                         r"out\s*of\s*bounds|\boob\b|over\s*flow|null\s*(?:pointer\s*|ptr\s*)?deref")
 UNTRUSTED_INPUT = re.compile(
     r"malformed|crafted|attacker|untrusted|remote\s*(?:input|request|peer|attacker)|user\s*input|"
     r"large\s*request|"
@@ -485,11 +492,24 @@ _VALUE = re.compile(
     rf"github/(?P<o3>{_OWNER})/(?P<r3>{_NAME_RE})/[0-9]{{1,20}}/[0-9]{{1,5}}/"
     rf"(?P<j3>[A-Za-z0-9_.-]{{1,100}})")
 _REPO = re.compile(rf"{_OWNER}/{_NAME_RE}")
-# Stage, signal and channel show only as a short label: lowercase, at most three words joined by
-# `-` or `.`, at most 32 characters, no `_`, `/` or `::` (test ids), not containing "test", and not
-# reading as security. So "probe", "health", "stable" and "http-5xx" show; a test name does not.
-_LABEL = re.compile(r"(?=.{1,32}$)[a-z0-9]+(?:[.-][a-z0-9]+){0,2}")
-LABEL_FIELDS = ("stage", "signal", "channel")
+# Stage, signal and channel show only when they are one of these known values; anything else is
+# WITHHELD, however harmless it looks, because a word list cannot tell every security label from
+# an ordinary one (audit R1). The values are those the pipelines that report failures use:
+#   - stage: the daily canary pipeline's stages (plan §5.8), and the run kinds a red run or an
+#     auto-revert happens in (RunKind: presubmit, gate, postsubmit);
+#   - signal: the health signals (infra-config health.toml), and `health`, the probe signal the
+#     failure action's example and failure-demo report;
+#   - channel: the release channels (infra-config channels.toml and repos.toml).
+# TODO(suraj): read the allowlist from infra-config (channels.toml, health.toml and the canary
+# pipeline's stages) instead of keeping a copy here.
+PUBLIC_LABELS: dict[str, frozenset[str]] = {
+    "stage": frozenset({"select", "build", "verify", "fuzz-smoke", "deploy", "probe", "soak",
+                        "declare", "presubmit", "gate", "postsubmit"}),
+    "signal": frozenset({"health", "canary-probe", "canary-deploy", "main-red-minutes",
+                         "error-rate", "session-drop"}),
+    "channel": frozenset({"canary", "dev", "stable"}),
+}
+LABEL_FIELDS = tuple(PUBLIC_LABELS)
 VALUE_FIELDS = ("build_digest", "last_good", "first_bad", "run_id") + Failure.LINKS
 WITHHELD = "withheld"
 
@@ -499,9 +519,7 @@ def public_value(v: str, repo: str, field: str = "") -> str:
     if not v:
         return v
     if field in LABEL_FIELDS:
-        ok = (_LABEL.fullmatch(v) and "test" not in v and not reads_as_security(v)
-              and not LABEL_CRASH_WORDS.search(security_text(v)))
-        return v if ok else WITHHELD
+        return v if v in PUBLIC_LABELS[field] else WITHHELD
     if field == "repo":   # org-chosen: a plain owner/name shows as it is
         return v if _REPO.fullmatch(v) else WITHHELD
     m = _VALUE.fullmatch(v)
@@ -533,7 +551,7 @@ def subject_digest(subject: str) -> str:
 
 def public_view(f: Failure, public_summary: bool = False) -> Failure:
     """The failure as it may be shown publicly: every free-text field is withheld unless it is a
-    short label (stage, signal, channel) or a commit, digest, own-org reference or GitHub URL; a
+    known label (stage, signal, channel; PUBLIC_LABELS) or a commit, digest, own-org reference or GitHub URL; a
     free-text subject is replaced by its digest, and the summary is dropped unless the caller
     opted in. Kind, id and opened_at are not free text (an enum, a hash, a time)."""
     subject = f.subject if public_value(f.subject, f.repo) == f.subject else subject_digest(f.subject)

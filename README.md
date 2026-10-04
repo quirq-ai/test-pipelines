@@ -242,19 +242,21 @@ Every held canary, canary rollback and auto-revert opens one write-once `Failure
 §5.10), mirrored to one GitHub issue labelled `qq-failure` and `qq-failure:<kind>`:
 
 ```yaml
+- run: ./probe --report > "$RUNNER_TEMP/qq-summary.txt"   # written on the runner, never echoed
 - uses: quirq-ai/test-pipelines/failure@<commit>     # needs issues: write
   with:
     kind: canary-held                                 # canary-held | canary-rollback | auto-revert | red-run | fuzz
     subject: ${{ steps.build.outputs.digest }}        # same kind, repo and subject: same record
-    summary: "Canary held: /health probe failed"     # not in the issue or artifact, but in the run log
+    summary-file: ${{ runner.temp }}/qq-summary.txt   # one line on what happened; not logged
     stage: probe
     signal: health
 ```
 
 GitHub prints every input of an action (and its steps' environment) in the run log, and a public
-repo's run logs are public. So never put security detail in `summary`, or in any other input, on a
-public repo: write it to a file on the runner and pass `summary-file: <path>` instead (the file's
-contents are not logged). Write that file without echoing the text through the log: a step that
+repo's run logs are public. So the `summary` input is published in the run log whatever the
+classifier decides, and it exists only for text you would publish anyway. Pass the summary as
+`summary-file: <path>`, a file on the runner (the file's contents are not logged), and never put
+security detail in any other input on a public repo. Write that file without echoing the text through the log: a step that
 runs `echo "${{ ... }}" > summary.txt` has the expression expanded into its script, and the script
 is printed in the log, so the text is public anyway. TODO(suraj): where private details live.
 
@@ -312,9 +314,13 @@ the store carry only:
 - kind, id, opening time and schema, which must have exactly the shape this version writes (an
   artifact whose record does not, or whose fields are not strings, is refused), and repo when it
   is a plain `owner/name` (org-chosen, so shown even when it reads like a security word);
-- stage, signal and channel when each is a short label: lowercase, at most three words joined by
-  `-` or `.`, at most 32 characters, no `_`, `/` or `::`, not containing `test`, and not reading
-  as security (so `probe`, `health`, `stable` and `http-5xx` show; a test id does not);
+- stage, signal and channel only when each is one of a small fixed list of known values
+  (`failures.PUBLIC_LABELS`): stage `select`, `build`, `verify`, `fuzz-smoke`, `deploy`, `probe`,
+  `soak`, `declare` (the canary pipeline's stages, plan §5.8), `presubmit`, `gate` or
+  `postsubmit`; signal `health`, `canary-probe`, `canary-deploy`, `main-red-minutes`,
+  `error-rate` or `session-drop` (infra-config `health.toml`); channel `canary`, `dev` or
+  `stable`. Any other label shows as `withheld`, however harmless it looks. TODO(suraj): read
+  the list from infra-config instead of keeping a copy;
 - the subject, build digest, last good, first bad, run and every link (culprit, fix, covering
   test, operation, failure class, postmortem, issue) only when it is a commit (7 to 40 hex), a
   digest (`sha1:`, `sha256:` or `sha512:` with its full hex length), `owner/repo@<commit>` or
@@ -322,10 +328,10 @@ the store carry only:
   URL, or the action's run id; references and URLs only when the owner is the record's own and
   the job name, and a repo name other than the record's own, do not read as security.
 
-Labels and those name slots are checked against a list of security words, not an allowlist, so
-author-chosen names the list misses (`remote-exec`, `login-skipped`) still
-show. That is the accepted residual: they are at most three short words or a repo or job name
-chosen by the org, not a description.
+Those name slots are checked against a list of security words, not an allowlist, so a repo or
+job name the list misses still shows. That is the accepted residual: it is a name chosen by the
+org, not a description. Labels are not: a label outside the list above is withheld, because
+labels such as `wild-pointer` or `timing-attack` slipped past the word list (audit R1).
 
 Anything else, including any other URL, shows as `withheld` (a subject is replaced by its digest
 instead). That fails closed on purpose: natural values such as a covering test id
@@ -336,6 +342,12 @@ report publishes the summary only if it carries the same summary as the report t
 `failure link --public-summary` publishes whatever the record holds. The artifact is a public
 copy written by `--public-copy`, never the record itself.
 
+`--public-summary` (and `public-summary: "true"`) trusts the security classifier below, which is a
+word list and can miss: a summary that describes a vulnerability in words the list does not know
+is published. So keep it off for any failure that touches input handling (parsing, decoding,
+authentication, crypto, file or network input), and turn it on only for summaries you would
+publish yourself, such as a probe's status line.
+
 The security classifier errs towards withholding: records flagged `security`, of kind `fuzz`, or
 whose free text (summary, subject, labels, link values) matches security terms such as
 "buffer overflow", "credential", "use-after-free", "remote code execution" or "without login" are
@@ -345,14 +357,16 @@ auth, JWT, sandbox, privileged, access control, CORS) count only in a security p
 buffer overflow", "SQL injection", "credential leak", "auth bypass", "missing authorization
 check", "sandbox escape", "container breakout", "CORS any origin", "certificate verification
 disabled", "JWT signature not verified"). Memory-safety findings (use-after-free, double free,
-heap or stack buffer overflow, out-of-bounds read or write, sanitizer and KASAN reports) always
-count; a bare segfault, SIGSEGV, SIGABRT, SIGBUS, overflow, null dereference or out-of-bounds
+heap or stack buffer overflow, out-of-bounds read or write, invalid free, wild pointer, sanitizer
+and KASAN reports) always count, as do a timing attack or side channel, a padding oracle, a TLS
+downgrade, a skipped login, a hardcoded key and a zip bomb; a bare segfault, SIGSEGV, SIGABRT,
+SIGBUS, SIGFPE, general protection fault, kernel oops, overflow, null dereference or out-of-bounds
 index counts only when the record's free text anywhere (subject, summary, labels, links) also
 names untrusted input (malformed, crafted, attacker, untrusted, remote or user input, a large
 request, fuzzing) or an attack surface (TLS, a certificate, a decoder or parser, a codec, an image
 or compression library, a packet, http2 or grpc, a font, a protocol, malloc, an allocation or
-buffer size), so "SIGSEGV in tls handshake" is withheld and "segfault in worker" gets an issue. A
-label (stage, signal) that is itself a crash word is withheld. Names the
+buffer size), so "SIGSEGV in tls handshake" is withheld and "segfault in worker" gets an issue.
+"Remote exec" alone is not a security term (build systems run remote execution). Names the
 org chose (the repo, the run id and job, the issue URL, and the record's own `owner/name` wherever
 it appears, as in a run-id subject or a pull request link) are not classified, nor are digests
 and hex runs. Text is matched after NFKC normalisation, removing zero-width and other format

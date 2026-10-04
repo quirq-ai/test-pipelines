@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import re
 import zipfile
 from pathlib import Path
 
@@ -624,13 +625,64 @@ def test_name_slots_of_references_are_checked_for_security(tmp_path, value):
     assert value not in failures.issue_body(failures.State(f, {}, tmp_path))   # run id: org-chosen, not classified, but withheld
 
 
-@pytest.mark.parametrize("label,shown", [
-    ("probe", True), ("health", True), ("http-5xx", True), ("p99.latency", True),
-    ("test_probe", False), ("tests.test_health::test_probe", False), ("health_check", False),
-    ("smoke-test", False), ("Health", False), ("one-two-three-four", False),
-    ("a" * 33, False)])
-def test_labels_are_a_small_fixed_shape(label, shown):
-    assert (failures.public_value(label, "o/x", "signal") == label) is shown
+@pytest.mark.parametrize("field,label,shown", [
+    ("signal", "health", True), ("signal", "error-rate", True), ("stage", "probe", True),
+    ("stage", "fuzz-smoke", True), ("stage", "gate", True), ("channel", "stable", True),
+    ("channel", "canary", True), ("channel", "dev", True),
+    ("signal", "probe", False), ("channel", "health", False), ("signal", "http-5xx", False),
+    ("signal", "p99.latency", False), ("signal", "test_probe", False),
+    ("signal", "tests.test_health::test_probe", False), ("signal", "health_check", False),
+    ("stage", "smoke-test", False), ("signal", "Health", False), ("stage", "decoder", False),
+    ("channel", "beta", False), ("signal", "a" * 33, False)])
+def test_labels_are_a_small_fixed_allowlist(field, label, shown):
+    assert (failures.public_value(label, "o/x", field) == label) is shown
+
+
+# Audit R1: labels the word list missed showed in the issue, the artifact and the store.
+R1_LABELS = ["sigfpe", "wild-pointer", "invalid-free", "kernel-oops", "gpf", "timing-attack",
+             "padding-oracle", "tls-downgrade", "remote-exec", "login-skipped", "hardcoded-key",
+             "zip-bomb"]
+
+
+@pytest.mark.parametrize("label", R1_LABELS)
+@pytest.mark.parametrize("field", ["stage", "signal", "channel"])
+def test_a_label_outside_the_allowlist_never_goes_public(tmp_path, field, label):
+    f = failures.new("canary-held", "o/x", "c0ffee0", **{field: label})
+    assert failures.public_value(label, "o/x", field) == failures.WITHHELD
+    state, _ = failures.open_record(f, tmp_path / "rec")
+    pub = tmp_path / "pub"
+    failures.public_bundle(state.path, pub)
+    store = tmp_path / "store"
+    failures.import_dir(pub, store)
+    seen = [failures.issue_title(state), failures.issue_body(state),
+            (pub / failures.RECORD).read_text(),
+            *(p.read_text() for p in store.rglob("*.json"))]
+    assert not any(label in text for text in seen)
+
+
+@pytest.mark.parametrize("text", [
+    "SIGFPE in the png decoder", "floating point exception parsing crafted header",
+    "wild pointer in cache", "invalid free in allocator", "kernel oops in usb packet parser",
+    "general protection fault in tls handshake", "GPF decoding a malformed font",
+    "timing attack on token compare", "timing side channel in hmac check",
+    "non-constant-time comparison of the session token", "padding oracle in decrypt",
+    "TLS downgrade to 1.0 accepted", "protocol downgrade attack", "login skipped for /admin",
+    "authentication step was skipped", "hardcoded key in config", "hard-coded API key",
+    "hardcoded AWS key", "zip bomb exhausts disk", "decompression bomb in uploader"])
+def test_audit_r1_wordings_are_caught(text):
+    f = failures.new("canary-held", "o/x", "c0ffee0", summary=text)
+    assert f.security
+    # with --public-summary the summary is never published for a security record
+    state = failures.State(f, {"public_summary": "true"}, Path("."))
+    assert state.security
+
+
+@pytest.mark.parametrize("text", [
+    "SIGFPE in the scheduler", "kernel oops on boot", "general protection fault in worker",
+    "dependency version downgrade", "timing out after 30s", "zip upload failed",
+    "login page slow"])
+def test_audit_r1_crash_words_alone_stay_public(text):
+    assert not failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
 
 
 def test_a_withdrawn_issue_is_never_reopened_by_a_later_report(tmp_path, monkeypatch):
@@ -1160,3 +1212,17 @@ def test_a_link_bundle_carries_no_mark_but_security(tmp_path, monkeypatch):
     st = FileStore(tmp_path / "store")
     name = failures.dirname(state.record.id)
     assert _collect(st, {f"{name}-1-1-a": record, f"{name}-link-1-1-b": _zip(bundle)})[2] == []
+
+
+def test_the_failure_action_examples_pass_the_summary_as_a_file():
+    # Audit R2: GitHub prints every action input in the (public) run log, so an example that
+    # passes `summary:` publishes it whatever the classifier decides.
+    root = Path(__file__).parent.parent
+    action = (root / "failure" / "action.yml").read_text(encoding="utf-8")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    for text in (action, readme):
+        assert "summary-file: ${{ runner.temp }}" in text
+        assert not re.search(r"^[\s#]*summary:[ \t]*\S", text, re.MULTILINE)
+    inputs = action.split("\ninputs:\n", 1)[1]
+    summary = inputs.split("  summary:\n", 1)[1].split("  summary-file:", 1)[0]
+    assert "run log" in summary and "public" in summary and "summary-file" in summary
