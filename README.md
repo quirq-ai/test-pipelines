@@ -82,14 +82,19 @@ qqresults collect --store .qq/store --repo quirq-ai/xo-space   # needs GITHUB_TO
 ```
 
 Scorecard v0 measures, per repo: gate time-to-green p50/p90 (gate runs carry their queue-entry
-time once `quirq-ai/gate/timing` exports `QQ_QUEUED_AT` before the sink, V0-GAT-04; one sample per green gate workflow run, from its first queue entry to the last
+time once `quirq-ai/gate/timing` exports `QQ_QUEUED_AT`, a strict RFC 3339 time, before the sink, V0-GAT-04; one sample per green gate workflow run, from its first queue entry to the last
 finish of the latest attempt of each job, so a re-run counts its whole wait and red runs are
-not counted), main-red minutes per week, flake rate, pass rates of gate,
+not counted), main-red minutes per week (commits in main's push order, each push's `before` to
+its `after`; when the stored runs do not link them into one chain, by job finish time, and the
+row says so), flake rate, pass rates of gate,
 post-submit and presubmit runs, and runs that stored no results. A run with test results is red
 when its verdict failed; one without (a repo whose only check is a typecheck, or a job that
 broke before its tests) is red only when the job itself failed, and a cancelled job, such as one
 superseded by a newer push, is not counted. The sink records the job's status for this. Every other plan §8 metric is
-listed as not measured, with the item that will measure it; nothing unmeasured shows as zero.
+listed as not measured, with the work item (quirq-infra v0 or v1) that will measure it, or
+`TODO(suraj): no item yet`; nothing unmeasured shows as zero. A metric whose runs are stored but
+say nothing (cancelled, or no results and no job status) is not measured and says "runs stored,
+status unknown" rather than waiting on runs.
 
 ### What collect trusts
 
@@ -115,7 +120,9 @@ dispatch off it only `other`. Its `commit` must be the run's head commit (a disp
 and V0-TST-03's base run are the exceptions). For a pull request, whose run tests GitHub's merge
 commit that the API does not name, `commit` is not checked; instead the change's `head_sha` must
 be the run's head commit, and its `number` one of the run's `pull_requests` when GitHub lists any
-(it does for a same-repo PR). A run may name another repo only as kind `other`, from a repo given
+(it does for a same-repo PR). A gate run's `queued_at` must lie between 24 hours before GitHub
+created its workflow run and five minutes after the run's finish (the finish is the runner's
+clock), so one bad runner clock cannot dominate p90; without the run's creation time it is refused. A run may name another repo only as kind `other`, from a repo given
 with `--cross-repo` (the `scorecard` workflow passes `quirq-ai/perf`). Such a source can name any
 repo, so everything from it is held to more: `--workflow` must be given (its default globs never
 apply to it, and collecting it without one is an error), and only its push, schedule, dispatch
@@ -173,9 +180,11 @@ Give the sink a rerun command and let its verdict decide the check:
 Failed tests are rerun with the change (`retry_failed` times, default 1, at most 3); with more
 than `max_failures_to_retry` failures (default 20) the change is treated as broken and nothing is
 retried. Those that still fail
-are rerun at the base commit, in a git worktree. A test that passes on a retry is FLAKY, one
-that also fails on base is EXONERATED, and only a failure that passes without the change (or
-that has no base result, such as a new test) is UNEXPECTED and fails the change. The retry and
+are rerun at the base commit, in a git worktree, `retry_failed + 1` times. A test that passes on
+a retry is FLAKY, one that fails on every base run with the same status as with the change is
+EXONERATED, and every other failure is UNEXPECTED and fails the change: one that passes on any
+base run, one that fails differently there (a CRASH on base against a FAIL with the change is no
+signal), and one with no base result, such as a new test. The retry and
 base runs are stored too, linked to the run by `parent` and listed in the verdict's `inputs`.
 The base side runs in the same job, so the rerun command must test the code in its working
 directory. If the tests import installed code (an editable install, a build outside the tree),

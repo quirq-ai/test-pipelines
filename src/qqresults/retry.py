@@ -1,12 +1,22 @@
 """Retry, then compare with base (plan §3 P5, flakes.toml [verdict]); V0-TST-03.
 
 Failed tests are rerun with the change (`retry_failed` times). Tests that still fail are run
-without the change, at the base commit. Only failures that pass without the change fail it:
+without the change, at the base commit, `retry_failed + 1` times. Only a failure that fails the
+same way without the change, on every one of those runs, does not fail it:
 
-    passed on a retry                     FLAKY        does not fail the change
-    failed on retries and also on base    EXONERATED   does not fail the change
-    failed on retries, passed on base     UNEXPECTED   fails the change
-    no base result (a new test, no data)  UNEXPECTED   a missing signal never exonerates
+    passed on a retry                         FLAKY        does not fail the change
+    failed on retries, and on every base run  EXONERATED   does not fail the change
+      with the same status as with the change
+    failed on retries, passed on any base run UNEXPECTED   fails the change (flaky on base too)
+    a different status on base (e.g. CRASH    UNEXPECTED   no signal: the base side may lack
+      without the change, FAIL with it)                    files the change's checkout has
+    no base result (a new test, no data)      UNEXPECTED   a missing signal never exonerates
+
+A single base run could exonerate a real regression: a test that is flaky on base happens to
+fail there, or crashes there because the base worktree lacks gitignored or generated files or
+submodules. So the base side runs as often as the change side did, and only the same failure
+every time counts. The first run at each base keeps its id (`<run>/base`, `<run>/base2`); the
+extra runs are `<run>/base-run2`, `<run>/base2-run2` and so on.
 
 The rerun command comes from the caller (the adapter or builder), so this module never names a
 test runner. It runs through the shell with:
@@ -126,6 +136,10 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
         t = case.test_id
         passed_on = next((i for i, b in enumerate(retries, 1) if _passed(t, b.results)), None)
         per_base = [[r for r in b.results if r.test_id == t] for b in bases]
+        # How it fails with the change (first run and retries) and without it (every base run).
+        on_change = {r.status for b in [results] + [b.results for b in retries]
+                     for r in b if r.test_id == t and not r.expected}
+        on_base = {r.status for rs in per_base for r in rs}
         if not_retried:
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, f"not retried: {not_retried}"))
         elif passed_on:
@@ -133,10 +147,16 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
         elif any(rs and any(r.expected for r in rs) for rs in per_base):
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value,
                                      "fails with the change and passes without it"))
+        elif bases and not base_error and all(per_base) and (
+                len(on_change) != 1 or on_base != on_change):
+            tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, (
+                f"no signal: {'/'.join(sorted(on_base))} without the change but "
+                f"{'/'.join(sorted(on_change))} with it, so the base failure may not be this one")))
         elif bases and not base_error and all(per_base):
-            at = ", ".join(b.run.commit[:12] for b in bases)
-            tests.append(CaseVerdict(t, VerdictStatus.EXONERATED.value,
-                                     f"also fails without the change, at {at}"))
+            at = ", ".join(dict.fromkeys(b.run.commit[:12] for b in bases))
+            tests.append(CaseVerdict(t, VerdictStatus.EXONERATED.value, (
+                f"also fails without the change, at {at}: {next(iter(on_base))} "
+                f"on all {len(bases)} base run(s)")))
         elif bases and not base_error:
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value,
                                      "no result without the change (a new test, or no signal)"))
@@ -196,7 +216,8 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
             try:
                 if _resolve(cwd, commit) in {b.run.commit for b in bases}:
                     continue                  # e.g. the first parent is base_sha itself
-                bases.append(run_on_base(run, remaining, cmd, cwd, commit, runner, setup, n))
+                bases += run_on_base(run, remaining, cmd, cwd, commit, runner, setup, n,
+                                     runs=policy.retry_failed + 1)
             except RetryError as e:   # keep the run and its retries; never exonerate without data
                 base_error = str(e)
                 break
@@ -217,7 +238,9 @@ def _resolve(cwd: Path, commit: str) -> str:
 
 
 def run_on_base(run: Run, tests: list[str], cmd: str, cwd: Path, base_commit: str,
-                runner: Runner = shell, setup: str = "", n: int = 1) -> bundle.Bundle:
+                runner: Runner = shell, setup: str = "", n: int = 1,
+                runs: int = 1) -> list[bundle.Bundle]:
+    """Run the tests `runs` times at base_commit, in one worktree set up once."""
     try:
         git(cwd, "cat-file", "-e", f"{base_commit}^{{commit}}")
     except RetryError:
@@ -233,12 +256,16 @@ def run_on_base(run: Run, tests: list[str], cmd: str, cwd: Path, base_commit: st
         try:
             if setup:
                 run_setup(setup, tree, "base", runner)
-            rs = run_tests(cmd, tree, tests, child, runner, side="base")
+            out = []
+            for k in range(1, runs + 1):
+                c = child if k == 1 else Run.from_dict({**child.to_dict(), "id": f"{child.id}-run{k}"})
+                rs = run_tests(cmd, tree, tests, c, runner, side="base")
+                c = Run.from_dict({**c.to_dict(), "results_found": bool(rs)})
+                out.append(bundle.Bundle(c, rs, verdict.compute(c, rs)))
         finally:
             subprocess.run(["git", "-C", str(cwd), "worktree", "remove", "--force", str(tree)],
                            capture_output=True)
             subprocess.run(["git", "-C", str(cwd), "worktree", "prune"], capture_output=True)
             if setup:   # put the change's environment back for the steps after this one
                 run_setup(setup, cwd, "change", runner)
-    child = Run.from_dict({**child.to_dict(), "results_found": bool(rs)})
-    return bundle.Bundle(child, rs, verdict.compute(child, rs))
+    return out

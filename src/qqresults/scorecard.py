@@ -101,13 +101,17 @@ def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
     latest attempt of each of its jobs is (red() as everywhere else; a job that says nothing,
     such as a cancelled one, is ignored), at the last of those jobs' finish. Red runs never
     reached green and are not counted.
+
+    A job's queue time counts only when it precedes that job's own finish, so one job's bad clock
+    cannot stretch its run's wait; collect also refuses one more than 24 h before GitHub created
+    the workflow run (backends/github.py).
     """
     m = Metric("Gate time-to-green", "P1: p50 under 15 min, p90 under 30 min", unit="min")
     groups: dict[str, list[tuple[Run, Verdict]]] = {}
     for r, v in runs:
         if r.kind == RunKind.GATE:
             groups.setdefault(workflow_key(r), []).append((r, v))
-    waits, red_runs, untimed, silent = [], 0, 0, 0
+    waits, red_runs, untimed, silent, late = [], 0, 0, 0, 0
     for jobs in groups.values():
         latest: dict[str, tuple[Run, Verdict]] = {}
         for r, v in jobs:
@@ -124,7 +128,11 @@ def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
         if not states:
             silent += 1                       # every job cancelled or unknown
             continue
-        queued = [parse_time(r.queued_at) for r, _ in jobs if r.queued_at]
+        stamped = [(parse_time(r.queued_at), r) for r, _ in jobs if r.queued_at]
+        queued = [q for q, r in stamped if not r.finished_at or q <= parse_time(r.finished_at)]
+        if stamped and not queued:
+            late += 1                         # every queue time is after its job finished
+            continue
         finished = [parse_time(r.finished_at) for (r, v), s in zip(latest.values(), states)
                     if s is False and r.finished_at]
         if not queued or not finished:
@@ -132,7 +140,7 @@ def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
             continue
         waits.append((max(finished) - min(queued)).total_seconds() / 60)
     minutes = [w for w in waits if w >= 0]   # a clock or input error is not a negative wait
-    dropped = len(waits) - len(minutes)
+    dropped = len(waits) - len(minutes) + late
     notes = [note for n, note in [
         (red_runs, f"{red_runs} red gate run(s) not counted"),
         (untimed, f"{untimed} green run(s) without a queue time"),
@@ -150,16 +158,52 @@ def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
     return m
 
 
+def push_before(run: Run) -> str:
+    """The commit main was at before the push a post-submit run tested, or "" when unknown.
+
+    The GitHub backend records a push's `before` as the run's base_commit; a scheduled or
+    dispatched run has none, and a value like "<sha>^1" or the all-zero sha names no push.
+    """
+    b = run.base_commit
+    return b if b and "^" not in b and b.strip("0") else ""
+
+
+def push_order(befores: dict[str, str]) -> list[str] | None:
+    """Commits in main's push order (each push goes from its before to its after), or None
+    when the runs do not link every commit into one chain (a commit with no before after the
+    first, two pushes from one commit, or a push the store has no run of)."""
+    after: dict[str, str] = {}
+    for commit, before in befores.items():
+        if before in befores:
+            if before in after:
+                return None                    # a force push: two pushes from one commit
+            after[before] = commit
+    roots = [c for c, b in befores.items() if b not in befores]
+    if len(roots) != 1:
+        return None
+    order = roots
+    while order[-1] in after:
+        order.append(after[order[-1]])
+    return order if len(order) == len(befores) else None
+
+
 def main_red(runs: list[tuple[Run, Verdict]], since: dt.datetime, until: dt.datetime) -> Metric:
     """Minutes main spent red: from the first red post-submit commit to the next green one.
 
+    Commits are taken in main's push order (before -> after), so a slow green job on an older
+    commit cannot end a red that a newer commit started. When the stored runs do not link the
+    commits into one chain, they are ordered by when their jobs finished, and the detail says so.
     Only runs inside the window are read, so a red that began before it counts from the window's
     first red run. TODO(expert): carry main's state across the window edge.
     """
     m = Metric("Main-red time", "under 60 min/week", unit="min/week")
     commits: dict[str, dict[str, tuple[Run, Verdict]]] = defaultdict(dict)
+    befores: dict[str, set[str]] = defaultdict(set)
     for r, v in runs:
-        if r.kind != RunKind.POSTSUBMIT or not r.finished_at or red(r, v) is None:
+        if r.kind != RunKind.POSTSUBMIT:
+            continue
+        befores[r.commit].add(push_before(r))  # a cancelled run still links the chain
+        if not r.finished_at or red(r, v) is None:
             continue
         # A re-run of a failed job replaces it: keep only the latest attempt of each job.
         jobs = commits[r.commit]
@@ -167,28 +211,40 @@ def main_red(runs: list[tuple[Run, Verdict]], since: dt.datetime, until: dt.date
         if key not in jobs or (r.attempt, r.finished_at) > (jobs[key][0].attempt, jobs[key][0].finished_at):
             jobs[key] = (r, v)
     if not commits:
-        m.waiting_on = "post-submit runs that store results (the sink on each repo's main)"
+        if stored := sum(1 for r, _ in runs if r.kind == RunKind.POSTSUBMIT):
+            m.detail = unknown(stored, RunKind.POSTSUBMIT.value)
+        else:
+            m.waiting_on = "post-submit runs that store results (the sink on each repo's main)"
         return m
     # A commit is red as soon as its first job fails, and green once its last job has passed.
-    ordered = []
-    for jobs in commits.values():
+    states = {}
+    for commit, jobs in commits.items():
         reds = [parse_time(r.finished_at) for r, v in jobs.values() if red(r, v)]
-        ordered.append((min(reds), False) if reds
-                       else (max(parse_time(r.finished_at) for r, _ in jobs.values()), True))
-    ordered.sort()
+        states[commit] = ((min(reds), False) if reds
+                          else (max(parse_time(r.finished_at) for r, _ in jobs.values()), True))
+    chain = None
+    if all(len(b) == 1 for b in befores.values()):   # else one commit was pushed from two
+        chain = push_order({c: b.pop() for c, b in befores.items()})
+    if chain:
+        ordered = [states[c] for c in chain if c in states]
+    else:
+        ordered = sorted(states.values())
     red_since = None
     total = 0.0
     for at, green in ordered:
-        if not green and red_since is None:
-            red_since = at
+        if not green:   # the streak starts at its earliest red, which may be a newer commit's
+            red_since = at if red_since is None else min(red_since, at)
         elif green and red_since is not None:
-            total += (at - red_since).total_seconds()
+            # A newer commit's green may land before an older one's red: main was not red then.
+            total += max((at - red_since).total_seconds(), 0)
             red_since = None
     if red_since is not None:
         total += (until - red_since).total_seconds()
     weeks = max((until - since).total_seconds() / (7 * 86400), 1 / 7)
     m.value = round(max(total, 0) / 60 / weeks, 1)
-    m.detail = f"{len(ordered)} post-submit commits" + ("; main is red now" if red_since else "")
+    m.detail = (f"{len(ordered)} post-submit commits"
+                + ("" if chain else "; push chain unknown, ordered by job finish time")
+                + ("; main is red now" if red_since else ""))
     return m
 
 
@@ -196,9 +252,13 @@ def flake_rate(runs: list[tuple[Run, Verdict]]) -> Metric:
     """Runs that passed only on retry: a FLAKY test inside the run (V0-TST-03), or a job that
     failed and then passed when re-run on the same commit (a later attempt)."""
     m = Metric("Flake rate", "under 1%", unit="%")
-    verifying = [(r, v) for r, v in runs if r.kind in VERIFYING and red(r, v) is not None]
+    stored = [(r, v) for r, v in runs if r.kind in VERIFYING]
+    verifying = [(r, v) for r, v in stored if red(r, v) is not None]
     if not verifying:
-        m.waiting_on = "presubmit, gate or post-submit runs in the store"
+        if stored:
+            m.detail = unknown(len(stored), "presubmit, gate and post-submit")
+        else:
+            m.waiting_on = "presubmit, gate or post-submit runs in the store"
         return m
     attempts: dict[tuple[str, str], list[tuple[Run, Verdict]]] = defaultdict(list)
     for r, v in verifying:
@@ -214,12 +274,21 @@ def flake_rate(runs: list[tuple[Run, Verdict]]) -> Metric:
     return m
 
 
+def unknown(stored: int, what: str) -> str:
+    """The detail of a metric whose runs are stored but say nothing (cancelled or unknown)."""
+    return (f"{stored} {what} runs stored, status unknown (cancelled, or no test results and no "
+            "job status)")
+
+
 def pass_rate(runs: list[tuple[Run, Verdict]], kind: str, name: str) -> Metric:
     m = Metric(name, "measured", unit="%")
     of_kind = [red(r, v) for r, v in runs if r.kind == kind]
     counted = [x for x in of_kind if x is not None]
     if not counted:
-        m.waiting_on = f"{kind} runs in the store"
+        if of_kind:
+            m.detail = unknown(len(of_kind), kind)
+        else:
+            m.waiting_on = f"{kind} runs in the store"
         return m
     passed = counted.count(False)
     m.value = round(100 * passed / len(counted), 1)
@@ -260,32 +329,36 @@ def failures_recorded(states) -> Metric:
 
 def missing_results(runs: list[tuple[Run, Verdict]]) -> Metric:
     m = Metric("Runs with no test results", "0", unit="runs")
+    verifying = sum(1 for r, _ in runs if r.kind in VERIFYING)
+    if not verifying:            # no runs is not zero runs without results
+        m.waiting_on = "presubmit, gate or post-submit runs in the store"
+        return m
     m.value = sum(1 for r, v in runs if r.kind in VERIFYING
                   and not (r.results_found and v.counts) and r.job_status != "cancelled")
-    verifying = sum(1 for r, _ in runs if r.kind in VERIFYING)
     m.detail = (f"of {verifying} presubmit, gate and post-submit runs; a repo with no test "
                 "reports (only a typecheck, say) shows up here, not as red")
     return m
 
 
-# Plan §8 metrics this version cannot measure yet, and what will measure them.
+# Plan §8 metrics this version cannot measure yet, and the work items (quirq-infra v0.md and
+# v1.md) that will measure them.
 NOT_MEASURED = [
     ("Repos behind the gate", "100% by end of P1", "V0-ORG-03 merge queue and V0-ONB-01/02 manifests"),
     ("Landed on a green merge result", "100% (enforced)", "V0-ORG-03 merge queue: gate runs on merge-group SHAs"),
     ("Time to revert a culprit", "mean under 30 min", "V0-GAR-03 auto-revert"),
-    ("Expired quarantines", "0", "v1 quarantine with expiry"),
-    ("Cache hit rate", "at least 90% (P3+)", "V0-RBE-01 executor reporting reused actions"),
-    ("Reproducibility", "100% of deterministic targets", "remote-build digest comparison"),
-    ("Pinned and mirrored deps", "100%", "quirq-ai/sync"),
+    ("Expired quarantines", "0", "V1-TST-01 flake quarantine with expiry"),
+    ("Cache hit rate", "at least 90% (P3+)", "V0-RBE-02 action cache with hit counters (V1-RBE-01 shared cache)"),
+    ("Reproducibility", "100% of deterministic targets", "V1-TCH-01 reproducibility check"),
+    ("Pinned and mirrored deps", "100%", "V0-SYN-03 pin check and V1-SYN-01 mirroring policy"),
     ("Release cadence", "canary daily", "V0-REL-03 daily canary"),
-    ("Rollback time", "under 10 min", "release rollback drill"),
+    ("Rollback time", "under 10 min", "V0-REL-02 channel rollback and its drill"),
     ("Unattended canary days", "14 in a row by P5", "V0-REL-03 daily canary"),
-    ("Canary hold or rollback time", "under 15 min", "V0-REL-03 and health signals"),
-    ("Postmortem action items closed", "at least 90%", "postmortem tracking (v1)"),
-    ("Open recurring failure classes", "0", "v1 failure classes"),
-    ("Fuzz finding turnaround", "under 24 h", "v1 fuzzers"),
-    ("Intervention rate", "falling every month", "GitHub PR data (scorecard v1)"),
-    ("Revert precision", "at least 90%", "V0-GAR-03 auto-revert"),
+    ("Canary hold or rollback time", "under 15 min", "V0-REL-03 daily canary and V1-REL-01 soak with health signals"),
+    ("Postmortem action items closed", "at least 90%", "TODO(suraj): no item yet"),
+    ("Open recurring failure classes", "0", "V1-TST-04 failure classes and recurrence"),
+    ("Fuzz finding turnaround", "under 24 h", "V1-REC-03 and V1-REC-04 fuzzing"),
+    ("Intervention rate", "falling every month", "TODO(suraj): no item yet"),
+    ("Revert precision", "at least 90%", "V1-GAR-02 revert precision tracking"),
     ("CI cost per landed change", "measured against the V0-ORG-04 ceiling", "V0-ORG-04 compute ceiling and billing data"),
 ]
 
