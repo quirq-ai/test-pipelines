@@ -212,19 +212,21 @@ Every held canary, canary rollback and auto-revert opens one write-once `Failure
 §5.10), mirrored to one GitHub issue labelled `qq-failure` and `qq-failure:<kind>`:
 
 ```yaml
+- run: ./probe --report > "$RUNNER_TEMP/qq-summary.txt"   # written on the runner, never echoed
 - uses: quirq-ai/test-pipelines/failure@<commit>     # needs issues: write
   with:
     kind: canary-held                                 # canary-held | canary-rollback | auto-revert | red-run | fuzz
     subject: ${{ steps.build.outputs.digest }}        # same kind, repo and subject: same record
-    summary: "Canary held: /health probe failed"     # not in the issue or artifact, but in the run log
+    summary-file: ${{ runner.temp }}/qq-summary.txt   # one line on what happened; not logged
     stage: probe
     signal: health
 ```
 
 GitHub prints every input of an action (and its steps' environment) in the run log, and a public
-repo's run logs are public. So never put security detail in `summary`, or in any other input, on a
-public repo: write it to a file on the runner and pass `summary-file: <path>` instead (the file's
-contents are not logged). Write that file without echoing the text through the log: a step that
+repo's run logs are public. So the `summary` input is published in the run log whatever the
+classifier decides, and it exists only for text you would publish anyway. Pass the summary as
+`summary-file: <path>`, a file on the runner (the file's contents are not logged), and never put
+security detail in any other input on a public repo. Write that file without echoing the text through the log: a step that
 runs `echo "${{ ... }}" > summary.txt` has the expression expanded into its script, and the script
 is printed in the log, so the text is public anyway. TODO(suraj): where private details live.
 

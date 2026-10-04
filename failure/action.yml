@@ -1,11 +1,12 @@
 # Open a failure record (V0-TST-04, plan §5.10) and mirror it to one labelled GitHub issue.
 # For the canary pipeline (held canary, rollback) and the gardener (auto-revert):
 #
+#   - run: ./probe --report > "$RUNNER_TEMP/qq-summary.txt"   # written on the runner, never echoed
 #   - uses: quirq-ai/test-pipelines/failure@<commit>
 #     with:
 #       kind: canary-held
 #       subject: ${{ steps.build.outputs.digest }}   # what failed; the same subject is the same record
-#       summary: "Canary held: /health probe failed"    # visible in the run log; see below
+#       summary-file: ${{ runner.temp }}/qq-summary.txt   # one line on what happened; not logged
 #       stage: probe
 #       signal: health
 #
@@ -17,9 +18,9 @@
 # results store collects. Links learned later go through the link action (link/action.yml).
 #
 # Every input (and the step's environment) is printed in the run log, which is public on a public
-# repo. Never put security detail in `summary` or any other input there: write it to a file on the
-# runner and pass `summary-file` (its contents are not logged). TODO(suraj): where private
-# details live.
+# repo, so the `summary` input is public whatever the classifier decides. Pass the summary as
+# `summary-file`, a file on the runner (its contents are not logged), and never put security
+# detail in any other input there. TODO(suraj): where private details live.
 name: qq failure record
 description: Open a quirq infra failure record and mirror it to one labelled issue.
 inputs:
@@ -29,8 +30,18 @@ inputs:
   subject:
     description: What failed (build digest, commit or run id). Same subject, same record.
     required: true
-  summary: {description: One line on what happened. Printed in the (public) run log., required: false, default: ""}
-  summary-file: {description: A file on the runner holding the summary instead (not logged)., required: false, default: ""}
+  summary:
+    description: >-
+      One line on what happened, as text. GitHub prints it in the run log, which is public on a
+      public repo, whatever the security classifier decides. Use summary-file instead.
+    required: false
+    default: ""
+  summary-file:
+    description: >-
+      A file on the runner holding the one-line summary (preferred). Its contents are not printed
+      in the run log. Write it without echoing the text through the log.
+    required: false
+    default: ""
   channel: {description: Release channel., required: false, default: ""}
   build-digest: {description: The build's digest., required: false, default: ""}
   last-good: {description: Last good commit or build., required: false, default: ""}

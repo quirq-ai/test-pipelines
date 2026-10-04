@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import re
 import zipfile
 from pathlib import Path
 
@@ -1211,3 +1212,17 @@ def test_a_link_bundle_carries_no_mark_but_security(tmp_path, monkeypatch):
     st = FileStore(tmp_path / "store")
     name = failures.dirname(state.record.id)
     assert _collect(st, {f"{name}-1-1-a": record, f"{name}-link-1-1-b": _zip(bundle)})[2] == []
+
+
+def test_the_failure_action_examples_pass_the_summary_as_a_file():
+    # Audit R2: GitHub prints every action input in the (public) run log, so an example that
+    # passes `summary:` publishes it whatever the classifier decides.
+    root = Path(__file__).parent.parent
+    action = (root / "failure" / "action.yml").read_text(encoding="utf-8")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    for text in (action, readme):
+        assert "summary-file: ${{ runner.temp }}" in text
+        assert not re.search(r"^[\s#]*summary:[ \t]*\S", text, re.MULTILINE)
+    inputs = action.split("\ninputs:\n", 1)[1]
+    summary = inputs.split("  summary:\n", 1)[1].split("  summary-file:", 1)[0]
+    assert "run log" in summary and "public" in summary and "summary-file" in summary
