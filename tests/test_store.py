@@ -205,3 +205,25 @@ def test_a_malformed_run_is_skipped_not_fatal(tmp_path):
     ok = zipped(make("github/o/x/2/1/j", repo="o/x"))
     new, _, errors = _collect_zips(FileStore(tmp_path), "o/x", [("qq-results-bad", buf.getvalue()), ok])
     assert new == 1 and "must be strings" in errors[0]
+
+
+def test_collect_reads_an_artifact_holding_several_bundles(tmp_path):
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        main = bundle.write(make("github/o/x/9/1/presubmit", repo="o/x"), Path(tmp))
+        bundle.write(make("github/o/x/9/1/presubmit/retry1", repo="o/x"), Path(tmp))
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for d in Path(tmp).iterdir():
+                for f in bundle.FILES:
+                    z.write(d / f, f"{d.name}/{f}")
+
+    def get(url, token):
+        if "/actions/artifacts" in url:
+            return json.dumps({"artifacts": [{"name": main.name, "archive_download_url": "u"}]}).encode()
+        return buf.getvalue()
+
+    st = FileStore(tmp_path)
+    assert github.collect("o/x", st, "", get=get) == (1, 0, [])
+    assert len(st.runs()) == 2

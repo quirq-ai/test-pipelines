@@ -179,8 +179,15 @@ def _import_artifact(repo: str, art: dict, store, token: str, get) -> bool:
                 z.extractall(tmp)
         except zipfile.BadZipFile:
             raise GitHubAPIError("not a zip archive") from None
-        _check_origin(repo, Path(tmp))
-        return store.import_dir(Path(tmp))
+        # One bundle at the root, or (with retries, V0-TST-03) one bundle per directory.
+        root = Path(tmp)
+        dirs = [root] if (root / "run.json").is_file() else sorted(
+            d for d in root.iterdir() if (d / "run.json").is_file())
+        if not dirs:
+            raise GitHubAPIError("no results bundle inside")
+        for d in dirs:            # all of them, before importing any
+            _check_origin(repo, d)
+        return any([store.import_dir(d) for d in dirs])
 
 
 def _check_origin(repo: str, path: Path) -> None:

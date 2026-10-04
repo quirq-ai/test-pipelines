@@ -4,9 +4,10 @@ from __future__ import annotations
 import glob
 from pathlib import Path
 
-from qqresults import bundle, junit, verdict
+from qqresults import bundle, junit, retry, verdict
 from qqresults.errors import Error
 from qqresults.model import Result, Run
+from qqresults.policy import Policy
 
 
 class SinkError(Error):
@@ -27,7 +28,11 @@ def find_reports(patterns: list[str], root: Path) -> list[Path]:
     return sorted(found)
 
 
-def sink(run: Run, patterns: list[str], root: Path, out: Path) -> tuple[Path, bundle.Bundle]:
+def sink(run: Run, patterns: list[str], root: Path, out: Path, rerun_cmd: str = "",
+         policy: Policy = Policy(), base_commit: str = "",
+         setup: str = "") -> tuple[Path, bundle.Bundle]:
+    """Write the run's bundle under out. With rerun_cmd, failed tests are first retried and
+    compared with base (retry.py), and those runs are written next to it."""
     reports = find_reports(patterns, root)
     results: list[Result] = []
     for path in reports:
@@ -35,5 +40,12 @@ def sink(run: Run, patterns: list[str], root: Path, out: Path) -> tuple[Path, bu
         results.extend(junit.parse_file(path, run.id, source=rel))
     if not reports:
         run = Run.from_dict({**run.to_dict(), "results_found": False})
-    b = bundle.Bundle(run, results, verdict.compute(run, results))
+    if rerun_cmd:
+        checked = retry.recheck(run, results, rerun_cmd, root, policy, base_commit, setup=setup)
+        for extra in checked.retries + ([checked.base] if checked.base else []):
+            bundle.write(extra, out)
+        v = checked.verdict
+    else:
+        v = verdict.compute(run, results)
+    b = bundle.Bundle(run, results, v)
     return bundle.write(b, out), b

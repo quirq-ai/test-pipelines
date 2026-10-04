@@ -111,6 +111,8 @@ class Run(_Record):
     executor: str = ""
     results_found: bool = True      # False when the run produced no test results at all
     job_status: str = ""            # how the job itself ended: success, failure or cancelled
+    parent: str = ""                # for a retry or base run: the run whose failures it rechecks
+    role: str = ""                  # "", "retry" or "base"
     schema: str = SCHEMA
 
     _nested: ClassVar[dict[str, type[_Record]]] = {"change": Change}
@@ -152,6 +154,7 @@ class Verdict(_Record):
     counts: dict[str, int] = field(default_factory=dict)      # VerdictStatus -> number of tests
     tests: list[CaseVerdict] = field(default_factory=list)    # only the tests that were not EXPECTED
     reason: str = ""
+    inputs: list[str] = field(default_factory=list)          # retry and base runs it also read
     schema: str = SCHEMA
 
     _nested_lists: ClassVar[dict[str, type[_Record]]] = {"tests": CaseVerdict}
