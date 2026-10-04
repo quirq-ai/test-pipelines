@@ -117,8 +117,10 @@ def _number(v: Any) -> bool:
 
 
 def _metric(v: Any) -> bool:
-    return isinstance(v, dict) and all(
-        isinstance(k, str) and (isinstance(x, str) or _number(x)) for k, x in v.items())
+    """{value, unit}: a finite number and a non-empty unit; other keys are strings or numbers."""
+    return (isinstance(v, dict) and _number(v.get("value"))
+            and isinstance(v.get("unit"), str) and v["unit"].strip() != ""
+            and all(isinstance(k, str) and (isinstance(x, str) or _number(x)) for k, x in v.items()))
 
 
 # Annotation (as written in the dataclasses below) -> (check, what it must be).
@@ -136,7 +138,8 @@ _CHECKS: dict[str, tuple[Any, str]] = {
     "list[str]": (lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v),
                   "a list of strings"),
     "dict[str, dict[str, Any]]": (lambda v: isinstance(v, dict) and all(map(_metric, v.values())),
-                                  "an object of {name: string or finite number} objects"),
+                                  "an object of {value: finite number, unit: non-empty "
+                                  "string} objects"),
 }
 
 
