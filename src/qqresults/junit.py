@@ -85,9 +85,12 @@ def _message(child: ET.Element) -> str:
 
 def _failure_type(children: list[ET.Element]) -> str:
     """The `type` attribute of <failure>/<error> (an exception class, where the runner writes
-    one), or "" when none has it. Several different types are kept in order, joined by " / "."""
+    one), or "" unless every one has it. Several different types are kept in order, joined by
+    " / "."""
     types = dict.fromkeys(" ".join((c.get("type") or "").split()) for c in children)
-    return " / ".join(t for t in types if t)[:MAX_TYPE].strip()
+    if "" in types:
+        return ""
+    return " / ".join(types)[:MAX_TYPE].strip()
 
 
 def _outcome(case: ET.Element) -> tuple[Status, str, str]:

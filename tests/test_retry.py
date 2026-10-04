@@ -561,8 +561,16 @@ NO_KIND = "no signal: no kind to compare"
     ("[captured output removed] ValueError: bad", "[captured output removed] FileNotFoundError",
      NO_KIND),
     ("--- 1 ---", "--- 1 ---", NO_KIND),           # no letters
+    # review of #25: a capital E inside the first word is not the pytest marker
+    ("FAILURE", "FAILURE", NO_KIND),
+    ("FAILURE see log", "FAILURE see log", NO_KIND),
+    # generic words behind other punctuation, and in other cases
+    ("FAILED.", "FAILED.", NO_KIND),
+    ("Error!", "Error!", NO_KIND),
+    ("Def", "Def", NO_KIND),
 ], ids=["ansi", "ansi-no-esc", "generic-Failed", "generic-FAIL", "generic-error",
-        "generic-failure", "pytest-E", "bare-E", "def", "captured", "no-letters"])
+        "generic-failure", "pytest-E", "bare-E", "def", "captured", "no-letters",
+        "FAILURE", "FAILURE-words", "FAILED-dot", "Error-bang", "Def"])
 def test_an_uninformative_kind_never_exonerates(change, base, reason):
     # AUDIT-R5 second review: each of these used to be one kind on both sides, so any failure
     # on base exonerated any failure with the change.
@@ -596,6 +604,10 @@ def test_the_failure_type_is_the_kind_when_every_failure_has_one():
     generic = _decide_kinds("AssertionError: x", "AssertionError: x", change_type="failure",
                             base_type="failure")
     assert not generic.passed and generic.tests[0].reason.startswith(NO_KIND)
+    # A root exception class is no kind either.
+    for root in ("Exception", "java.lang.Throwable"):
+        broad = _decide_kinds("x", "y", change_type=root, base_type=root)
+        assert not broad.passed and broad.tests[0].reason.startswith(NO_KIND)
     # A type on one side only: the messages decide, for every result alike.
     one_sided = _decide_kinds("AssertionError: x", "AssertionError: y",
                               change_type="AssertionError")

@@ -151,7 +151,10 @@ def test_the_failure_type_is_kept_short_and_stripped():
            b'<testcase classname="c" name="c"><failure message="Failed"/></testcase>'
            b'<testcase classname="c" name="d"><skipped type="pytest.skip"/></testcase>'
            b'<testcase classname="c" name="e"><failure type="A"/><failure type="B"/>'
-           b'<failure type="A"/></testcase></testsuite>')
+           b'<failure type="A"/></testcase>'
+           b'<testcase classname="c" name="f"><failure type="A"/><failure message="x"/>'
+           b'</testcase></testsuite>')
     types = {r.test_id: r.failure_type for r in junit.parse(xml, "r")}
     assert types == {"c::a": "java.lang.AssertionError", "c::b": "X" * junit.MAX_TYPE,
-                     "c::c": "", "c::d": "", "c::e": "A / B"}
+                     "c::c": "", "c::d": "", "c::e": "A / B",
+                     "c::f": ""}

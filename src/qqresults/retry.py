@@ -28,12 +28,14 @@ would hide a change that makes the same fixture crash for a real reason. The sam
 the test body is a FAIL (pytest reports any exception there as a <failure>), so a FAIL must
 also look like the change's: every failing result on both sides must have the same kind. The
 kind is the `type` attribute of the <failure> (an exception class, where the runner writes one) when
-every one of those results has one. Otherwise it is the first word of the message's first line
-(an exception class such as `FileNotFoundError:`, or `assert`), after removing ANSI escape codes
+every one of those results has one (and every <failure> in it has a type). Otherwise it is the
+first word of the message's first line (an exception class such as `FileNotFoundError:`, or
+`assert`), after removing ANSI escape codes
 and a leading pytest `E` marker. Some words carry no kind, and a failure with one is never
 evidence: an empty message, `def` (a traceback with no message), `[captured` (a message that
 was only captured output), a word with no letters, and generic words such as `Failed` or
-`Error` (runners that write the same message for every failure). This is a heuristic: it tells
+`Error`, in any case and with any trailing punctuation, and the root classes `Exception` and
+`Throwable` (runners that write the same message for every failure). This is a heuristic: it tells
 a missing file from a regression that raises something else, not two different failures of
 one kind (two plain `assert`s). The first run at each base keeps its id
 (`<run>/base`, `<run>/base2`); the extra runs are `<run>/base-run2`, `<run>/base2-run2` and so on.
@@ -170,11 +172,15 @@ def _passed(test_id: str, results: list[Result]) -> bool:
 # ANSI escape codes, with the ESC byte or without it (XML 1.0 cannot carry ESC, so a runner may
 # drop it and leave `[31m`).
 _ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])|\[[0-9;]+m")
-_E_MARKER = re.compile(r"E(?:\s+|$)")   # the `E   ` prefix some runners put on error lines
-# Words that say nothing about a failure's kind (see the module docstring): compared without a
-# trailing colon and ignoring case.
-_GENERIC = frozenset({"failed", "fail", "failure", "error"})
-_NOT_A_KIND = frozenset({"def", "[captured"})
+# The `E   ` prefix some runners put on error lines: only at the start of the line.
+_E_MARKER = re.compile(r"\AE(?:\s+|\Z)")
+# Words that say nothing about a failure's kind (see the module docstring): compared ignoring
+# case and trailing punctuation. The bare root exception classes are generic too: a type of
+# `Exception` or `Throwable` says no more than `Failed`.
+_GENERIC = frozenset({"failed", "fail", "failure", "error", "def", "[captured",
+                      "exception", "throwable", "baseexception", "java.lang.exception",
+                      "java.lang.throwable", "system.exception"})
+_TRAILING = ":.!?;,"
 
 
 def _kind(r: Result, by_type: bool) -> str:
@@ -188,8 +194,8 @@ def _kind(r: Result, by_type: bool) -> str:
 
 
 def _informative(kind: str) -> bool:
-    return (kind not in _NOT_A_KIND and any(c.isalpha() for c in kind)
-            and kind.rstrip(":").casefold() not in _GENERIC)
+    return (any(c.isalpha() for c in kind)
+            and kind.casefold().rstrip(_TRAILING) not in _GENERIC)
 
 
 def _kinds(kinds: set[str]) -> str:

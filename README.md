@@ -211,7 +211,8 @@ or `assert`, after removing ANSI escape codes and a leading pytest `E` marker. S
 that reads a missing generated file on base (a FAIL in pytest) does not exonerate a change that
 makes it raise something else. A failure whose kind says nothing never exonerates: an empty
 message, `def` (a traceback with no message), `[captured` (a message that was only captured
-output), a word with no letters, or a generic word such as `Failed` or `Error`, which some
+output), a word with no letters, or a generic word such as `Failed` or `Error` (in any case, with
+any trailing punctuation), or a root class such as `Exception` or `Throwable`, which some
 runners write for every failure. This is a heuristic and cannot tell two failures of one kind
 apart. The retry and
 base runs are stored too, linked to the run by `parent` and listed in the verdict's `inputs`.
