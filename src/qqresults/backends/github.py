@@ -176,9 +176,29 @@ def _request(url: str, token: str, accept: str = "application/vnd.github+json") 
     except urllib.error.HTTPError as e:
         if e.code in (301, 302, 303, 307, 308):
             return e.code, dict(e.headers), b""
-        raise GitHubAPIError(f"GET {url}: HTTP {e.code} {e.reason}") from None
+        raise GitHubAPIError(
+            f"GET {url}: HTTP {e.code} {e.reason}{_rate_limited(e.headers)}") from None
     except urllib.error.URLError as e:
         raise GitHubAPIError(f"GET {url}: {e.reason}") from None
+
+
+def _rate_limited(headers) -> str:
+    """A note naming a rate limit, when the response's headers say it was one, else "".
+
+    GitHub answers an exhausted quota with a 403 (or 429) that otherwise reads like a
+    permission error."""
+    get = (lambda k: headers.get(k)) if headers is not None else (lambda k: None)
+    remaining, reset = get("X-RateLimit-Remaining"), get("X-RateLimit-Reset")
+    retry = get("Retry-After")
+    if remaining != "0" and not retry:
+        return ""
+    when = (f"; retry after {retry} s" if retry
+            else f"; resets at {_utc(reset)}" if reset and reset.isdigit() else "")
+    return f" (rate limited{when})"
+
+
+def _utc(epoch: str) -> str:
+    return dt.datetime.fromtimestamp(int(epoch), dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def http_get(url: str, token: str) -> bytes:
