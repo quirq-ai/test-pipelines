@@ -27,17 +27,25 @@ fixture that reads a generated file crashes on base because the worktree lacks t
 would hide a change that makes the same fixture crash for a real reason. The same read inside
 the test body is a FAIL (runners report any exception there as a <failure>), so a FAIL must
 also look like the change's: every failing result on both sides must have the same kind. The
-kind is the `type` attribute of the <failure> (an exception class, where the runner writes one) when
-every one of those results has one (and every <failure> in it has a type). Otherwise it is the
-first word of the message's first line (an exception class such as `FileNotFoundError:`, or
-`assert`), after removing ANSI escape codes
-and a leading `E` marker. Some words carry no kind, and a failure with one is never
+kind is the `type` attribute of the <failure> (an exception class, where the runner writes one)
+when every one of those results, on both sides, has a type that carries a kind (and every
+<failure> in it has a type). Otherwise it is the first word of the message's first line, for
+every result alike (an exception class such as `FileNotFoundError:`), after removing ANSI escape
+codes and a leading `E` marker. Some words carry no kind, and a failure with one is never
 evidence: an empty message, `def` (a traceback with no message), `[captured` (a message that
-was only captured output), a word with no letters, and generic words such as `Failed` or
-`Error`, in any case and with any trailing punctuation, and the root classes `Exception` and
-`Throwable` under any namespace (runners that write the same message for every failure). This is a heuristic: it tells
-a missing file from a regression that raises something else, not two different failures of
-one kind (two plain `assert`s). The first run at each base keeps its id
+was only captured output), a word with no letters, generic words such as `Failed` or `Error`,
+the root classes `Exception` and `Throwable` under any namespace (runners that write the same
+message for every failure), and runner categories that some runners write for every failure
+whatever went wrong: `assert` (written for an assertion and for an unrelated panic alike),
+`timeout`, `timed`, `panicked`, `panic`, `thread` (a panic report begins `thread '<name>'
+panicked at`), `traceback`, `thrown:`, `abort`, `aborted`, `signal` and `killed`. Words are compared in any case, with any
+trailing punctuation. A type that contains whitespace carries no kind either: it is a category
+(`test failure`, `test timeout`, `test abort`) or several types joined as `A / B`. When the
+types carry no kind the messages decide, and when those carry none either (some runners write
+no message at all) the test stays UNEXPECTED. A <failure> that reports a timeout, an abort or a
+signal is a CRASH, not a FAIL (see junit.py), so it never exonerates. This is a heuristic: it
+tells a missing file from a regression that raises something else, not two different failures
+of one kind (two `AssertionError`s). The first run at each base keeps its id
 (`<run>/base`, `<run>/base2`); the extra runs are `<run>/base-run2`, `<run>/base2-run2` and so on.
 
 The rerun command comes from the caller (the adapter or builder), so this module never names a
@@ -178,8 +186,14 @@ _E_MARKER = re.compile(r"\AE(?:\s+|\Z)")
 # case, trailing punctuation and any dotted namespace (`a.b.Exception` is `Exception`). The root
 # exception classes are generic too: a type of `Exception` or `Throwable` says no more than
 # `Failed`.
+# Runner categories are generic too: some runners write one fixed `type` for every failure (an
+# `assert` for an assertion and for an unrelated panic alike, a `timeout`), or begin every
+# message with the same word (`thread '<name>' panicked at`, `Traceback`, `thrown:`), so equal
+# words on both sides say nothing about whether it is the same failure (audit N1).
 _GENERIC = frozenset({"failed", "fail", "failure", "error", "def", "[captured",
-                      "exception", "throwable", "baseexception"})
+                      "exception", "throwable", "baseexception",
+                      "assert", "timeout", "timed", "panicked", "panic", "thread", "traceback",
+                      "thrown", "abort", "aborted", "signal", "killed"})
 _TRAILING = ":.!?;,"
 
 
@@ -194,7 +208,11 @@ def _kind(r: Result, by_type: bool) -> str:
 
 
 def _informative(kind: str) -> bool:
+    """False for a kind that says nothing about the failure: no letters, a generic word, or
+    words separated by whitespace. A type is a single class name; one with a space is a runner
+    category (`test failure`, `test timeout`) or several types joined by the parser (`A / B`)."""
     return (any(c.isalpha() for c in kind)
+            and not any(c.isspace() for c in kind)
             and kind.casefold().rstrip(_TRAILING).rsplit(".", 1)[-1] not in _GENERIC)
 
 
@@ -222,11 +240,14 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
         # It is read only after the pass check below, so it never holds PASS or SKIP.
         crashed = sorted(on_base - {Status.FAIL.value})
         # The kind of each failure, with and without the change (see the module docstring): its
-        # type when every one has a type, else the first word of its message.
+        # type when every one on both sides has an informative type, else the first word of its
+        # message, for every result alike. Never a mix: a type on one side and a message word on
+        # the other could not be compared, and an uninformative type (one fixed category for
+        # every failure) falls back to the messages, which may carry no kind either.
         failing = [r for b in [results] + [b.results for b in retries]
                    for r in b if r.test_id == t and not r.expected]
         failing_on_base = [r for rs in per_base for r in rs]
-        by_type = all(r.failure_type.strip() for r in failing + failing_on_base)
+        by_type = all(_informative(r.failure_type.strip()) for r in failing + failing_on_base)
         kind_on_change = {_kind(r, by_type) for r in failing}
         kind_on_base = {_kind(r, by_type) for r in failing_on_base}
         no_kind = not all(map(_informative, kind_on_change | kind_on_base))

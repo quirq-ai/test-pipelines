@@ -211,15 +211,29 @@ even when the change crashes too), one that crashes with the change but fails an
 base, one that fails differently there, one whose failure has no kind (below), and one with no
 base result, such as a new test. The kind of a failure is the `type` attribute of its JUnit
 `<failure>` (an exception class, as Surefire writes it) when every failure on both sides has
-one; otherwise it is the first word of its message's first line, such as `FileNotFoundError:`
-or `assert`, after removing ANSI escape codes and a leading pytest `E` marker. So a test body
-that reads a missing generated file on base (a FAIL in pytest) does not exonerate a change that
-makes it raise something else. A failure whose kind says nothing never exonerates: an empty
-message, `def` (a traceback with no message), `[captured` (a message that was only captured
-output), a word with no letters, or a generic word such as `Failed` or `Error` (in any case, with
-any trailing punctuation), or a root class such as `Exception` or `Throwable`, which some
-runners write for every failure. This is a heuristic and cannot tell two failures of one kind
-apart. The retry and
+one that carries a kind; otherwise it is the first word of its message's first line, for every
+failure alike, such as `FileNotFoundError:`, after removing ANSI escape codes and a leading
+pytest `E` marker. So a test body that reads a missing generated file on base (a FAIL in pytest)
+does not exonerate a change that makes it raise something else. A failure whose kind says
+nothing never exonerates: an empty message, `def` (a traceback with no message), `[captured` (a
+message that was only captured output), a word with no letters, a generic word such as `Failed`
+or `Error`, a root class such as `Exception` or `Throwable`, and runner categories that some
+runners write for every failure whatever went wrong (audit N1): Rust libtest's `assert` (for an
+`assert_eq!` and for an unrelated `unwrap()` panic alike, with no message) and `timeout`,
+cargo-nextest's `test failure`, `test timeout` and `test abort` (any type with whitespace,
+including joined types such as `A / B`), and message words such as `thread` (`thread 'x'
+panicked at`), `panicked`, `panic`, `Traceback`, jest's `thrown:`, `timeout`, `abort`, `signal`
+and `killed`. Words are compared in any case, with any trailing punctuation. When the types say
+nothing the messages decide, and when the messages say nothing either (libtest writes none) the
+test stays UNEXPECTED. A `<failure>` that reports a timeout, an abort or a signal is a CRASH,
+like an `<error>`, so it never exonerates: one whose `type` has the word `timeout`, `abort`,
+`aborted`, `signal` or a signal name (libtest's `timeout`, nextest's `test timeout`), or whose
+message's first line begins with such a report (`Timeout of 2000ms exceeded`, pytest-timeout's
+`Failed: Timeout >1.0s`, jest's `thrown: "Exceeded timeout`, `timed out`, `Aborted`, `killed by
+signal 9`, `SIGSEGV`). An assertion that only mentions a timeout (`assert timeout == 5`,
+`timeout is None`) stays a FAIL; a timeout named later in the line or as an exception class
+(`TimeoutError`) stays a FAIL too, and its kind is compared as usual. This is a heuristic and
+cannot tell two failures of one kind apart. The retry and
 base runs are stored too, linked to the run by `parent` and listed in the verdict's `inputs`.
 The base side runs in the same job, so the rerun command must test the code in its working
 directory. If the tests import installed code (an editable install, a build outside the tree),
@@ -246,7 +260,9 @@ commits, or read the queue's merge method from the branch rules, once the org's 
 and merge method are decided (ORG-03). The rerun command comes from the builder, so the core never names a runner;
 `$QQ_RETRY_TESTS` lists the failed test ids for a command that can select them. CI proves the
 done-when with `tools/planted_demo.sh`: the planted failure is exonerated, and changes that break
-a test or the code under it still block. "Through the gate" waits for the merge queue (V0-ORG-03).
+a test or the code under it still block, including a Rust crate (real `cargo test` JUnit, through
+`RUSTC_BOOTSTRAP=1 ... -Z unstable-options --format junit`) whose test panics on base and fails
+an `assert_eq!` with the change. "Through the gate" waits for the merge queue (V0-ORG-03).
 
 ## Failure records (V0-TST-04)
 

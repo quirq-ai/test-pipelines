@@ -158,3 +158,70 @@ def test_the_failure_type_is_kept_short_and_stripped():
     assert types == {"c::a": "java.lang.AssertionError", "c::b": "X" * junit.MAX_TYPE,
                      "c::c": "", "c::d": "", "c::e": "A / B",
                      "c::f": ""}
+
+
+def _failure_status(attrs: str, text: str = "") -> str:
+    xml = (f'<testsuite name="s"><testcase classname="c" name="a"><failure {attrs}>{text}'
+           f'</failure></testcase></testsuite>').encode()
+    (r,) = junit.parse(xml, "r")
+    return r.status
+
+
+# AUDIT-R5 N1: a <failure> that reports a timeout, an abort or a signal is a CRASH.
+@pytest.mark.parametrize("attrs, text", [
+    ('type="timeout"', ""),                                     # Rust libtest
+    ('type="test timeout"', ""),                                # cargo-nextest
+    ('type="test abort"', ""),
+    ('type="TIMEOUT"', ""),
+    ('type="x.Timeout"', ""),
+    ('type="SIGSEGV"', ""),
+    ('message="thrown: &quot;Exceeded timeout of 5000 ms for a test."', ""),   # jest
+    ('message="Failed: Timeout &gt;1.0s"', ""),                 # pytest-timeout
+    ('message="Timeout of 2000ms exceeded."', ""),              # mocha
+    ('message="Timeout"', ""),
+    ('message="timed out after 5s"', ""),
+    ('message="test timed out after 60s"', ""),
+    ('', "Aborted (core dumped)"),
+    ('message="process aborted with signal 6 (SIGABRT)"', ""),
+    ('message="killed by signal 9"', ""),
+    ('message="Fatal signal 11"', ""),
+    ('message="signal: 11, SIGSEGV: invalid memory reference"', ""),
+    ('message="SIGSEGV"', ""),
+    ('message="  \'Timeout\'"', ""),
+    ('message="[31mTimeout[0m"', ""),     # an ANSI code whose ESC the runner dropped
+], ids=["libtest-timeout", "nextest-timeout", "nextest-abort", "TIMEOUT", "namespaced",
+        "sig-type", "jest", "pytest-timeout", "mocha", "bare", "timed-out", "test-timed-out",
+        "aborted-text", "process-aborted", "killed", "fatal-signal", "signal-number", "sig-name",
+        "quoted", "ansi"])
+def test_a_failure_that_reports_a_timeout_abort_or_signal_is_a_crash(attrs, text):
+    assert _failure_status(attrs, text) == Status.CRASH
+
+
+@pytest.mark.parametrize("attrs, text", [
+    ('message="assert timeout == 5"', ""),
+    ('message="timeout == 5"', ""),
+    ('message="timeout is None"', ""),
+    ('message="timeout in (1, 2)"', ""),
+    ('message="timeout.seconds"', ""),
+    ('message="timeout_s"', ""),
+    ('message="AssertionError: timeout must be positive"', ""),
+    ('message="expected abort() to be called"', ""),
+    ('message="TimeoutError: read"', ""),
+    ('type="TimeoutError" message="x"', ""),
+    ('type="assert"', ""),
+    ('type="test failure"', ""),
+    ('type="AssertionError" message="expected 1"', "timeout after 5s"),   # first line only
+    ('message="the call aborted"', ""),
+    ('message="signals: 3 != 4"', ""),
+], ids=["assert-timeout", "timeout-eq", "timeout-is", "timeout-in", "timeout-attr",
+        "timeout-underscore", "assertion-mentions", "expected-abort", "TimeoutError-message",
+        "TimeoutError-type", "assert-type", "nextest-failure", "body-only", "later-in-line",
+        "signals"])
+def test_an_assertion_that_mentions_a_timeout_stays_a_fail(attrs, text):
+    assert _failure_status(attrs, text) == Status.FAIL
+
+
+def test_an_error_stays_a_crash_and_a_skip_a_skip():
+    xml = (b'<testsuite name="s"><testcase name="a"><error type="timeout"/></testcase>'
+           b'<testcase name="b"><skipped message="Timeout"/></testcase></testsuite>')
+    assert [r.status for r in junit.parse(xml, "r")] == [Status.CRASH, Status.SKIP]

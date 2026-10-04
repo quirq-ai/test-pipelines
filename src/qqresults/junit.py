@@ -33,6 +33,50 @@ _CAPTURED = re.compile(r"<(system-out|system-err)\b[^>]*?(?:/>|>.*?(?:</\1\s*>|$
                        re.DOTALL | re.IGNORECASE)
 
 
+# A <failure> that reports a timeout, an abort or a signal is a CRASH (model.Status: a timeout or
+# a dead process is not an assertion), whatever tag the runner chose, so it never exonerates
+# (audit N1). The rule is deliberately narrow, so an ordinary assertion that mentions one of
+# these words stays a FAIL:
+#   - the `type`, split into words at anything that is not a letter or digit and compared in any
+#     case, has one of _CRASH_TYPE_WORDS as a whole word (`timeout`, `test timeout`, `test
+#     abort`, `x.Timeout`; not `TimeoutError`, which is an exception class the test raised), or
+#   - the first line of the message, in any case, after leading spaces, quotes and one generic
+#     prefix (`Failed:`, `thrown:`, `Error:`, `failure:`), begins with a timeout, abort or signal
+#     report: `Timeout`, `Timed out`, `Exceeded timeout`, `test timed out`, `abort`/`aborted`,
+#     `process aborted`, `killed by signal`, `terminated by signal`, `caught`/`received`/`fatal
+#     signal`, `signal: <number>` or a signal name such as `SIGSEGV`.
+# A message that begins with `timeout` used as a value (`timeout == 5`, `timeout is None`,
+# `timeout in (1, 2)`, `timeout.seconds`, `timeout[0]`, `timeout(...)`) stays a FAIL; an
+# assertion message that begins `assert`, `expected` or an exception class never matches.
+# Limits: a report that names the timeout later in the line (`test x: timeout after 5s`), or as
+# an exception class (`TimeoutError`), stays a FAIL, and its kind is compared as usual. An
+# assertion message that happens to begin with one of these words in another sense (`Aborted
+# transactions: 2 != 3`) becomes a CRASH. That error only ever blocks: a CRASH never exonerates,
+# and one that passes on a retry is FLAKY, as a FAIL would be.
+_CRASH_TYPE_WORDS = frozenset({"timeout", "timedout", "abort", "aborted", "signal", "sigsegv",
+                               "sigabrt", "sigbus", "sigfpe", "sigill", "sigkill", "sigterm"})
+_SIG_NAME = r"sig(?:segv|abrt|bus|fpe|ill|kill|term|trap|sys|pipe|alrm|int|quit)\b"
+_CRASH_MESSAGE = re.compile(
+    r"""\A(?:(?:failed|thrown|error|failure)\s*:\s*)?["'`]*\s*(?:"""
+    r"timeout\b(?!\s*(?:[=!<>]=|is\b|in\b|\.\w|\[|\())"
+    r"|timed\s+out\b|exceeded\s+(?:the\s+)?timeout\b|test\s+timed\s+out\b"
+    r"|(?:process\s+|test\s+)?abort(?:ed)?\b"
+    r"|(?:killed|terminated|aborted)\s+by\s+signal\b"
+    r"|(?:caught|received|fatal)\s+signal\b|signal\s*:?\s*\d"
+    rf"|{_SIG_NAME})",
+    re.IGNORECASE)
+_ESCAPES = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])|\[[0-9;]+m")
+
+
+def _reports_crash(child: ET.Element) -> bool:
+    """A <failure> that reports a timeout, an abort or a signal (see _CRASH_TYPE_WORDS)."""
+    words = re.split(r"[^0-9a-z]+", (child.get("type") or "").casefold())
+    if _CRASH_TYPE_WORDS.intersection(words):
+        return True
+    line = _ESCAPES.sub("", _message(child)).strip().split("\n", 1)[0]
+    return bool(_CRASH_MESSAGE.match(line.strip()))
+
+
 class JUnitError(Error):
     """The report is not JUnit XML. The message says which file and why."""
 
@@ -95,9 +139,12 @@ def _failure_type(children: list[ET.Element]) -> str:
 
 def _outcome(case: ET.Element) -> tuple[Status, str, str]:
     """The worst outcome among the case's children, with every message of that kind kept, and
-    the failure type (for a FAIL or CRASH only)."""
+    the failure type (for a FAIL or CRASH only). A <failure> that reports a timeout, an abort or
+    a signal is a CRASH (see _CRASH_TYPE_WORDS)."""
     for tag, status in (("error", Status.CRASH), ("failure", Status.FAIL), ("skipped", Status.SKIP)):
         children = case.findall(tag)
+        if status is Status.FAIL and any(map(_reports_crash, children)):
+            status = Status.CRASH
         if children:
             return (status, _cap_message("\n\n".join(_message(c) for c in children)),
                     "" if status is Status.SKIP else _failure_type(children))
