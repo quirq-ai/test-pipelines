@@ -1,6 +1,6 @@
 # quirq infra scorecard v0
 
-Window 2026-09-27T13:58:06Z to 2026-10-04T13:58:06Z, generated 2026-10-04T13:58:06Z from the results store.
+Window 2026-09-27T14:03:39Z to 2026-10-04T14:03:39Z, generated 2026-10-04T14:03:39Z from the results store.
 
 ## quirq-ai/innernet
 
@@ -21,11 +21,11 @@ Window 2026-09-27T13:58:06Z to 2026-10-04T13:58:06Z, generated 2026-10-04T13:58:
 |---|---|---|---|
 | Gate time-to-green | not measured | P1: p50 under 15 min, p90 under 30 min | waiting on V0-GAT-04 records queue-entry time on gate runs |
 | Main-red time | 0 min/week | under 60 min/week | 11 post-submit commits |
-| Flake rate | 0 % | under 1% | 0 of 49 runs passed only on retry |
+| Flake rate | 0 % | under 1% | 0 of 51 runs passed only on retry |
 | Gate runs passed | not measured | measured | waiting on gate runs in the store |
 | Post-submit runs passed | 100 % | measured | 11 of 11 postsubmit runs passed |
-| Presubmit runs passed | 100 % | measured | 38 of 38 presubmit runs passed |
-| Runs with no test results | 0 runs | 0 | of 49 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Presubmit runs passed | 100 % | measured | 40 of 40 presubmit runs passed |
+| Runs with no test results | 0 runs | 0 | of 51 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
 | Failures fully recorded | 0 % | 100% | 0 of 1 records link culprit, fix and covering test |
 
 ## quirq-ai/xo-space

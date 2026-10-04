@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-04T13:58:06Z",
+  "generated_at": "2026-10-04T14:03:39Z",
   "not_measured": [
     {
       "detail": "",
@@ -250,7 +250,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 49 runs passed only on retry",
+        "detail": "0 of 51 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -277,7 +277,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "38 of 38 presubmit runs passed",
+        "detail": "40 of 40 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
@@ -286,7 +286,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "of 49 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 51 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -379,7 +379,7 @@
       }
     ]
   },
-  "since": "2026-09-27T13:58:06Z",
+  "since": "2026-09-27T14:03:39Z",
   "skipped": 0,
-  "until": "2026-10-04T13:58:06Z"
+  "until": "2026-10-04T14:03:39Z"
 }
