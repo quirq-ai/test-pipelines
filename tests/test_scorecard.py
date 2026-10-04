@@ -133,3 +133,77 @@ def test_backfilled_runs_are_left_out_of_the_scorecard(tmp_path):
     b = make("bf", commit="c7", finished="2026-10-04T12:00:00Z", fail=True)
     st.put(bundle.Bundle(Run.from_dict({**b.run.to_dict(), "role": "backfill"}), b.results, b.verdict))
     assert scorecard.compute(st, SINCE, UNTIL).to_dict() == before
+
+
+def _gate_job(job, finished, fail=False, attempt=1, queued="2026-10-04T09:00:00Z", run_no=77,
+              **run):
+    from qqresults import bundle, verdict
+    from qqresults.model import Run
+    b = make(f"github/quirq-ai/xo-space/{run_no}/{attempt}/{job}", kind="gate", commit="m7",
+             finished=finished, queued=queued, fail=fail)
+    r = Run.from_dict({**b.run.to_dict(), "backend": "github", "attempt": attempt, **run})
+    results = b.results if r.results_found else []
+    return bundle.Bundle(r, results, verdict.compute(r, results))
+
+
+def gate(st):
+    return metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Gate time-to-green")
+
+
+def test_a_gate_with_several_jobs_is_one_sample_at_its_last_finish(tmp_path):
+    st = FileStore(tmp_path)
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z"))
+    st.put(_gate_job("test", "2026-10-04T09:30:00Z"))
+    m = gate(st)
+    assert m.value == 30.0 and "over 1 green gate run" in m.detail
+
+
+def test_a_red_gate_run_is_not_time_to_green(tmp_path):
+    st = FileStore(tmp_path)
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z"))
+    st.put(_gate_job("test", "2026-10-04T09:30:00Z", fail=True))
+    m = gate(st)
+    assert not m.measured and m.detail == "1 red gate run(s) not counted"
+    assert "| Gate time-to-green | not measured |" in scorecard.to_markdown(
+        scorecard.compute(st, SINCE, UNTIL))
+    assert "1 red gate run(s) not counted |" in scorecard.to_markdown(scorecard.compute(st, SINCE, UNTIL))
+
+
+def test_a_red_job_without_a_queue_time_still_makes_the_run_red(tmp_path):
+    st = FileStore(tmp_path)
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z"))
+    st.put(_gate_job("test", "2026-10-04T09:30:00Z", fail=True, queued=""))
+    assert not gate(st).measured and "1 red" in gate(st).detail
+
+
+def test_a_gate_with_only_a_typecheck_is_judged_by_its_job_status(tmp_path):
+    st = FileStore(tmp_path)
+    st.put(_gate_job("typecheck", "2026-10-04T09:12:00Z", results_found=False, job_status="success"))
+    st.put(_gate_job("old", "2026-10-04T09:20:00Z", results_found=False, job_status="cancelled"))
+    assert gate(st).value == 12.0
+
+
+def test_a_rerun_counts_from_the_first_queue_entry_to_green(tmp_path):
+    st = FileStore(tmp_path)
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z"))
+    st.put(_gate_job("test", "2026-10-04T09:30:00Z", fail=True))
+    st.put(_gate_job("test", "2026-10-04T10:30:00Z", attempt=2, queued="2026-10-04T10:00:00Z"))
+    m = gate(st)
+    assert m.value == 90.0 and "red" not in m.detail
+
+
+def test_a_cancelled_retry_does_not_hide_a_red_attempt(tmp_path):
+    st = FileStore(tmp_path)
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z"))
+    st.put(_gate_job("test", "2026-10-04T09:30:00Z", fail=True))
+    st.put(_gate_job("test", "2026-10-04T10:00:00Z", attempt=2, results_found=False,
+                     job_status="cancelled"))
+    assert not gate(st).measured and "1 red" in gate(st).detail
+
+
+def test_green_runs_without_a_queue_time_are_noted(tmp_path):
+    st = FileStore(tmp_path)
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z"))
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z", queued="", run_no=78))
+    m = gate(st)
+    assert m.value == 5.0 and "1 green run(s) without a queue time" in m.detail
