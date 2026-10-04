@@ -270,10 +270,12 @@ check", "sandbox escape", "container breakout", "CORS any origin", "certificate 
 disabled", "JWT signature not verified"). Memory-safety findings (use-after-free, double free,
 heap or stack buffer overflow, out-of-bounds read or write, sanitizer and KASAN reports) always
 count; a bare segfault, SIGSEGV, SIGABRT, SIGBUS, overflow, null dereference or out-of-bounds
-index counts only when the same field also names untrusted input (malformed, crafted, attacker,
-untrusted, remote input, fuzzing) or an attack surface (TLS, a certificate, a decoder or parser,
-a codec, a packet, an image, a font, a protocol, an allocation size), so "SIGSEGV in tls
-handshake" is withheld and "segfault in worker" gets an issue. Names the
+index counts only when the record's free text anywhere (subject, summary, labels, links) also
+names untrusted input (malformed, crafted, attacker, untrusted, remote or user input, a large
+request, fuzzing) or an attack surface (TLS, a certificate, a decoder or parser, a codec, an image
+or compression library, a packet, http2 or grpc, a font, a protocol, malloc, an allocation or
+buffer size), so "SIGSEGV in tls handshake" is withheld and "segfault in worker" gets an issue. A
+label (stage, signal) that is itself a crash word is withheld. Names the
 org chose (the repo, the run id and job, the issue URL, and the record's own `owner/name` wherever
 it appears, as in a run-id subject or a pull request link) are not classified, nor are digests
 and hex runs. Text is matched after NFKC normalisation, removing zero-width and other format
