@@ -85,3 +85,24 @@ def test_runs_without_results_are_not_red_unless_the_job_failed(tmp_path):
     m = metric(card, "quirq-ai/innernet", "Post-submit runs passed")
     assert m.value == round(200 / 3, 1) and "1 cancelled or unknown" in m.detail
     assert metric(card, "quirq-ai/innernet", "Runs with no test results").value == 3
+
+
+def test_a_passing_rerun_of_a_failed_job_ends_the_red(tmp_path):
+    from qqresults import bundle, verdict
+    from qqresults.model import Result, Run
+    st = FileStore(tmp_path)
+    for attempt, finished, ok in ((1, "2026-10-04T10:00:00Z", False), (2, "2026-10-04T10:05:00Z", True)):
+        run = Run(id=f"github/quirq-ai/xo-space/77/{attempt}/presubmit", repo="quirq-ai/xo-space",
+                  kind="postsubmit", commit="c1", backend="github", attempt=attempt,
+                  finished_at=finished, job_status="success" if ok else "failure")
+        rs = [Result(run_id=run.id, test_id="t::a", status="PASS" if ok else "FAIL", expected=ok)]
+        st.put(bundle.Bundle(run, rs, verdict.compute(run, rs)))
+    card = scorecard.compute(st, SINCE, UNTIL)
+    m = metric(card, "quirq-ai/xo-space", "Main-red time")
+    assert m.value == 0.0 and "red now" not in m.detail
+    assert metric(card, "quirq-ai/xo-space", "Flake rate").value == 100.0
+
+
+def test_gate_p90_is_a_field(tmp_path):
+    card = scorecard.compute(seeded(tmp_path), SINCE, UNTIL)
+    assert metric(card, "quirq-ai/xo-space", "Gate time-to-green").extra == {"p50": 15.0, "p90": 19.0}

@@ -41,7 +41,8 @@ class Metric:
     value: float | None = None
     unit: str = ""
     detail: str = ""
-    waiting_on: str = ""       # why it is not measured yet, naming the item that will measure it
+    waiting_on: str = ""
+    extra: dict[str, float] = field(default_factory=dict)   # e.g. p90 next to a p50 value       # why it is not measured yet, naming the item that will measure it
 
     @property
     def measured(self) -> bool:
@@ -74,6 +75,14 @@ def _percentile(values: list[float], pct: int) -> float:
     return statistics.quantiles(values, n=100, method="inclusive")[pct - 1]
 
 
+def job_key(run: Run) -> str:
+    """The run's id without its attempt number, so attempts of one job share a key."""
+    parts = run.id.split("/")
+    if run.backend == "github" and len(parts) >= 6 and parts[4] == str(run.attempt):
+        return "/".join(parts[:4] + parts[5:])   # github/<owner>/<repo>/<run>/<attempt>/<job>[/name]
+    return run.id
+
+
 def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
     m = Metric("Gate time-to-green", "P1: p50 under 15 min, p90 under 30 min", unit="min")
     minutes = [(parse_time(r.finished_at) - parse_time(r.queued_at)).total_seconds() / 60
@@ -82,26 +91,36 @@ def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
         m.waiting_on = "V0-GAT-04 records queue-entry time on gate runs"
         return m
     m.value = round(_percentile(sorted(minutes), 50), 1)
-    m.detail = f"p50 {m.value} / p90 {round(_percentile(sorted(minutes), 90), 1)} over {len(minutes)} gate runs"
+    m.extra = {"p50": m.value, "p90": round(_percentile(sorted(minutes), 90), 1)}
+    m.detail = f"p50 {m.value} / p90 {m.extra['p90']} over {len(minutes)} gate runs"
     return m
 
 
 def main_red(runs: list[tuple[Run, Verdict]], since: dt.datetime, until: dt.datetime) -> Metric:
-    """Minutes main spent red: from the first red post-submit commit to the next green one."""
+    """Minutes main spent red: from the first red post-submit commit to the next green one.
+
+    Only runs inside the window are read, so a red that began before it counts from the window's
+    first red run. TODO(expert): carry main's state across the window edge.
+    """
     m = Metric("Main-red time", "under 60 min/week", unit="min/week")
-    commits: dict[str, list[tuple[Run, Verdict]]] = defaultdict(list)
+    commits: dict[str, dict[str, tuple[Run, Verdict]]] = defaultdict(dict)
     for r, v in runs:
-        if r.kind == RunKind.POSTSUBMIT and r.finished_at and red(r, v) is not None:
-            commits[r.commit].append((r, v))
+        if r.kind != RunKind.POSTSUBMIT or not r.finished_at or red(r, v) is None:
+            continue
+        # A re-run of a failed job replaces it: keep only the latest attempt of each job.
+        jobs = commits[r.commit]
+        key = job_key(r)
+        if key not in jobs or (r.attempt, r.finished_at) > (jobs[key][0].attempt, jobs[key][0].finished_at):
+            jobs[key] = (r, v)
     if not commits:
         m.waiting_on = "post-submit runs that store results (the sink on each repo's main)"
         return m
     # A commit is red as soon as its first job fails, and green once its last job has passed.
     ordered = []
     for jobs in commits.values():
-        reds = [parse_time(r.finished_at) for r, v in jobs if red(r, v)]
+        reds = [parse_time(r.finished_at) for r, v in jobs.values() if red(r, v)]
         ordered.append((min(reds), False) if reds
-                       else (max(parse_time(r.finished_at) for r, _ in jobs), True))
+                       else (max(parse_time(r.finished_at) for r, _ in jobs.values()), True))
     ordered.sort()
     red_since = None
     total = 0.0
@@ -109,10 +128,10 @@ def main_red(runs: list[tuple[Run, Verdict]], since: dt.datetime, until: dt.date
         if not green and red_since is None:
             red_since = at
         elif green and red_since is not None:
-            total += (min(at, until) - max(red_since, since)).total_seconds()
+            total += (at - red_since).total_seconds()
             red_since = None
     if red_since is not None:
-        total += (until - max(red_since, since)).total_seconds()
+        total += (until - red_since).total_seconds()
     weeks = max((until - since).total_seconds() / (7 * 86400), 1 / 7)
     m.value = round(max(total, 0) / 60 / weeks, 1)
     m.detail = f"{len(ordered)} post-submit commits" + ("; main is red now" if red_since else "")
@@ -120,14 +139,24 @@ def main_red(runs: list[tuple[Run, Verdict]], since: dt.datetime, until: dt.date
 
 
 def flake_rate(runs: list[tuple[Run, Verdict]]) -> Metric:
+    """Runs that passed only on retry: a FLAKY test inside the run (V0-TST-03), or a job that
+    failed and then passed when re-run on the same commit (a later attempt)."""
     m = Metric("Flake rate", "under 1%", unit="%")
-    verifying = [(r, v) for r, v in runs if r.kind in VERIFYING and r.job_status != "cancelled"]
+    verifying = [(r, v) for r, v in runs if r.kind in VERIFYING and red(r, v) is not None]
     if not verifying:
         m.waiting_on = "presubmit, gate or post-submit runs in the store"
         return m
-    flaky = sum(1 for _, v in verifying if v.counts.get(VerdictStatus.FLAKY.value))
-    m.value = round(100 * flaky / len(verifying), 2)
-    m.detail = f"{flaky} of {len(verifying)} runs passed only on retry"
+    attempts: dict[tuple[str, str], list[tuple[Run, Verdict]]] = defaultdict(list)
+    for r, v in verifying:
+        attempts[(job_key(r), r.commit)].append((r, v))
+    flaky = 0
+    for tries in attempts.values():
+        tries.sort(key=lambda rv: rv[0].attempt)
+        rerun_fixed = len(tries) > 1 and red(*tries[0]) and not red(*tries[-1])
+        in_run = any(v.counts.get(VerdictStatus.FLAKY.value) for _, v in tries)
+        flaky += bool(rerun_fixed or in_run)
+    m.value = round(100 * flaky / len(attempts), 2)
+    m.detail = f"{flaky} of {len(attempts)} runs passed only on retry"
     return m
 
 

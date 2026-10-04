@@ -36,7 +36,7 @@ class RunFilter:
     commit: str = ""
     branch: str = ""
     change: int | None = None
-    since: str = ""            # RFC 3339; compared with the run's finished_at
+    since: str = ""            # RFC 3339 in UTC ("...Z"); compared with the run's finished_at
     failed: bool | None = None
 
     def matches(self, run: Run, verdict: Verdict | None) -> bool:
@@ -119,7 +119,11 @@ class FileStore:
         path = self.runs_dir / bundle.dirname(Run(id=run_id, repo="", kind="", commit=""))
         if not (path / bundle.RUN).is_file():
             raise StoreError(f"run {run_id} is not in the store at {self.root}")
-        return bundle.read(path)
+        b = bundle.read(path)
+        if b.run.id != run_id:
+            raise StoreError(f"run {run_id} is not in the store at {self.root} "
+                             f"({path.name} holds run {b.run.id})")
+        return b
 
     def results(self, run_id: str) -> list[Result]:
         return self.bundle(run_id).results

@@ -128,3 +128,24 @@ def test_collect_refuses_zip_slip(tmp_path):
 
     _, _, errors = github.collect("o/x", FileStore(tmp_path), "", get=get)
     assert "unsafe path" in errors[0]
+
+
+def test_bundle_lookup_checks_the_run_id(tmp_path):
+    st = FileStore(tmp_path)
+    st.put(make("x y"))
+    with pytest.raises(StoreError, match="holds run x y"):
+        st.bundle("x_y")
+
+
+def test_collect_cli_warns_and_keeps_going(tmp_path, capsys, monkeypatch):
+    def broken(repo, store, token):
+        if repo == "o/bad":
+            raise github.GitHubAPIError("HTTP 404")
+        return 1, 0, ["o/x artifact z: not a zip archive"]
+    monkeypatch.setattr(github, "collect", broken)
+    args = ["collect", "--store", str(tmp_path), "--repo", "o/bad", "--repo", "o/x"]
+    assert cli.main(args) == 0
+    assert cli.main(args + ["--strict"]) == 1
+    captured = capsys.readouterr()
+    assert "o/x: 1 new, 0 already stored, 1 skipped" in captured.out
+    assert "warning: o/bad: HTTP 404" in captured.err

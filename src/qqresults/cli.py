@@ -75,12 +75,23 @@ def cmd_collect(args) -> int:
     token = os.environ.get("GITHUB_TOKEN", "")
     failed = False
     for repo in args.repo:
-        new, old, errors = gh.collect(repo, st, token)
-        print(f"{repo}: {new} new run(s), {old} already stored")
+        try:
+            new, old, errors = gh.collect(repo, st, token)
+        except Error as e:   # one repo failing to list must not hide the others
+            new, old, errors = 0, 0, [f"{repo}: {e}"]
+        print(f"{repo}: {new} new, {old} already stored, {len(errors)} skipped")
         for e in errors:
-            print(f"qqresults: {e}", file=sys.stderr)
+            print(f"qqresults: warning: {e}", file=sys.stderr)
         failed |= bool(errors)
-    return 1 if failed else 0
+    # A bad artifact is skipped with a warning so it cannot block every later collection.
+    return 1 if failed and args.strict else 0
+
+
+def _utc(text: str) -> str:
+    try:
+        return scorecard.fmt_time(scorecard.parse_time(text))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not an RFC 3339 time: {text!r}") from None
 
 
 def _filter(args) -> store.RunFilter:
@@ -109,8 +120,8 @@ def cmd_query(args) -> int:
         if not args.test:
             raise SystemExit("qqresults query history: --test is required")
         for run, r in st.history(args.test, _filter(args)):
-            print(json.dumps({"run_id": run.id, "commit": run.commit, "status": r.status},
-                             sort_keys=True) if args.json
+            print(json.dumps({"run": run.to_dict(), "result": r.to_dict()}, sort_keys=True)
+                  if args.json
                   else f"{run.finished_at}  {r.status:<6} {run.kind:<10} {run.commit[:12]}  {run.id}")
     return 0
 
@@ -160,6 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
     co = sub.add_parser("collect", help="add the bundles GitHub kept as workflow artifacts")
     co.add_argument("--store", required=True)
     co.add_argument("--repo", action="append", required=True, metavar="OWNER/NAME")
+    co.add_argument("--strict", action="store_true", help="exit 1 if any artifact was skipped")
     co.set_defaults(func=cmd_collect)
 
     q = sub.add_parser("query", help="read the results store")
@@ -170,7 +182,7 @@ def build_parser() -> argparse.ArgumentParser:
     q.add_argument("--commit", help="a commit or its prefix")
     q.add_argument("--branch")
     q.add_argument("--change", type=int, help="a PR number")
-    q.add_argument("--since", help="RFC 3339 time, e.g. 2026-10-01T00:00:00Z")
+    q.add_argument("--since", type=_utc, help="RFC 3339 time, e.g. 2026-10-01T00:00:00Z")
     q.add_argument("--failed", action="store_true", help="runs: only failed ones")
     q.add_argument("--run", help="results: the run id")
     q.add_argument("--unexpected", action="store_true", help="results: only unexpected ones")

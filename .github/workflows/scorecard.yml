@@ -40,12 +40,14 @@ jobs:
           qqresults collect --store .qq/store
           --repo quirq-ai/test-pipelines --repo quirq-ai/xo-space --repo quirq-ai/innernet
       - name: compute the scorecard
+        if: always()
         run: |
           qqresults scorecard --store .qq/store --days 7 \
             --repo quirq-ai/xo-space --repo quirq-ai/innernet > .qq/store/scorecard.md
           qqresults scorecard --store .qq/store --days 7 --json > .qq/store/scorecard.json
           cat .qq/store/scorecard.md >> "$GITHUB_STEP_SUMMARY"
       - name: save the store
+        if: always()      # keep what was collected even if a later step failed
         working-directory: .qq/store
         run: |
           git add -A
