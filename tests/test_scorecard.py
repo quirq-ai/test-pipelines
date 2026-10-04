@@ -1,5 +1,7 @@
 import datetime as dt
 
+import pytest
+
 from qqresults import cli, scorecard
 from qqresults.store import FileStore
 from test_store import make
@@ -48,7 +50,7 @@ def test_unmeasured_metrics_name_what_they_wait_on(tmp_path):
     assert not metric(card, "quirq-ai/innernet", "Main-red time").measured
     md = scorecard.to_markdown(card)
     assert "| Gate time-to-green | not measured |" in md
-    assert "| Cache hit rate | at least 90% (P3+) | V0-RBE-01" in md
+    assert "| Cache hit rate | at least 90% (P3+) | V0-RBE-02" in md
 
 
 def test_red_main_at_the_end_counts_until_now(tmp_path):
@@ -207,3 +209,139 @@ def test_green_runs_without_a_queue_time_are_noted(tmp_path):
     st.put(_gate_job("lint", "2026-10-04T09:05:00Z", queued="", run_no=78))
     m = gate(st)
     assert m.value == 5.0 and "1 green run(s) without a queue time" in m.detail
+
+
+def test_one_jobs_queue_time_after_its_own_finish_does_not_set_the_runs_wait(tmp_path):
+    # lint's clock is off: its queue time is after it finished, so test's queue time is used.
+    st = FileStore(tmp_path)
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z", queued="2026-10-04T09:20:00Z"))
+    st.put(_gate_job("test", "2026-10-04T09:30:00Z", queued="2026-10-04T09:10:00Z"))
+    m = gate(st)
+    assert m.value == 20.0 and "skipped" not in m.detail
+
+
+def test_a_run_whose_every_queue_time_is_late_is_skipped_not_untimed(tmp_path):
+    st = FileStore(tmp_path)
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z", queued="2026-10-04T09:20:00Z"))
+    m = gate(st)
+    assert not m.measured and m.detail == "1 run(s) queued after they finished, skipped"
+
+
+def _push(st, rid, commit, before, finished, fail=False, **run):
+    from qqresults import bundle, verdict
+    from qqresults.model import Run
+    b = make(rid, commit=commit, finished=finished, fail=fail)
+    data = {**b.run.to_dict(), "base_commit": before, **run}
+    if before is None:
+        del data["base_commit"]              # a record written without the field
+    r = Run.from_dict(data)
+    results = b.results if r.results_found else []
+    st.put(bundle.Bundle(r, results, verdict.compute(r, results)))
+
+
+def _slow_green_on_an_older_commit(st, before=lambda b: b):
+    # c1's job is slow and passes at 10:30; c2 (pushed on top of c1) is red at 10:00; c3 fixes
+    # it at 10:45. Main was red from 10:00 to 10:45, even though c1 went green in between.
+    _push(st, "p1", "c1", before("c0"), "2026-10-04T10:30:00Z")
+    _push(st, "p2", "c2", before("c1"), "2026-10-04T10:00:00Z", fail=True)
+    _push(st, "p3", "c3", before("c2"), "2026-10-04T10:45:00Z")
+
+
+def test_main_red_follows_the_push_chain_not_finish_times(tmp_path):
+    st = FileStore(tmp_path)
+    _slow_green_on_an_older_commit(st)
+    m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Main-red time")
+    assert m.value == 45.0 and m.detail == "3 post-submit commits"
+
+
+def test_a_red_streak_starts_at_its_earliest_red_not_its_first_in_push_order(tmp_path):
+    # c1 is red at 10:30, c2 (pushed on top of it) is red already at 10:00, c3 fixes it at 11:00.
+    st = FileStore(tmp_path)
+    _push(st, "p1", "c1", "c0", "2026-10-04T10:30:00Z", fail=True)
+    _push(st, "p2", "c2", "c1", "2026-10-04T10:00:00Z", fail=True)
+    _push(st, "p3", "c3", "c2", "2026-10-04T11:00:00Z")
+    m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Main-red time")
+    assert m.value == 60.0
+
+
+def test_without_a_push_chain_main_red_falls_back_to_finish_times_and_says_so(tmp_path):
+    st = FileStore(tmp_path)
+    _slow_green_on_an_older_commit(st, before=lambda b: None)   # older records: no base_commit
+    m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Main-red time")
+    assert m.value == 30.0 and "push chain unknown, ordered by job finish time" in m.detail
+
+
+def test_a_cancelled_push_still_links_the_chain(tmp_path):
+    st = FileStore(tmp_path)
+    _push(st, "p1", "c1", "c0", "2026-10-04T10:30:00Z")
+    _push(st, "p2", "c2", "c1", "2026-10-04T10:00:00Z", fail=True)
+    _push(st, "p3", "c3", "c2", "2026-10-04T10:20:00Z", results_found=False, job_status="cancelled")
+    _push(st, "p4", "c4", "c3", "2026-10-04T10:45:00Z")
+    m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Main-red time")
+    assert m.value == 45.0 and m.detail == "3 post-submit commits"
+
+
+@pytest.mark.parametrize("pushes", [
+    [("c1", "c0"), ("c2", "c1"), ("c3", "c1")],      # a force push: two pushes from c1
+    [("c1", "c0"), ("c2", "c1"), ("c3", "")],        # a dispatched run: no before
+    [("c1", "c0"), ("c3", "c2")],                     # a push the store has no run of
+])
+def test_a_broken_push_chain_is_not_trusted(tmp_path, pushes):
+    st = FileStore(tmp_path)
+    for i, (commit, before) in enumerate(pushes):
+        _push(st, f"p{i}", commit, before, f"2026-10-04T1{i}:00:00Z", fail=i == 0)
+    m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Main-red time")
+    assert m.value == 60.0 and "push chain unknown" in m.detail
+
+
+def test_a_newer_green_before_an_older_red_is_not_negative_red_time(tmp_path):
+    st = FileStore(tmp_path)
+    _push(st, "p1", "c1", "c0", "2026-10-04T10:30:00Z", fail=True)   # slow, red
+    _push(st, "p2", "c2", "c1", "2026-10-04T10:10:00Z")              # already green
+    m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Main-red time")
+    assert m.value == 0.0 and "red now" not in m.detail
+
+
+def test_stored_runs_of_unknown_status_are_not_waiting_on_runs(tmp_path):
+    from qqresults import bundle, verdict
+    from qqresults.model import Run
+    st = FileStore(tmp_path)
+    for rid, kind in (("pr", "presubmit"), ("post", "postsubmit")):
+        # No test results and no job status (a sink before job status was recorded, say).
+        run = Run(id=rid, repo="quirq-ai/innernet", kind=kind, commit="c1",
+                  finished_at="2026-10-04T09:00:00Z", results_found=False)
+        st.put(bundle.Bundle(run, [], verdict.compute(run, [])))
+    card = scorecard.compute(st, SINCE, UNTIL)
+    for name, stored in (("Presubmit runs passed", "1 presubmit runs stored, status unknown"),
+                         ("Post-submit runs passed", "1 postsubmit runs stored, status unknown"),
+                         ("Main-red time", "1 postsubmit runs stored, status unknown"),
+                         ("Flake rate", "2 presubmit, gate and post-submit runs stored, status unknown")):
+        m = metric(card, "quirq-ai/innernet", name)
+        assert not m.measured and m.detail.startswith(stored) and not m.waiting_on, name
+    md = scorecard.to_markdown(card)
+    assert "runs stored, status unknown" in md and "waiting on presubmit runs" not in md
+    assert "waiting on post-submit runs" not in md
+    assert metric(card, "quirq-ai/innernet", "Gate runs passed").waiting_on == "gate runs in the store"
+
+
+def test_a_repo_with_no_runs_has_no_count_of_runs_without_results(tmp_path):
+    card = scorecard.compute(FileStore(tmp_path), SINCE, UNTIL, repos=["quirq-ai/innernet"])
+    m = metric(card, "quirq-ai/innernet", "Runs with no test results")
+    assert m.value is None and not m.measured and m.waiting_on
+    assert "| Runs with no test results | not measured |" in scorecard.to_markdown(card)
+    # Runs that are not presubmit, gate or post-submit (perf's) do not make it zero either.
+    st = FileStore(tmp_path / "perf")
+    st.put(make("perf1", kind="other", commit="c9", finished="2026-10-04T12:00:00Z"))
+    assert not metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space",
+                      "Runs with no test results").measured
+
+
+def test_every_not_measured_row_names_a_plan_item_or_says_there_is_none():
+    import re
+    for name, _, waiting_on in scorecard.NOT_MEASURED:
+        assert (re.match(r"V[01]-[A-Z]{3}-\d{2}\b", waiting_on)
+                or waiting_on == "TODO(suraj): no item yet"), name
+    rows = {name: w for name, _, w in scorecard.NOT_MEASURED}
+    assert rows["Pinned and mirrored deps"].startswith("V0-SYN-03")
+    assert rows["Rollback time"].startswith("V0-REL-02")
+    assert rows["Reproducibility"].startswith("V1-TCH-01")
