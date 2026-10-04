@@ -6,9 +6,11 @@ make it measurable. A metric is never shown as zero when it was not measured.
 from __future__ import annotations
 
 import datetime as dt
+import json
 import statistics
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 from qqresults import failures
 from qqresults.model import FailureKind, Run, RunKind, Verdict, VerdictStatus
@@ -58,6 +60,7 @@ class Scorecard:
     repos: dict[str, list[Metric]] = field(default_factory=dict)
     not_measured: list[Metric] = field(default_factory=list)
     skipped: int = 0           # stored records that did not read and were left out
+    collect: dict | None = None   # collect_status() of the collect before it, when given
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -412,10 +415,108 @@ def compute(store: FileStore, since: dt.datetime, until: dt.datetime,
     return card
 
 
+def collect_status(path: Path) -> dict:
+    """Whether the collect that `collect --report` logged to path read everything.
+
+    Complete only when the report reads, names at least one repo, and every pass over every
+    repo finished, listed its artifacts and skipped nothing. Artifacts refused because their run
+    is not trusted (a fork's pull request) are listed apart and never make it incomplete: they
+    are refused at every collect by design. A missing or unreadable report is incomplete: the
+    card cannot tell what collect missed, so it must not look complete."""
+    problems: list[str] = []
+    lines: dict[str, list[dict]] = defaultdict(list)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        text = ""
+        problems.append(f"no readable collect report ({type(e).__name__}): collect may not have run")
+    bad = 0
+    for line in text.splitlines():
+        try:
+            entry = json.loads(line)
+            if not (isinstance(entry, dict) and isinstance(entry.get("repo"), str)):
+                raise ValueError(line)
+        except ValueError:
+            bad += 1
+            continue
+        lines[entry["repo"]].append(entry)
+    if bad:
+        problems.append(f"{bad} line(s) of the collect report did not read")
+    if not lines and not problems:
+        problems.append("the collect report names no repo")
+    repos = []
+    for repo, entries in sorted(lines.items()):
+        # One repo may be collected in several passes (several collect calls): each pass logs
+        # a start and a finish, and the repo is incomplete if any pass was.
+        done = [e for e in entries if e.get("finished") is True]
+        started = len(entries) - len(done)
+        reasons = [m for e in done for m in _reasons(e, "skipped")]
+        refused = [m for e in done for m in _reasons(e, "refused", missing_ok=True)]
+        repos.append({"repo": repo, "finished": len(done) >= max(started, 1),
+                      "listed": all(e.get("listed", True) is True for e in done),
+                      "skipped": len(reasons), "reasons": reasons,
+                      "refused": len(refused), "refused_reasons": refused})
+    complete = not problems and all(r["finished"] and r["listed"] and not r["skipped"]
+                                    for r in repos)
+    return {"complete": complete, "problems": problems, "repos": repos}
+
+
+def _reasons(entry: dict, key: str, missing_ok: bool = False) -> list[str]:
+    value = entry.get(key)
+    if value is None and missing_ok:
+        return []
+    if not isinstance(value, list):
+        return [f"unreadable {key} list"]
+    return [" ".join(str(m).split()) for m in value]
+
+
+MAX_REASONS = 5   # per repo on the card; --json keeps them all
+MAX_REASON_CHARS = 300
+
+
+def _code(reason: str) -> str:
+    """A reason as inert inline code: it can carry an uploaded artifact's name."""
+    text = reason.replace("`", "'")
+    return f"`{text[:MAX_REASON_CHARS]}{'...' if len(text) > MAX_REASON_CHARS else ''}`"
+
+
+def _listed(reasons: list[str]) -> str:
+    more = len(reasons) - MAX_REASONS
+    return "; ".join(map(_code, reasons[:MAX_REASONS])) + (f"; and {more} more" if more > 0 else "")
+
+
+def collect_markdown(status: dict) -> list[str]:
+    refused = [f"- {r['repo']}: {r['refused']} artifact(s) refused (not trusted): "
+               + _listed(r["refused_reasons"]) for r in status["repos"] if r.get("refused")]
+    if refused:
+        refused = ["Refused by policy, not missed: runs collect does not trust, such as a fork's "
+                   "pull request, are never stored.", ""] + refused + [""]
+    if status["complete"]:
+        return [f"Collect complete: every trusted artifact of {len(status['repos'])} repo(s) "
+                "was read.", ""] + refused
+    lines = ["## Collect incomplete", "",
+             "The collect before this card did not read everything, so the runs it missed are "
+             "not counted below and this card is partial. A skip from an API error, such as a "
+             "rate limit, is retried by the next collect.", ""]
+    lines += [f"- {p}" for p in status["problems"]]
+    for r in status["repos"]:
+        if not r["finished"]:
+            lines.append(f"- {r['repo']}: collect did not finish")
+        if not r["listed"]:
+            lines.append(f"- {r['repo']}: its artifacts could not be listed: "
+                         + _listed(r["reasons"]))
+        elif r["skipped"]:
+            lines.append(f"- {r['repo']}: {r['skipped']} artifact(s) skipped: "
+                         + _listed(r["reasons"]))
+    return lines + [""] + refused
+
+
 def to_markdown(card: Scorecard) -> str:
     lines = [f"# quirq infra scorecard v0", "",
              f"Window {card.since} to {card.until}, generated {card.generated_at} from the results store.",
              ""]
+    if card.collect is not None:
+        lines += collect_markdown(card.collect)
     if card.skipped:
         lines += [f"{card.skipped} stored record(s) could not be read and were left out.", ""]
     if not card.repos:

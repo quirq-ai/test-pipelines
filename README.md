@@ -85,12 +85,14 @@ repo's presubmit, gate or post-submit runs. Importing a run that is already stor
 importing different bytes for the same run is an error.
 
 ```sh
-git fetch origin results && git worktree add .qq/store FETCH_HEAD
+git fetch origin +refs/heads/results:refs/remotes/origin/results && git worktree add .qq/store refs/remotes/origin/results
 qqresults query runs --store .qq/store --repo quirq-ai/xo-space --kind postsubmit --failed
 qqresults query results --store .qq/store --run <run id> --unexpected
 qqresults query history --store .qq/store --test 'tests.test_greet::test_hello'
 qqresults scorecard --store .qq/store --days 7          # --json for machines
 qqresults collect --store .qq/store --repo quirq-ai/xo-space   # needs GITHUB_TOKEN
+qqresults collect --store .qq/store --repo quirq-ai/xo-space --report r.jsonl \
+  && qqresults scorecard --store .qq/store --collect-report r.jsonl   # "Collect incomplete" on skips
 ```
 
 Scorecard v0 measures, per repo: gate time-to-green p50/p90 (gate runs carry their queue-entry
@@ -107,6 +109,33 @@ listed as not measured, with the work item (quirq-infra v0 or v1) that will meas
 `TODO(suraj): no item yet`; nothing unmeasured shows as zero. A metric whose runs are stored but
 say nothing (cancelled, or no results and no job status) is not measured and says "runs stored,
 status unknown" rather than waiting on runs.
+
+### A partial collect says so
+
+`collect` skips an artifact it cannot read (an API error such as a rate-limited 403, a bad
+archive, a bundle that fails its checks) with a warning, so one bad artifact cannot block the
+others, and a repo whose artifacts cannot be listed does not stop the next repo. An artifact
+from a run collect does not trust (a fork's pull request, a workflow not allowed, a
+`--cross-repo` run off the default branch) is refused by policy at every collect; it is
+reported apart as "refused (not trusted)" and is not a skip, so `--strict` ignores it. The card
+must not present what is left as complete, so the scorecard workflow joins the two through one
+report:
+
+- `collect --report FILE` appends JSON lines to FILE: `{"repo", "finished": false}` for every
+  repo before any is read, then, per repo, `{"repo", "finished": true, "listed", "new",
+  "stored", "skipped": [reason, ...], "refused": [reason, ...]}`. Several collect calls share
+  one FILE, and one repo's passes are merged: it is incomplete if any pass was. It lives in the
+  runner's temp directory, never in the store, so no stale report carries over to a later card.
+- `scorecard --collect-report FILE` reads it, and the card (and `scorecard.json`'s `collect`)
+  then says either "Collect complete" or "Collect incomplete", with each repo that skipped
+  artifacts (how many, and the first five reasons), could not be listed, or did not finish.
+  Trust refusals are listed apart under either and never make it incomplete.
+  A missing or unreadable report, or one that names no repo, is incomplete too; when the
+  collect step fails, the workflow appends a `(collect step)` line that did not finish.
+
+Error messages carry no URL query, so a signed storage URL never reaches the card. The runs
+collect missed are left out of that card only: a skip from an API error is retried by
+the next collect. Without `--collect-report` the card says nothing about collect, as before.
 
 ### What collect trusts
 
@@ -262,7 +291,11 @@ is base_sha (a squash, or a one-commit rebase, with nothing queued ahead). Any o
 entry, one parent that is not base_sha, which includes a squash queue with entries ahead, is
 not compared, and its still-failing tests stay UNEXPECTED ("rebase-method queue: base not
 derivable"). An explicit `base` is one more base the failure must also fail at: it never
-replaces the run's own bases or skips this check. TODO(expert): derive the base from the PR's
+replaces the run's own bases or skips this check. It must be a full 40-hex commit id, since a
+tag can shadow a branch of the same name: with a branch or tag name, the run's bundle and
+retries are still written, but nothing is compared ("not a full 40-hex commit id; not
+compared"), so its still-failing tests stay UNEXPECTED and `fail-on-verdict` fails. Without
+`rerun`, `base` is not used. TODO(expert): derive the base from the PR's
 commits, or read the queue's merge method from the branch rules, once the org's merge queue
 and merge method are decided (ORG-03). The rerun command comes from the builder, so the core never names a runner;
 `$QQ_RETRY_TESTS` lists the failed test ids for a command that can select them. CI proves the

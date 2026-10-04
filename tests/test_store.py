@@ -263,7 +263,7 @@ def test_bundle_lookup_checks_the_run_id(tmp_path):
 def test_collect_cli_warns_and_keeps_going(tmp_path, capsys, monkeypatch):
     seen = []
 
-    def broken(repo, store, token, trust):
+    def broken(repo, store, token, trust, refused=None):
         seen.append(trust)
         if repo == "o/bad":
             raise github.GitHubAPIError("HTTP 404")

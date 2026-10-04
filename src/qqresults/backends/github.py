@@ -144,6 +144,11 @@ class GitHubAPIError(Error):
     pass
 
 
+class NotTrusted(GitHubAPIError):
+    """An artifact from a run collect does not take (a fork's pull request, a workflow not
+    allowed): refused by policy, not lost to an error, so it never makes a collect incomplete."""
+
+
 class NeedsDeletion(Error):
     """A public issue holds a record that now looks security-related. Editing it does not
     remove the text (edit history, timeline, notification emails), so a person must delete it."""
@@ -177,9 +182,9 @@ def _request(url: str, token: str, accept: str = "application/vnd.github+json") 
         if e.code in (301, 302, 303, 307, 308):
             return e.code, dict(e.headers), b""
         raise GitHubAPIError(
-            f"GET {url}: HTTP {e.code} {e.reason}{_rate_limited(e.headers)}") from None
+            f"GET {_no_query(url)}: HTTP {e.code} {e.reason}{_rate_limited(e.headers)}") from None
     except urllib.error.URLError as e:
-        raise GitHubAPIError(f"GET {url}: {e.reason}") from None
+        raise GitHubAPIError(f"GET {_no_query(url)}: {e.reason}") from None
 
 
 def _rate_limited(headers) -> str:
@@ -198,6 +203,12 @@ def _rate_limited(headers) -> str:
     return f" (rate limited{when})"
 
 
+def _no_query(url: str) -> str:
+    """The URL for an error message: without its query, which for a storage redirect is a
+    signed, time-limited grant (sig=...) that must not reach logs or the public store."""
+    return url.split("?", 1)[0]
+
+
 def _utc(epoch: str) -> str:
     try:
         return dt.datetime.fromtimestamp(int(epoch), dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -211,7 +222,7 @@ def http_get(url: str, token: str) -> bytes:
     if status in (301, 302, 303, 307, 308):
         location = headers.get("Location") or headers.get("location")
         if not location:
-            raise GitHubAPIError(f"GET {url}: redirect without a Location")
+            raise GitHubAPIError(f"GET {_no_query(url)}: redirect without a Location")
         status, _, body = _request(location, "", accept="*/*")
     return body
 
@@ -316,9 +327,9 @@ def _get_json(url: str, token: str, get) -> dict:
     try:
         data = json.loads(get(url, token))
     except ValueError:
-        raise GitHubAPIError(f"GET {url}: not JSON") from None
+        raise GitHubAPIError(f"GET {_no_query(url)}: not JSON") from None
     if not isinstance(data, dict):
-        raise GitHubAPIError(f"GET {url}: not a JSON object")
+        raise GitHubAPIError(f"GET {_no_query(url)}: not a JSON object")
     return data
 
 
@@ -333,13 +344,13 @@ def _origin(repo: str, art: dict, trust: Trust, token: str, get, runs: dict,
     run = runs[run_id]
     head_repo = (run.get("head_repository") or {}).get("full_name")
     if head_repo != repo:
-        raise GitHubAPIError(f"workflow run {run_id} ran code from {_short(head_repo)}, not "
-                             f"{repo} (a fork's pull request?); only {repo}'s own runs are stored")
+        raise NotTrusted(f"workflow run {run_id} ran code from {_short(head_repo)}, not "
+                         f"{repo} (a fork's pull request?); only {repo}'s own runs are stored")
     path = str(run.get("path") or "").split("@", 1)[0]
     # fnmatch's * also matches /, so a glob covers subdirectories too.
     if not any(fnmatch.fnmatchcase(path, g) for g in trust.globs(repo)):
-        raise GitHubAPIError(f"workflow run {run_id} is from {_short(path)}, which is not an "
-                             "allowed workflow (--workflow)")
+        raise NotTrusted(f"workflow run {run_id} is from {_short(path)}, which is not an "
+                         "allowed workflow (--workflow)")
     attempts = _int(run.get("run_attempt"))
     if attempts < 1:
         raise GitHubAPIError(f"workflow run {run_id}: no run_attempt")
@@ -355,10 +366,10 @@ def _origin(repo: str, art: dict, trust: Trust, token: str, get, runs: dict,
         if isinstance(prs, list) else ()
     if repo in trust.cross_repo and (event not in CROSS_REPO_EVENTS or not on_default):
         # A cross-repo source may name any repo, so it is held to its trusted uploader runs only.
-        raise GitHubAPIError(f"{repo} is a --cross-repo source: only its "
-                             f"{', '.join(CROSS_REPO_EVENTS)} runs of a commit on the default "
-                             f"branch are stored, not workflow run {run_id} ({event or 'unknown'} "
-                             f"of {_short(sha)} on {_short(branch)})")
+        raise NotTrusted(f"{repo} is a --cross-repo source: only its "
+                         f"{', '.join(CROSS_REPO_EVENTS)} runs of a commit on the default "
+                         f"branch are stored, not workflow run {run_id} ({event or 'unknown'} "
+                         f"of {_short(sha)} on {_short(branch)})")
     return Origin(repo=repo, run_id=run_id, attempts=attempts, event=event, path=path,
                   head_branch=branch, head_sha=sha, on_default=on_default, pull_requests=numbers,
                   created_at=_rfc3339_utc(str(run.get("created_at") or "")),
@@ -605,12 +616,14 @@ def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: T
 
 
 def collect(repo: str, store, token: str, get=http_get, trust: Trust = Trust(),
-            now: dt.datetime | None = None) -> tuple[int, int, list[str]]:
+            now: dt.datetime | None = None,
+            refused: list[str] | None = None) -> tuple[int, int, list[str]]:
     """Import every result bundle and failure record that the repo's trusted runs kept.
 
     Returns (new, already stored, errors). One bad artifact is reported and skipped, so it does
-    not hide the others. A public repo's artifacts can be read with any token, including another
-    repo's GITHUB_TOKEN.
+    not hide the others. With a refused list, artifacts from runs collect does not trust
+    (NotTrusted) go there instead of into errors: they are policy, not something collect missed.
+    A public repo's artifacts can be read with any token, including another repo's GITHUB_TOKEN.
     """
     new = old = 0
     now = now or dt.datetime.now(dt.UTC)
@@ -652,7 +665,8 @@ def collect(repo: str, store, token: str, get=http_get, trust: Trust = Trust(),
         except _LinksWaiting:
             waiting.append(art)
         except Error as e:
-            errors.append(f"{repo} artifact {art.get('name')}: {e}")
+            (refused if isinstance(e, NotTrusted) and refused is not None else errors).append(
+                f"{repo} artifact {art.get('name')}: {e}")
             if isinstance(e, OrphanLinks):
                 store.mark_artifact(f"{art['name']}-{art.get('id', '')}")
 
@@ -692,7 +706,7 @@ def api(method: str, url: str, token: str, body: dict | None = None) -> tuple[in
     except urllib.error.HTTPError as e:
         return e.code, None
     except urllib.error.URLError as e:
-        raise GitHubAPIError(f"{method} {url}: {e.reason}") from None
+        raise GitHubAPIError(f"{method} {_no_query(url)}: {e.reason}") from None
 
 
 def _find_issues(repo: str, fid: str, token: str, call) -> list[dict]:

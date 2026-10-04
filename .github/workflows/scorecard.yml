@@ -24,10 +24,11 @@ jobs:
         with:
           python-version: "3.14"
       - run: echo "$GITHUB_WORKSPACE/tools/bin" >> "$GITHUB_PATH"   # qqresults from source
+      # Full ref names: a bare `results` would match a tag of that name first.
       - name: open the store (results branch)
         run: |
-          if git fetch --depth 1 origin results; then
-            git worktree add -B results .qq/store FETCH_HEAD
+          if git fetch --depth 1 origin +refs/heads/results:refs/remotes/origin/results; then
+            git worktree add -B results .qq/store refs/remotes/origin/results
           else
             git worktree add --orphan -b results .qq/store
           fi
@@ -37,21 +38,33 @@ jobs:
       # the generated builders (qq-*.yml), this repo's presubmit and failure demo, and perf's
       # runs, which name the measured repo with kind other. perf-publish.yml is perf's only
       # uploader: perf.yml runs product code, which could upload into its own run.
+      # Each collect logs what it read and skipped to one report outside the store; the card
+      # says "Collect incomplete" when any repo skipped an artifact or did not finish (README).
       - name: collect result bundles
+        id: collect
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          REPORT: ${{ runner.temp }}/collect-report.jsonl
         run: |
-          qqresults collect --store .qq/store --repo quirq-ai/xo-space --repo quirq-ai/innernet
-          qqresults collect --store .qq/store --repo quirq-ai/test-pipelines \
+          qqresults collect --store .qq/store --report "$REPORT" \
+            --repo quirq-ai/xo-space --repo quirq-ai/innernet
+          qqresults collect --store .qq/store --report "$REPORT" --repo quirq-ai/test-pipelines \
             --workflow .github/workflows/presubmit.yml --workflow .github/workflows/failure-demo.yml
-          qqresults collect --store .qq/store --repo quirq-ai/perf --cross-repo quirq-ai/perf \
+          qqresults collect --store .qq/store --report "$REPORT" \
+            --repo quirq-ai/perf --cross-repo quirq-ai/perf \
             --workflow .github/workflows/perf-publish.yml
       - name: compute the scorecard
         if: always()
+        env:
+          REPORT: ${{ runner.temp }}/collect-report.jsonl
+          COLLECT: ${{ steps.collect.outcome }}
         run: |
-          qqresults scorecard --store .qq/store --days 7 \
+          # A collect step that failed before logging its later repos must not read as complete.
+          [ "$COLLECT" = success ] || echo '{"repo": "(collect step)", "finished": false}' >> "$REPORT"
+          qqresults scorecard --store .qq/store --days 7 --collect-report "$REPORT" \
             --repo quirq-ai/xo-space --repo quirq-ai/innernet > .qq/store/scorecard.md
-          qqresults scorecard --store .qq/store --days 7 --json > .qq/store/scorecard.json
+          qqresults scorecard --store .qq/store --days 7 --collect-report "$REPORT" --json \
+            > .qq/store/scorecard.json
           cat .qq/store/scorecard.md >> "$GITHUB_STEP_SUMMARY"
       - name: save the store
         if: always()      # keep what was collected even if a later step failed
@@ -62,4 +75,4 @@ jobs:
           git -c user.name="github-actions[bot]" \
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
               commit -q -m "results: collect at ${GITHUB_SHA::12} (run ${GITHUB_RUN_ID})"
-          git push origin results
+          git push origin HEAD:refs/heads/results
