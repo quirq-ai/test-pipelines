@@ -184,10 +184,19 @@ def _import_artifact(repo: str, art: dict, store, token: str, get) -> bool:
 
 
 def _check_origin(repo: str, path: Path) -> None:
-    """A repo's artifacts may describe another repo's code only as kind "other" (perf runs do),
-    so one repo's workflows cannot add runs that the scorecard counts for another."""
+    """One repo's workflows must not add or hide runs the scorecard counts for another.
+
+    The run id must be one this repo's jobs produce (run_from_env), so it cannot take another
+    repo's id first and make the write-once store skip the real run. A run may name another
+    repo's code only as kind "other" (perf runs do). Repo names compare exactly, as GitHub
+    reports them, so one repo's metrics are never split across spellings.
+    """
     run = bundle.read(path).run
-    if run.repo.lower() != repo.lower() and run.kind != RunKind.OTHER.value:
+    if not (isinstance(run.id, str) and isinstance(run.repo, str) and isinstance(run.kind, str)):
+        raise GitHubAPIError("run.json: id, repo and kind must be strings")
+    if not run.id.startswith(f"github/{repo}/"):
+        raise GitHubAPIError(f"run {run.id} was found in {repo} but is not one of its runs")
+    if run.repo != repo and run.kind != RunKind.OTHER.value:
         raise GitHubAPIError(f"run {run.id} is for {run.repo} but was found in {repo}; "
                              "only kind 'other' may name another repo")
 

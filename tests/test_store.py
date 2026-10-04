@@ -167,3 +167,41 @@ def test_collect_refuses_runs_one_repo_files_for_another(tmp_path):
     new, old, errors = github.collect("o/perf", st, "tok", get=get)
     assert (new, old) == (1, 0) and len(errors) == 1 and "only kind 'other'" in errors[0]
     assert [r.kind for r, _ in st.runs()] == ["other"]
+
+
+def _collect_zips(st, repo, zips):
+    listing = {"artifacts": [{"name": n, "expired": False, "archive_download_url": f"https://dl/{i}"}
+                             for i, (n, _) in enumerate(zips)]}
+
+    def get(url, token):
+        if "/actions/artifacts" in url:
+            return json.dumps(listing).encode()
+        return zips[int(url.rsplit("/", 1)[1])][1]
+    return github.collect(repo, st, "tok", get=get)
+
+
+def test_one_repo_cannot_hide_anothers_run_by_taking_its_id(tmp_path):
+    st = FileStore(tmp_path)
+    real_id = "github/quirq-ai/xo-space/555/1/postsubmit"
+    squat = zipped(make(real_id, kind="other"))                 # uploaded by quirq-ai/perf
+    new, _, errors = _collect_zips(st, "quirq-ai/perf", [squat])
+    assert new == 0 and "not one of its runs" in errors[0]
+    new, _, errors = _collect_zips(st, "quirq-ai/xo-space", [zipped(make(real_id, fail=True))])
+    assert (new, errors) == (1, []) and not next(iter(st.runs()))[1].passed
+
+
+def test_a_malformed_run_is_skipped_not_fatal(tmp_path):
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        path = bundle.write(make("github/o/x/1/1/j", repo="o/x"), Path(tmp))
+        run = json.loads((path / "run.json").read_text())
+        (path / "run.json").chmod(0o644)
+        (path / "run.json").write_text(json.dumps({**run, "repo": None}))
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for f in bundle.FILES:
+                z.write(path / f, f)
+    ok = zipped(make("github/o/x/2/1/j", repo="o/x"))
+    new, _, errors = _collect_zips(FileStore(tmp_path), "o/x", [("qq-results-bad", buf.getvalue()), ok])
+    assert new == 1 and "must be strings" in errors[0]
