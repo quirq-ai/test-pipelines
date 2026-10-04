@@ -211,7 +211,9 @@ is printed in the log, so the text is public anyway. TODO(suraj): where private 
 
 The record id is derived from kind, repo and subject, and the issue carries the id in a hidden
 marker, so reporting the same event twice (a retried pipeline, a second runner) still gives one
-record and one issue. What is learned later is added as link records, never by rewriting:
+record and one issue. GitHub's issue list can lag behind a create, so two racing runners may
+each open one; every report closes each open issue with the marker but the lowest-numbered as a
+duplicate. What is learned later is added as link records, never by rewriting:
 
 ```sh
 qqresults failure link <id> --dir <store>/failures --culprit <owner/repo@sha> --fix <PR URL> \

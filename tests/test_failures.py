@@ -234,6 +234,63 @@ def test_racing_runners_keep_one_open_issue(tmp_path):
     assert gh.issues[1]["state_reason"] == "duplicate"
 
 
+def test_racing_runners_behind_a_lagging_list_end_with_one_open_issue(tmp_path):
+    # Audit S3: the issue list lags behind creates, so two racing runners each see only the
+    # issue they opened and keep it. The next report closes every duplicate but the lowest.
+    gh = FakeGitHub()
+    lagging = {"a": set(), "b": set()}   # the issue numbers each runner's list can see
+
+    def runner(name):
+        def call(method, url, token, body=None):
+            status, data = gh(method, url, token, body)
+            if method == "POST" and url.endswith("/issues"):
+                lagging[name].add(data["number"])
+            if method == "GET" and "/issues?" in url and name in lagging:
+                data = [i for i in data if i["number"] in lagging[name]]
+            return status, data
+        return call
+
+    a, _ = held(tmp_path / "a")
+    b, _ = held(tmp_path / "b")
+    assert github.mirror_issue(a, "o/x", "tok", call=runner("a"))[1]
+    assert github.mirror_issue(b, "o/x", "tok", call=runner("b"))[1]
+    assert [i["state"] for i in gh.issues] == ["open", "open"]      # each kept its own
+    lagging.clear()                                                  # the list has caught up
+    url, made = github.mirror_issue(b, "o/x", "tok", call=gh)
+    assert url == "https://github.com/o/x/issues/1" and not made
+    assert [i["state"] for i in gh.issues] == ["open", "closed"]
+    assert gh.issues[1]["state_reason"] == "duplicate"
+    # once the record closes, the kept issue closes as completed; the duplicate stays a duplicate
+    for field, value in (("culprit", "c0ffee1"), ("fix", "c0ffee2"), ("covering_test", "t")):
+        failures.add_link(b.path, field, value)
+    github.mirror_issue(failures.read(b.path), "o/x", "tok", call=gh)
+    assert [i["state"] for i in gh.issues] == ["closed", "closed"]
+    assert gh.issues[1]["state_reason"] == "duplicate" and "state_reason" not in gh.issues[0]
+
+
+def test_a_create_closes_duplicates_its_list_shows(tmp_path):
+    # The post-create check also closes an older duplicate that a lagging list hid before.
+    gh = FakeGitHub()
+    state, _ = held(tmp_path)
+    marker_body = failures.marker(state.record.id) + "\nolder"
+    for _ in range(2):
+        gh("POST", f"{github.API}/repos/o/x/issues", "tok",
+           {"title": "t", "body": marker_body, "labels": ["qq-failure"]})
+    hidden = {1, 2}
+
+    def lagging(method, url, token, body=None):
+        status, data = gh(method, url, token, body)
+        if method == "GET" and "/issues?" in url and hidden:
+            data = [i for i in data if i["number"] not in hidden]
+            hidden.clear()                       # only the first listing lags
+        return status, data
+
+    url, made = github.mirror_issue(state, "o/x", "tok", call=lagging)
+    assert url == "https://github.com/o/x/issues/1" and not made
+    assert [i["state"] for i in gh.issues] == ["open", "closed", "closed"]
+    assert all(i["state_reason"] == "duplicate" for i in gh.issues[1:])
+
+
 def test_only_issues_whose_body_starts_with_the_marker_match(tmp_path):
     gh = FakeGitHub()
     state, _ = held(tmp_path)

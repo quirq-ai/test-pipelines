@@ -534,6 +534,18 @@ def _patch(repo: str, issue: dict, want: dict, token: str, call) -> None:
             raise GitHubAPIError(f"{repo}#{issue['number']}: updating the issue: HTTP {status}")
 
 
+def _close_duplicates(repo: str, issues: list[dict], token: str, call) -> dict:
+    """Close every open issue but the lowest-numbered one as a duplicate; return that one.
+
+    The issue list can lag behind a create, so two racing runners may each keep the issue it
+    opened; whichever call next sees both closes the later one."""
+    keep, *rest = sorted(issues, key=lambda i: i["number"])
+    for issue in rest:
+        if issue.get("state") != "closed":
+            _patch(repo, issue, {"state": "closed", "state_reason": "duplicate"}, token, call)
+    return keep
+
+
 def _withdrawn(issue: dict) -> bool:
     """Whether mirror_issue withdrew this issue (its record looked security-related)."""
     from qqresults import failures
@@ -546,8 +558,9 @@ def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
     """Create or update the one labelled issue that mirrors a failure record.
 
     Returns (issue URL, created). The issue is found again by the marker its body starts with,
-    so a second call never opens a second issue; if two runners race and both open one, the
-    higher-numbered duplicate is closed. A security-looking record is never mirrored: it returns
+    so a second call never opens a second issue; if two runners race and both open one, every
+    call closes each open marker issue but the lowest-numbered one as a duplicate (the issue list
+    can lag a create, so one call may not see the other's issue yet). A security-looking record is never mirrored: it returns
     ("", False). An issue opened before the record looked that way has its title and body
     replaced and is closed, then NeedsDeletion is raised: the old text stays in its edit history
     and in emails already sent, so only deleting the issue (a repo admin) removes it.
@@ -574,9 +587,10 @@ def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
         return "", False
     title, body = failures.issue_title(state), failures.issue_body(state)
     if existing:
-        _patch(repo, existing[0], {"title": title, "body": body,
-                                   "state": "closed" if state.closed else "open"}, token, call)
-        return existing[0]["html_url"], False
+        keep = _close_duplicates(repo, existing, token, call)
+        _patch(repo, keep, {"title": title, "body": body,
+                            "state": "closed" if state.closed else "open"}, token, call)
+        return keep["html_url"], False
     labels = [FAILURE_LABEL, f"{FAILURE_LABEL}:{f.kind}"]
     for name in labels:
         status, _ = call("POST", f"{API}/repos/{repo}/labels", token,
@@ -589,9 +603,9 @@ def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
     if status != 201:
         raise GitHubAPIError(f"{repo}: opening the failure issue: HTTP {status} "
                              "(the token needs issues: write)")
-    # Another runner may have opened one at the same moment: keep the lowest number only.
-    now_there = _find_issues(repo, f.id, token, call)
-    if now_there and now_there[0]["number"] != created["number"]:
-        _patch(repo, created, {"state": "closed", "state_reason": "duplicate"}, token, call)
-        return now_there[0]["html_url"], False
-    return created["html_url"], True
+    # Another runner may have opened one at the same moment: keep the lowest number only. The
+    # list may not show the issue just created yet, so it is added from the create's response.
+    now_there = {created["number"]: created,
+                 **{i["number"]: i for i in _find_issues(repo, f.id, token, call)}}
+    keep = _close_duplicates(repo, list(now_there.values()), token, call)
+    return keep["html_url"], keep["number"] == created["number"]
