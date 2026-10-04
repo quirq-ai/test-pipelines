@@ -121,7 +121,7 @@ def _collect_zips(st, repo, zips, runs=(), trust=github.Trust(), default_branch=
         if "/actions/runs/" in url:
             rid = int(url.rsplit("/", 1)[1])
             return json.dumps(by_id.get(rid) or workflow_run(rid, repo=repo)).encode()
-        if url.startswith(f"{github.API}/repos/{repo}/compare/{default_branch}..."):
+        if url.startswith(f"{github.API}/repos/{repo}/compare/refs/heads/{default_branch}..."):
             sha = url.split("...", 1)[1].split("?", 1)[0]
             return json.dumps({"status": (compare or {}).get(sha, "identical")}).encode()
         if url == f"{github.API}/repos/{repo}":
@@ -610,3 +610,39 @@ def test_scorecard_skips_a_bad_stored_record(tmp_path, capsys):
     assert "2 stored record(s) could not be read" in scorecard.to_markdown(card)
     assert cli.main(["scorecard", "--store", str(tmp_path), "--days", "7"]) == 0
     assert "warning:" in capsys.readouterr().err
+
+
+def test_the_history_check_compares_against_the_branch_not_a_tag_of_the_same_name(tmp_path):
+    fetched = []
+    b = make("github/o/x/1/1/postsubmit", kind="postsubmit")
+    _collect_zips(FileStore(tmp_path), "o/x", [zipped(b)], fetched=fetched)
+    assert any("/compare/refs/heads/main...c1" in u for u in fetched)
+
+
+def test_a_cross_repo_uploader_may_be_a_workflow_run_of_its_trusted_workflow(tmp_path):
+    trust = github.Trust(workflows=(".github/workflows/perf-publish.yml",),
+                         cross_repo=frozenset({"o/perf"}))
+    perf = zipped(make("github/o/perf/2/1/publish/xo", kind="other", commit="xo-sha"))
+    ok = [workflow_run(2, repo="o/perf", event="workflow_run", path=".github/workflows/perf-publish.yml")]
+    assert _collect_zips(FileStore(tmp_path / "a"), "o/perf", [(*perf, 2)], ok, trust) == (1, 0, [])
+    for run, why in [
+            (workflow_run(2, repo="o/perf", event="workflow_run", branch="side",
+                          path=".github/workflows/perf-publish.yml"), "--cross-repo source"),
+            (workflow_run(2, repo="o/perf", event="workflow_run",
+                          path=".github/workflows/perf.yml"), "not an allowed workflow")]:
+        _, _, errors = _collect_zips(FileStore(tmp_path / why[:3]), "o/perf", [(*perf, 2)], [run], trust)
+        assert why in errors[0]
+    # A same-repo source never takes workflow_run runs.
+    _, _, errors = _collect_zips(FileStore(tmp_path / "d"), "o/x",
+                                 [(*zipped(make("github/o/x/2/1/j", kind="postsubmit")), 2)],
+                                 [workflow_run(2, event="workflow_run")])
+    assert errors
+
+
+@pytest.mark.parametrize("fid", ["canary-rollback-0123456789abcdef", "canary-held-not-hex"])
+def test_a_digested_failure_record_must_still_have_an_id_of_its_kind(tmp_path, fid):
+    art = _failure_zip(tmp_path / "f", subject="free text", fid=fid,
+                       public_subject="sha256:0123456789abcdef")
+    st = FileStore(tmp_path / "store")
+    new, _, errors = _collect_zips(st, "o/x", [(*art, 7)], [_demo_run()], DEMO)
+    assert new == 0 and "the id does not match" in errors[0] and st.failures() == []

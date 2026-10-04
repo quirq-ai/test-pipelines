@@ -102,10 +102,10 @@ artifact's workflow run (`GET /repos/{repo}/actions/runs/{id}`, fetched once per
 - come from an allowed workflow file: `--workflow GLOB`, repeatable, by default
   `.github/workflows/qq-*.yml` (infra-config's generated builders) and
   `.github/workflows/presubmit.yml`. The `scorecard` workflow adds `failure-demo.yml` for this
-  repo and `perf.yml` for perf.
+  repo and `perf.yml` plus `perf-publish.yml` for perf.
 
 A run is on the default branch only when its head branch is the default branch's name and its
-head commit is in that branch's history (`GET /repos/{repo}/compare/{default}...{sha}` is
+head commit is in that branch's history (`GET /repos/{repo}/compare/refs/heads/{default}...{sha}` is
 `identical` or `behind`, fetched once per commit), so a tag named like the default branch is not.
 Every bundle in it must then name that run and one of its attempts in its id
 (`github/<repo>/<run id>/<attempt>/<job>`) and claim the kind its event gives: `merge_group` is
@@ -118,14 +118,15 @@ be the run's head commit, and its `number` one of the run's `pull_requests` when
 (it does for a same-repo PR). A run may name another repo only as kind `other`, from a repo given
 with `--cross-repo` (the `scorecard` workflow passes `quirq-ai/perf`). Such a source can name any
 repo, so everything from it is held to more: `--workflow` must be given (its default globs never
-apply to it, and collecting it without one is an error), and only its push, schedule and dispatch
-runs on the default branch are read; every other artifact of it is refused. The artifacts API
-does not say which job uploaded an artifact, only which workflow run, so the job is not checked:
+apply to it, and collecting it without one is an error), and only its push, schedule, dispatch
+and workflow_run runs on the default branch are read; every other artifact of it is refused. The
+artifacts API does not say which job uploaded an artifact, only which workflow run, so the job is not checked:
 a cross-repo source must upload from a workflow file of its own that holds only trusted jobs
 (no pull request triggers, no job running code under test). Failure records are taken only from
 push, schedule or dispatch runs on the default branch; the record must be for the repo, its id
 must be the one its kind, repo and subject give (unless the subject is the public
-`sha256:<16 hex>` digest of a free-text one, which cannot be checked against the id), and its
+`sha256:<16 hex>` digest of a free-text one, which cannot be checked against the id; the id must
+then still be `<kind>-<16 hex>`), and its
 `run_id` must name the run. Records are type-checked (strings,
 finite non-negative numbers, booleans, RFC 3339 UTC times like `2026-10-04T10:00:00Z`);
 artifacts over 20 MB, zipped or not, and bundles over 50,000 results are refused. Artifacts are

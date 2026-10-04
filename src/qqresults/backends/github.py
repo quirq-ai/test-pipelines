@@ -198,7 +198,9 @@ FAILURE_EVENTS = ("push", "schedule", "workflow_dispatch")
 # A failure record's public copy replaces a free-text subject with this digest of it, so its id
 # (from the raw subject) cannot be recomputed; the run-origin checks still apply.
 PUBLIC_SUBJECT = re.compile(r"sha256:[0-9a-f]{16}")
-CROSS_REPO_EVENTS = FAILURE_EVENTS       # the only events a --cross-repo source's runs may have
+# The only events a --cross-repo source's runs may have. workflow_run lets its trusted uploader be
+# a workflow of its own, started when the measuring workflow finishes (perf-publish.yml).
+CROSS_REPO_EVENTS = (*FAILURE_EVENTS, "workflow_run")
 
 
 @dataclass(frozen=True)
@@ -297,7 +299,7 @@ def _origin(repo: str, art: dict, trust: Trust, token: str, get, runs: dict,
     sha = str(run.get("head_sha") or "")
     # head_branch is only a ref's short name: a tag named like the default branch has it too, so
     # the commit must also be in the default branch's history. Only these events use on_default.
-    on_default = (event in FAILURE_EVENTS and bool(branch) and branch == default_branch()
+    on_default = (event in CROSS_REPO_EVENTS and bool(branch) and branch == default_branch()
                   and bool(sha) and in_default(sha))
     prs = run.get("pull_requests")
     numbers = tuple(_int(p.get("number")) for p in prs if isinstance(p, dict)) \
@@ -367,8 +369,9 @@ def _check_failure(origin: Origin, path: Path) -> None:
     if f.repo != origin.repo:
         raise GitHubAPIError(f"failure {_short(f.id)} is for {_short(f.repo)} but was found in "
                              f"{origin.repo}")
-    if (not (isinstance(f.subject, str) and PUBLIC_SUBJECT.fullmatch(f.subject))
-            and f.id != failures.failure_id(f.kind, f.repo, f.subject)):
+    digested = isinstance(f.subject, str) and PUBLIC_SUBJECT.fullmatch(f.subject)
+    if (f.id != failures.failure_id(f.kind, f.repo, f.subject) if not digested
+            else not re.fullmatch(rf"{re.escape(str(f.kind))}-[0-9a-f]{{16}}", str(f.id))):
         raise GitHubAPIError(f"failure {_short(f.id)}: the id does not match its kind, repo and "
                              "subject")
     origin.attempt_of(f"failure {f.id}: run", f.run_id)
@@ -405,7 +408,10 @@ def _unzip(data: bytes, dest: str) -> None:
 
 
 def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: Trust) -> bool:
-    data = get(art["archive_download_url"], token)
+    url = art.get("archive_download_url")
+    if not isinstance(url, str) or not url:
+        raise GitHubAPIError("the artifact has no archive_download_url")
+    data = get(url, token)
     if len(data) > MAX_ARTIFACT_BYTES:
         raise GitHubAPIError(f"larger than {MAX_ARTIFACT_BYTES} bytes")
     with tempfile.TemporaryDirectory() as tmp:
@@ -451,7 +457,8 @@ def collect(repo: str, store, token: str, get=http_get,
 
     def in_default(sha: str) -> bool:
         if (repo, sha) not in history:
-            base = urllib.parse.quote(default_branch(), safe="/")
+            # refs/heads/: a bare name would resolve a tag of the same name first, as git does.
+            base = urllib.parse.quote(f"refs/heads/{default_branch()}", safe="/")
             url = f"{API}/repos/{repo}/compare/{base}...{urllib.parse.quote(sha, safe='')}?per_page=1"
             # identical or behind: sha is the default branch's head or one of its ancestors.
             history[(repo, sha)] = _get_json(url, token, get).get("status") in ("identical", "behind")
