@@ -58,12 +58,13 @@ LINK_FIELDS = VALUE_LINKS + MARKS          # every field a link file may have
 #
 # Memory-safety findings (use-after-free, double free, heap/stack buffer overflow, out-of-bounds
 # read or write, sanitizer and KASAN reports) match alone. A bare crash signal or bound error
-# (CRASH_WORDS: segfault, SIGSEGV, SIGABRT, SIGBUS, integer or stack overflow, null dereference,
-# out-of-bounds index) is an ordinary crash unless the record's free text anywhere (subject,
-# summary, labels, link values) also names untrusted input (UNTRUSTED_INPUT: malformed, crafted,
-# attacker, untrusted, remote input, fuzzing) or an attack surface (ATTACK_SURFACE: tls, a
-# certificate, a decoder or parser, a codec, a packet, image decoding, a font, a protocol, an
-# allocation size), so "SIGSEGV in tls handshake" is withheld and "segfault in worker" is not.
+# (CRASH_WORDS: segfault, SIGSEGV, SIGABRT, SIGBUS, overflow, null dereference, out-of-bounds
+# index) is an ordinary crash unless the record's free text anywhere (subject, summary, labels,
+# link values) also names untrusted input (UNTRUSTED_INPUT: malformed, crafted, attacker,
+# untrusted, remote or user input, fuzzing) or an attack surface (ATTACK_SURFACE: tls, a
+# certificate, a decoder or parser, a codec or image library, a packet, http2 or grpc, a font,
+# a protocol, malloc or an allocation or buffer size), so "SIGSEGV in tls handshake" is withheld
+# and "segfault in worker" is not.
 # "parse" also matches inside test names (test_parse_args): that fails closed, on purpose.
 _SECRETS = r"(?:credential|token|secret|pass\s*word|passwd|api\s*key|ssh\s*key|private\s*key|key|pii|data)s?"
 _EXPOSED_THINGS = (r"(?:env(?:ironment)?(?:\s*var\w*)?|keys?|secrets?|endpoints?|credentials?|"
@@ -117,7 +118,7 @@ _PHRASES = (
     r"(?:skip\w*|disabl\w*|no|without)\s*(?:tls|ssl|cert\w*|hostname)\s*verif",
     r"stack\s*use\s*after\s*(?:return|scope)", r"type\s*confusion", r"dangling\s*pointer",
     r"arbitrary\s*file\s*(?:read|writ)",
-    r"(?:pickle|yaml|marshal)\s*loads?\s*(?:of\s*)?(?:\w+\s*){0,2}?untrusted",
+    r"(?:pickle|yaml|marshal)\W*loads?\W+(?:\w+\W+){0,3}?(?:untrusted|user\s*input)",
     r"untrusted\s*(?:\w+\s*){0,2}?(?:pickle|yaml|marshal)\s*load",
     r"self\s*signed\s*cert\w*\s*(?:is\s*|was\s*|were\s*)?accepted",
     r"hostname\s*(?:mismatch|verification|check)\s*(?:is\s*|was\s*)?(?:ignored|skipped|disabled)",
@@ -132,17 +133,20 @@ _PHRASES = (
 SECURITY_WORDS = re.compile("|".join(_PHRASES))
 # Ordinary crash signals that count only with UNTRUSTED_INPUT or ATTACK_SURFACE (see above).
 CRASH_WORDS = re.compile(r"segv|segfault|sigabrt|sigbus|out\s*of\s*bounds|\boob\b|"
-                         r"(?:integer|int|stack)\s*over\s*flow|null\s*(?:pointer\s*|ptr\s*)?deref")
+                         r"over\s*flow|null\s*(?:pointer\s*|ptr\s*)?deref")
 # A label (stage, signal, channel) that is itself a crash word is withheld, so a bare "segfault"
 # never shows next to a "decoder" label.
-LABEL_CRASH_WORDS = re.compile(rf"{CRASH_WORDS.pattern}|over\s*flow")
+LABEL_CRASH_WORDS = CRASH_WORDS
 UNTRUSTED_INPUT = re.compile(
-    r"malformed|crafted|attacker|untrusted|remote\s*(?:input|request|peer|attacker)|"
+    r"malformed|crafted|attacker|untrusted|remote\s*(?:input|request|peer|attacker)|user\s*input|"
+    r"large\s*request|"
     r"from\s*the\s*network|\bfuzz(?:er|ers|ing|ed)?\b")
 ATTACK_SURFACE = re.compile(
     r"\b(?:tls|ssl|handshake|libssl|openssl|boringssl|x509|certs?|certificates?|decod\w*|"
     r"pars(?:e|er|ers|ing)|codecs?|deserializ\w*|packets?|libxml\w*|"
-    r"image\s*(?:decod\w*|pars\w*|load\w*)|fonts?|media|protocols?|alloc(?:ation)?\s*size)\b")
+    r"image\s*(?:decod\w*|pars\w*|load\w*)|fonts?|media|protocols?|alloc(?:ation)?\s*size|"
+    r"libpng|png|jpe?g|webp|gif|zlib|inflate|ffmpeg|http2|unmarshal\w*|grpc|"
+    r"[mc]alloc|realloc|buffer\s*size)\b")
 
 
 def security_text(text: str) -> str:

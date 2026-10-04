@@ -779,7 +779,6 @@ def test_a_crash_word_counts_with_an_attack_surface_anywhere_in_the_record(field
 @pytest.mark.parametrize("fields", [
     {"summary": "segfault in worker"}, {"summary": "SIGABRT in test runner"},
     {"stage": "worker", "signal": "health", "summary": "segfault in worker"},
-    {"summary": "build overflowed disk | parser tests pass"},
     {"summary": "image pull failed | segfault in worker"}])
 def test_a_crash_word_without_an_attack_surface_stays_public(fields):
     assert not failures.new("canary-held", "o/x", "c0ffee0", **fields).security
@@ -806,3 +805,26 @@ def test_a_crash_word_label_is_withheld(label):
     "race condition in auth", "race condition in the authorization middleware"])
 def test_round_five_security_phrases_are_caught(text):
     assert failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
+
+
+@pytest.mark.parametrize("text", [
+    "overflow in parser on crafted input", "overflow on malformed packet",
+    "overflow in tls record length", "length overflow in decoder", "size_t overflow in png decoder",
+    "integer overflow in malloc", "integer overflow in buffer size", "segfault in libpng",
+    "segfault in zlib inflate", "segfault in json unmarshal", "SIGSEGV in http2 frame handler",
+    "segfault in grpc server on large request", "yaml.load on user input"])
+def test_overflow_and_codec_crashes_stay_private(text):
+    assert failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
+
+
+@pytest.mark.parametrize("text", [
+    "build overflowed disk", "stack overflow in recursion test", "integer overflow in counter",
+    "segfault in worker", "SIGABRT in test runner"])
+def test_ordinary_overflows_and_crashes_stay_public(text):
+    assert not failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
+
+
+def test_an_overflow_next_to_a_parser_anywhere_fails_closed():
+    # Bare "overflow" counts with an attack surface anywhere in the record, even an unrelated one.
+    assert failures.new("canary-held", "o/x", "c0ffee0",
+                        summary="build overflowed disk | parser tests pass").security
