@@ -24,10 +24,11 @@ jobs:
         with:
           python-version: "3.14"
       - run: echo "$GITHUB_WORKSPACE/tools/bin" >> "$GITHUB_PATH"   # qqresults from source
+      # Full ref names: a bare `results` would match a tag of that name first.
       - name: open the store (results branch)
         run: |
-          if git fetch --depth 1 origin results; then
-            git worktree add -B results .qq/store FETCH_HEAD
+          if git fetch --depth 1 origin +refs/heads/results:refs/remotes/origin/results; then
+            git worktree add -B results .qq/store refs/remotes/origin/results
           else
             git worktree add --orphan -b results .qq/store
           fi
@@ -62,4 +63,4 @@ jobs:
           git -c user.name="github-actions[bot]" \
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
               commit -q -m "results: collect at ${GITHUB_SHA::12} (run ${GITHUB_RUN_ID})"
-          git push origin results
+          git push origin HEAD:refs/heads/results

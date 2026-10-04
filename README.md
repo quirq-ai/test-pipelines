@@ -85,7 +85,7 @@ repo's presubmit, gate or post-submit runs. Importing a run that is already stor
 importing different bytes for the same run is an error.
 
 ```sh
-git fetch origin results && git worktree add .qq/store FETCH_HEAD
+git fetch origin +refs/heads/results:refs/remotes/origin/results && git worktree add .qq/store refs/remotes/origin/results
 qqresults query runs --store .qq/store --repo quirq-ai/xo-space --kind postsubmit --failed
 qqresults query results --store .qq/store --run <run id> --unexpected
 qqresults query history --store .qq/store --test 'tests.test_greet::test_hello'
