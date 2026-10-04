@@ -135,22 +135,33 @@ def test_store_imports_the_first_record_and_every_link(tmp_path):
 
 
 def test_collect_imports_failure_artifacts(tmp_path):
-    state, _ = held(tmp_path / "scratch")
+    repo = "quirq-ai/xo-space"
+    state, _ = held(tmp_path / "scratch", run_id=f"github/{repo}/991/1/canary")
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
         for p in state.path.rglob("*"):
             if p.is_file():
                 z.write(p, p.relative_to(tmp_path / "scratch").as_posix())
     name = f"{state.path.name}-991-1"
+    run = {"id": 991, "event": "schedule", "path": ".github/workflows/qq-canary.yml",
+           "run_attempt": 1, "head_branch": "main", "head_sha": "c1",
+           "head_repository": {"full_name": repo}}
 
     def get(url, token):
         if "/actions/artifacts" in url:
-            return json.dumps({"artifacts": [{"name": name, "archive_download_url": "u"}]}).encode()
+            return json.dumps({"artifacts": [{"name": name, "archive_download_url": "u",
+                                              "size_in_bytes": 1, "workflow_run": {"id": 991}}]}).encode()
+        if url.endswith("/actions/runs/991"):
+            return json.dumps(run).encode()
+        if url == f"{github.API}/repos/{repo}":
+            return json.dumps({"default_branch": "main"}).encode()
+        if "/compare/refs/heads/main...c1" in url:
+            return json.dumps({"status": "identical"}).encode()
         return buf.getvalue()
 
     st = FileStore(tmp_path / "store")
-    assert github.collect("o/x", st, "", get=get) == (1, 0, [])
-    assert github.collect("o/x", st, "", get=get) == (0, 1, [])
+    assert github.collect(repo, st, "", get=get) == (1, 0, [])
+    assert github.collect(repo, st, "", get=get) == (0, 1, [])
     assert len(st.failures()) == 1
 
 
