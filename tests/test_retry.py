@@ -180,3 +180,21 @@ def test_a_failed_restore_fails_the_step(tmp_path, state):
         retry.recheck(run, sink.junit.parse_file(repo / "results/junit.xml", run.id),
                       CMD, repo, Policy(), base, setup='[ "$QQ_SIDE" = base ]')
     assert len(git(repo, "worktree", "list").splitlines()) == 1   # the base worktree is gone
+
+
+def test_a_fix_queued_ahead_cannot_exonerate_a_change_that_breaks_the_test_again(tmp_path, state):
+    # Main is red on t::add; fix A is queued ahead; entry B breaks t::add again. The queue tests
+    # merge(A, B) and its base_sha is main, where t::add also fails.
+    repo, main = repo_with(tmp_path, "t::add fail\n", "t::add pass\n")    # HEAD is fix A
+    (repo / "cases.txt").write_text("t::add fail\n")
+    git(repo, "commit", "-q", "-am", "entry B")
+    from qqresults.model import Change
+    run = Run.from_dict({**first_run(repo, tmp_path).to_dict(), "kind": "gate",
+                         "base_commit": main, "change": Change(repo="o/x", number=2).to_dict()})
+    assert retry.default_base(run) == f"{run.commit}^1"
+    path, b = sink.sink(run, ["results/*.xml"], repo, tmp_path / "out", rerun_cmd=CMD)
+    assert statuses(b) == {"t::add": "UNEXPECTED"} and not b.verdict.passed
+    # Against the target branch it would have been exonerated:
+    path, b = sink.sink(Run.from_dict({**run.to_dict(), "id": "r2"}), ["results/*.xml"], repo,
+                        tmp_path / "out2", rerun_cmd=CMD, base_commit=main)
+    assert statuses(b) == {"t::add": "EXONERATED"}

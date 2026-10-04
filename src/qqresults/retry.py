@@ -29,8 +29,13 @@ tests could be testing the change's code), and if the restore fails, the step fa
 steps after it would test the wrong code.
 TODO(expert): run the base side hermetically once remote-build provides executors (V0-RBE-01).
 
-In the merge queue the base is the target branch, not the queue entry ahead of the change, so a
-failure from an earlier queued change counts against this one. That errs towards blocking.
+The base is the tested commit without this change. For a pull request (GitHub tests a merge of
+the change onto its branch) and a merge-queue entry (a merge of the change onto the entries ahead
+of it) that is the tested commit's first parent, not the PR's or queue's base_sha: an entry
+ahead may fix a test this change breaks again, and comparing with the target branch would then
+exonerate the regression. For a push it is the commit before the push (`before`).
+TODO(expert): a rebase merge queue tests the PR's commits rebased, where the first parent is the
+PR's own previous commit; use the commit below the rebased range once a rebase queue is used.
 """
 from __future__ import annotations
 
@@ -43,7 +48,7 @@ from pathlib import Path
 
 from qqresults import bundle, junit, verdict
 from qqresults.errors import Error
-from qqresults.model import CaseVerdict, Result, Run, Verdict, VerdictStatus
+from qqresults.model import CaseVerdict, Result, Run, RunKind, Verdict, VerdictStatus
 from qqresults.policy import Policy
 
 Runner = Callable[[str, Path, dict[str, str]], int | None]   # None counts as 0
@@ -169,7 +174,7 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
             break
     base = None
     base_error = ""
-    base_commit = base_commit or run.base_commit
+    base_commit = base_commit or default_base(run)
     if remaining and policy.compare_with_base:
         if not base_commit:
             base_error = "no base commit known"
@@ -181,12 +186,22 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
     return Rechecked(decide(run, results, retries, base, base_error), retries, base)
 
 
+def default_base(run: Run) -> str:
+    """The tested commit without this change (see the module docstring)."""
+    if run.kind in (RunKind.GATE.value, RunKind.PRESUBMIT.value) and run.change:
+        return f"{run.commit}^1"
+    return run.base_commit
+
+
 def run_on_base(run: Run, tests: list[str], cmd: str, cwd: Path, base_commit: str,
                 runner: Runner = shell, setup: str = "") -> bundle.Bundle:
     try:
         git(cwd, "cat-file", "-e", f"{base_commit}^{{commit}}")
     except RetryError:
-        git(cwd, "fetch", "--quiet", "--depth", "1", "origin", base_commit)
+        if base_commit.endswith("^1"):   # a shallow checkout: fetch the commit with its parent
+            git(cwd, "fetch", "--quiet", "--depth", "2", "origin", base_commit[:-2])
+        else:
+            git(cwd, "fetch", "--quiet", "--depth", "1", "origin", base_commit)
     child = child_run(run, "base", commit=git(cwd, "rev-parse", f"{base_commit}^{{commit}}"))
     with tempfile.TemporaryDirectory(prefix="qq-base-") as tmp:
         tree = Path(tmp) / "base"
