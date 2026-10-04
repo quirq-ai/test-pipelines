@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-04T17:28:21Z",
+  "generated_at": "2026-10-04T18:12:41Z",
   "not_measured": [
     {
       "detail": "",
@@ -176,7 +176,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 4 runs passed only on retry",
+        "detail": "0 of 6 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -203,7 +203,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "3 of 3 presubmit runs passed (5 cancelled or unknown not counted)",
+        "detail": "5 of 5 presubmit runs passed (5 cancelled or unknown not counted)",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
@@ -212,7 +212,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "of 10 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 12 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -241,7 +241,7 @@
         "waiting_on": "V0-GAT-04 records queue-entry time on gate runs"
       },
       {
-        "detail": "19 post-submit commits",
+        "detail": "21 post-submit commits",
         "extra": {},
         "name": "Main-red time",
         "target": "under 60 min/week",
@@ -250,7 +250,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 78 runs passed only on retry",
+        "detail": "0 of 81 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -268,7 +268,7 @@
         "waiting_on": "gate runs in the store"
       },
       {
-        "detail": "19 of 19 postsubmit runs passed",
+        "detail": "21 of 21 postsubmit runs passed",
         "extra": {},
         "name": "Post-submit runs passed",
         "target": "measured",
@@ -277,7 +277,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "59 of 59 presubmit runs passed",
+        "detail": "61 of 61 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
@@ -286,7 +286,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "of 78 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 82 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -324,7 +324,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 15 runs passed only on retry",
+        "detail": "0 of 18 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -351,7 +351,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "10 of 10 presubmit runs passed (1 cancelled or unknown not counted)",
+        "detail": "13 of 13 presubmit runs passed (1 cancelled or unknown not counted)",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
@@ -360,7 +360,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "of 16 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 19 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -379,7 +379,7 @@
       }
     ]
   },
-  "since": "2026-09-27T17:28:21Z",
+  "since": "2026-09-27T18:12:41Z",
   "skipped": 0,
-  "until": "2026-10-04T17:28:21Z"
+  "until": "2026-10-04T18:12:41Z"
 }
