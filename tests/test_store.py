@@ -986,3 +986,41 @@ def test_history_skips_a_stored_run_whose_results_do_not_read(tmp_path, capsys):
     assert cli.main(["query", "history", "--store", str(tmp_path), "--test", "t::a"]) == 0
     out = capsys.readouterr()
     assert "good" in out.out and "warning:" in out.err and path.name in out.err
+
+
+def test_a_rate_limited_403_names_the_rate_limit(monkeypatch):
+    # A 403 from an exhausted quota reads like a permission error unless the headers are read.
+    import email.message
+    import urllib.error
+
+    def opener_raising(headers):
+        msg = email.message.Message()
+        for k, v in headers.items():
+            msg[k] = v
+
+        class Opener:
+            def open(self, req, timeout=None):
+                raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", msg, None)
+        return lambda *a: Opener()
+
+    monkeypatch.setattr(github.urllib.request, "build_opener",
+                        opener_raising({"X-RateLimit-Remaining": "0",
+                                        "X-RateLimit-Reset": "1790000000"}))
+    with pytest.raises(github.GitHubAPIError,
+                       match=r"HTTP 403 Forbidden \(rate limited; resets at 2026-09-21T"):
+        github._request("https://api.github.com/x", "t")
+    monkeypatch.setattr(github.urllib.request, "build_opener",
+                        opener_raising({"Retry-After": "60"}))
+    with pytest.raises(github.GitHubAPIError, match=r"\(rate limited; retry after 60 s\)"):
+        github._request("https://api.github.com/x", "t")
+    monkeypatch.setattr(github.urllib.request, "build_opener",
+                        opener_raising({"X-RateLimit-Remaining": "4000"}))
+    with pytest.raises(github.GitHubAPIError, match=r"HTTP 403 Forbidden$"):
+        github._request("https://api.github.com/x", "t")
+    # A reset value that is no timestamp still gives the API error, never a crash.
+    for reset in ("99999999999999999999", "\u00b2"):
+        monkeypatch.setattr(github.urllib.request, "build_opener",
+                            opener_raising({"X-RateLimit-Remaining": "0",
+                                            "X-RateLimit-Reset": reset}))
+        with pytest.raises(github.GitHubAPIError, match=r"HTTP 403 Forbidden \(rate limited"):
+            github._request("https://api.github.com/x", "t")
