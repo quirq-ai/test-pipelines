@@ -19,7 +19,8 @@
     qqresults failure list --dir DIR
         Failure records (V0-TST-04): one per held canary, rollback or auto-revert, mirrored
         to one labelled GitHub issue (token from GITHUB_TOKEN). DIR is a store's failures/
-        directory or a scratch directory that the backend keeps.
+        directory or a scratch directory that the backend keeps. The issue and --public-copy
+        carry structured fields only; the summary needs --public-summary.
 """
 from __future__ import annotations
 
@@ -173,7 +174,13 @@ def cmd_scorecard(args) -> int:
 
 def _mirror(state: failures.State, repo: str) -> failures.State:
     gh = backends.load("github")
-    url, created = gh.mirror_issue(state, repo, os.environ.get("GITHUB_TOKEN", ""))
+    try:
+        url, created = gh.mirror_issue(state, repo, os.environ.get("GITHUB_TOKEN", ""))
+    except gh.NeedsDeletion:
+        # The issue was (or already had been) withdrawn: the record is security from now on,
+        # even when this report alone did not look that way, so only its mark is uploaded.
+        failures.mark(state.path, "security")
+        raise
     if not url and state.security:
         print(f"issue: withheld, the record looks security-related (never mirrored publicly)")
         return state
@@ -183,16 +190,22 @@ def _mirror(state: failures.State, repo: str) -> failures.State:
     return failures.read(state.path)
 
 
-def _report(state: failures.State, created: bool | None, gh_output: str | None) -> None:
+def _report(state: failures.State, created: bool | None, args) -> None:
+    state = failures.read(state.path)   # with any mark the mirror added
     f = state.current
+    upload = ""
+    if args.public_copy:
+        # A security record is uploaded only as its id and security mark (replacing any public
+        # copy made before it looked that way), so the store learns the mark and never mirrors it.
+        upload = str(failures.public_copy(state, Path(args.public_copy)))
     verb = "" if created is None else ("opened " if created else "already open: ")
     print(f"{verb}{f.id} ({f.kind}, {f.repo}) at {state.path}")
     print("closed" if state.closed else "open; missing " + ", ".join(state.missing))
-    if gh_output:
-        with open(gh_output, "a", encoding="utf-8") as out:
-            out.write(f"id={f.id}\ndir={state.path}\nname={state.path.name}\n"
+    if args.github_output:
+        with open(args.github_output, "a", encoding="utf-8") as out:
+            out.write(f"id={f.id}\nname={state.path.name}\n"
                       f"issue={state.links.get('issue', '')}\ncreated={str(bool(created)).lower()}\n"
-                      f"security={str(state.security).lower()}\n")
+                      f"security={str(state.security).lower()}\nupload={upload}\n")
 
 
 FAILURE_FIELDS = ("channel", "build_digest", "last_good", "first_bad", "stage", "signal",
@@ -205,20 +218,45 @@ def cmd_failure(args) -> int:
         fields = {k: getattr(args, k) for k in FAILURE_FIELDS if getattr(args, k)}
         f = failures.new(args.kind, args.repo, args.subject, security=args.security, **fields)
         state, created = failures.open_record(f, parent)
-        if args.mirror:
-            state = _mirror(state, args.mirror)
-        _report(state, created, args.github_output)
+        if args.public_summary:
+            # The record is write-once: on a repeat report, publish its summary only if this call
+            # would have written the same one (the call that wrote it may not have opted in).
+            if created or state.record.summary == (args.summary or ""):
+                failures.mark(state.path, "public_summary")
+                state = failures.read(state.path)
+            else:
+                print("summary: kept private; the record's summary was written by another report "
+                      "(use failure link --public-summary to publish it)")
+        try:
+            if args.mirror:
+                state = _mirror(state, args.mirror)
+        finally:   # report (and write the upload) even when withdrawing an issue fails the step
+            _report(state, created, args)
     elif args.action == "link":
         path = parent / failures.dirname(args.id)
-        failures.read(path)  # fails clearly if the record is not here
-        for field in failures.LINK_FIELDS:
+        repo = failures.read(path).record.repo  # fails clearly if the record is not here
+        for field in failures.VALUE_LINKS:
             value = getattr(args, field, None)
-            if value:
-                failures.add_link(path, field, value)
+            if not value:
+                continue
+            # --dir is usually a store's failures/, which is public: only what the public filter
+            # allows is written there. Security-looking text still marks the record security.
+            if failures.reads_as_security(value):
+                failures.mark(path, "security")
+            shown = failures.public_value(value, repo, field)
+            if shown != value:
+                print(f"{field}: stored as {shown!r} (only commits, digests, own-org references "
+                      "and GitHub URLs are stored; keep other detail elsewhere)")
+            failures.add_link(path, field, shown)
+        for name in failures.MARKS:
+            if getattr(args, name):
+                failures.mark(path, name)
         state = failures.read(path)
-        if args.mirror:
-            state = _mirror(state, args.mirror)
-        _report(state, None, args.github_output)
+        try:
+            if args.mirror:
+                state = _mirror(state, args.mirror)
+        finally:
+            _report(state, None, args)
     else:
         for d in sorted(parent.iterdir()) if parent.is_dir() else []:
             if (d / failures.RECORD).is_file():
@@ -320,8 +358,12 @@ def build_parser() -> argparse.ArgumentParser:
     for name in FAILURE_FIELDS:
         fa.add_argument("--" + name.replace("_", "-"), dest=name)
     fa.add_argument("--security", action="store_true",
-                    help="open: security-looking; kept but never mirrored to a public issue")
-    for name in failures.LINK_FIELDS:
+                    help="security-looking; kept but never mirrored to a public issue")
+    fa.add_argument("--public-summary", action="store_true",
+                    help="show the summary in the public issue and upload (default: withheld)")
+    fa.add_argument("--public-copy", metavar="DIR",
+                    help="write the record's public view under DIR, for upload")
+    for name in failures.VALUE_LINKS:
         if name != "operation":
             fa.add_argument("--" + name.replace("_", "-"), dest=name, help="link")
     fa.add_argument("--mirror", metavar="OWNER/NAME",

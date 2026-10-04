@@ -5,14 +5,21 @@
 #     with:
 #       kind: canary-held
 #       subject: ${{ steps.build.outputs.digest }}   # what failed; the same subject is the same record
-#       summary: "Canary held: /health probe failed"
+#       summary: "Canary held: /health probe failed"    # visible in the run log; see below
 #       stage: probe
 #       signal: health
 #
 # The record id comes from kind, repo and subject, so reporting the same event twice opens one
-# record and one issue. Security-looking failures are never mirrored to a public issue and never
-# uploaded as a (public) artifact. Needs `issues: write` on the job's token. The record is kept as a workflow artifact that
-# the results store collects.
+# record and one issue. Security-looking failures are never mirrored to a public issue, and their
+# artifact holds only the record id and its security mark. Otherwise the issue and the uploaded
+# artifact carry structured fields only; the summary and other free text appear there only with
+# `public-summary: "true"`. Needs `issues: write` on the job's token. The artifact is what the
+# results store collects.
+#
+# Every input (and the step's environment) is printed in the run log, which is public on a public
+# repo. Never put security detail in `summary` or any other input there: write it to a file on the
+# runner and pass `summary-file` (its contents are not logged). TODO(suraj): where private
+# details live.
 name: qq failure record
 description: Open a quirq infra failure record and mirror it to one labelled issue.
 inputs:
@@ -22,7 +29,8 @@ inputs:
   subject:
     description: What failed (build digest, commit or run id). Same subject, same record.
     required: true
-  summary: {description: One line on what happened., required: false, default: ""}
+  summary: {description: One line on what happened. Printed in the (public) run log., required: false, default: ""}
+  summary-file: {description: A file on the runner holding the summary instead (not logged)., required: false, default: ""}
   channel: {description: Release channel., required: false, default: ""}
   build-digest: {description: The build's digest., required: false, default: ""}
   last-good: {description: Last good commit or build., required: false, default: ""}
@@ -31,6 +39,7 @@ inputs:
   signal: {description: The health signal or test that fired., required: false, default: ""}
   operation: {description: Key of the operation that held or rolled it back., required: false, default: ""}
   security: {description: Set to "true" to never mirror it publicly., required: false, default: "false"}
+  public-summary: {description: Set to "true" to show the summary in the issue and artifact., required: false, default: "false"}
   issue-repo:
     description: Where the issue goes (default this repository).
     required: false
@@ -53,6 +62,7 @@ runs:
         QQ_KIND: ${{ inputs.kind }}
         QQ_SUBJECT: ${{ inputs.subject }}
         QQ_SUMMARY: ${{ inputs.summary }}
+        QQ_SUMMARY_FILE: ${{ inputs.summary-file }}
         QQ_CHANNEL: ${{ inputs.channel }}
         QQ_BUILD_DIGEST: ${{ inputs.build-digest }}
         QQ_LAST_GOOD: ${{ inputs.last-good }}
@@ -61,15 +71,17 @@ runs:
         QQ_SIGNAL: ${{ inputs.signal }}
         QQ_OPERATION: ${{ inputs.operation }}
         QQ_SECURITY: ${{ inputs.security }}
+        QQ_PUBLIC_SUMMARY: ${{ inputs.public-summary }}
         QQ_ISSUE_REPO: ${{ inputs.issue-repo }}
       run: |
         set -euo pipefail
         python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || {
           echo "::error::qq failure record needs Python 3.11 or newer as python3"; exit 1; }
-        venv="$RUNNER_TEMP/qqresults-venv"
-        [ -x "$venv/bin/qqresults" ] || {
-          python3 -m venv "$venv"
-          "$venv/bin/python" -m pip install --quiet --disable-pip-version-check "$GITHUB_ACTION_PATH/.."
+        # Run from this action's own source (no dependencies), as the sink does: nothing is
+        # fetched from PyPI.
+        qqresults() {
+          python3 -P -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from qqresults.cli import main; sys.exit(main(sys.argv[1:]))' \
+            "$GITHUB_ACTION_PATH/../src" "$@"
         }
         args=(--kind "$QQ_KIND" --repo "$GITHUB_REPOSITORY" --subject "$QQ_SUBJECT"
               --run-id "github/$GITHUB_REPOSITORY/$GITHUB_RUN_ID/${GITHUB_RUN_ATTEMPT:-1}/$GITHUB_JOB"
@@ -81,16 +93,31 @@ runs:
           value="${!var}"
           [ -z "$value" ] || args+=("--${pair%%:*}" "$value")
         done
+        if [ -n "$QQ_SUMMARY_FILE" ]; then
+          [ -z "$QQ_SUMMARY" ] || { echo "::error::qq failure record: pass summary or summary-file, not both"; exit 1; }
+          summary=$(cat -- "$QQ_SUMMARY_FILE") || { echo "::error::qq failure record: cannot read summary-file"; exit 1; }
+          [ -z "$summary" ] || args+=("--summary=$summary")
+        fi
         [ "$QQ_SECURITY" != "true" ] || args+=(--security)
+        [ "$QQ_PUBLIC_SUMMARY" != "true" ] || args+=(--public-summary)
         dir="$RUNNER_TEMP/qq-failures"   # shared by every call in the job, so a repeat finds the record
-        echo "dir=$dir" >> "$GITHUB_OUTPUT"
-        "$venv/bin/qqresults" failure open --dir "$dir" "${args[@]}"
-    # A security-looking record stays on the runner: this repo's artifacts and results branch
-    # are public. TODO(suraj): where such records are kept instead.
-    - uses: actions/upload-artifact@v7
-      if: steps.open.outputs.security != 'true'
+        # One artifact name per job (a matrix leg is a job too), so another job's upload of the
+        # same record never overwrites this job's security mark; repeats in this job overwrite.
+        job_file="$RUNNER_TEMP/qq-failures-job"
+        [ -s "$job_file" ] || python3 -P -c 'import secrets; print(secrets.token_hex(4))' > "$job_file"
+        job=$(cat "$job_file")
+        [[ "$job" =~ ^[0-9a-f]{8}$ ]] || { echo "::error::qq failure record: bad job token in $job_file"; exit 1; }
+        echo "job=$job" >> "$GITHUB_OUTPUT"
+        qqresults failure open --dir "$dir" --public-copy "$RUNNER_TEMP/qq-failures-public" "${args[@]}"
+    # This repo's artifacts and results branch are public, so the record itself never leaves the
+    # runner. The upload is its public copy (structured fields only), or for a security-looking
+    # record only its id and security mark, so the store learns the mark and never mirrors it.
+    # TODO(suraj): where security records are kept instead. It runs even when the open step
+    # failed after writing the upload (withdrawing an issue asks for its deletion and fails).
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+      if: ${{ !cancelled() && steps.open.outputs.upload != '' }}
       with:
-        name: ${{ steps.open.outputs.name }}-${{ github.run_id }}-${{ github.run_attempt }}
-        path: ${{ steps.open.outputs.dir }}
+        name: ${{ steps.open.outputs.name }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.open.outputs.job }}
+        path: ${{ steps.open.outputs.upload }}
         overwrite: true
         if-no-files-found: error

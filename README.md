@@ -197,29 +197,94 @@ Every held canary, canary rollback and auto-revert opens one write-once `Failure
   with:
     kind: canary-held                                 # canary-held | canary-rollback | auto-revert | red-run | fuzz
     subject: ${{ steps.build.outputs.digest }}        # same kind, repo and subject: same record
-    summary: "Canary held: /health probe failed"
+    summary: "Canary held: /health probe failed"     # not in the issue or artifact, but in the run log
     stage: probe
     signal: health
 ```
+
+GitHub prints every input of an action (and its steps' environment) in the run log, and a public
+repo's run logs are public. So never put security detail in `summary`, or in any other input, on a
+public repo: write it to a file on the runner and pass `summary-file: <path>` instead (the file's
+contents are not logged). TODO(suraj): where private details live.
 
 The record id is derived from kind, repo and subject, and the issue carries the id in a hidden
 marker, so reporting the same event twice (a retried pipeline, a second runner) still gives one
 record and one issue. What is learned later is added as link records, never by rewriting:
 
 ```sh
-qqresults failure link <id> --dir <store>/failures --culprit <change> --fix <change> \
-  --covering-test <test id> --mirror quirq-ai/xo-space    # updates the issue; closes it when complete
+qqresults failure link <id> --dir <store>/failures --culprit <owner/repo@sha> --fix <PR URL> \
+  --covering-test <commit or URL> --mirror quirq-ai/xo-space   # updates the issue; closes it when complete
 ```
 
+The store is the public results branch. Only `collect` and `failure link` write there, and both
+write only what may be public (below): `collect` imports each artifact's public bundle, whatever
+the artifact holds, and `failure link` stores any other value as `withheld` (it still marks the
+record security if the value reads that way). Never run `failure open --dir` on a store path; it
+writes the full record. Keep the detail where it belongs (the PR, the postmortem) and link to it.
+
 A record closes only when culprit, fix and covering test are linked (infra-config
-`postmortem.toml` `record_needs`), and the scorecard reports the share that are. Security-looking
-records (flagged, or matching words such as "overflow" or "credential") are kept but never
-mirrored to a public issue, and their failure artifact is not uploaded. If a record only looks
-that way after its issue was opened, the issue's text is hidden and it is closed, and the step
-fails asking a repo admin to delete it: editing an issue does not remove the old text from its
-history or from emails already sent. The record itself may already be in a public artifact by
-then. TODO(suraj): where those go instead. The `failure-demo` workflow
-proves the done-when against the real API with a planted held canary.
+`postmortem.toml` `record_needs`), and the scorecard reports the share that are. A link stored
+as `withheld` counts as linked, so a record can close on values nobody can read publicly.
+TODO(expert): whether withheld links should count towards closing (audit S4).
+
+Free text is never public without the opt-in. The issue title and body, the failure artifact and
+the store carry only:
+
+- kind, id, opening time and schema, which must have exactly the shape this version writes (an
+  artifact whose record does not, or whose fields are not strings, is refused), and repo when it
+  is a plain `owner/name` (org-chosen, so shown even when it reads like a security word);
+- stage, signal and channel when each is a short label: lowercase, at most three words joined by
+  `-` or `.`, at most 32 characters, no `_`, `/` or `::`, not containing `test`, and not reading
+  as security (so `probe`, `health`, `stable` and `http-5xx` show; a test id does not);
+- the subject, build digest, last good, first bad, run and every link (culprit, fix, covering
+  test, operation, failure class, postmortem, issue) only when it is a commit (7 to 40 hex), a
+  digest (`sha1:`, `sha256:` or `sha512:` with its full hex length), `owner/repo@<commit>` or
+  `owner/repo#<number>`, a `https://github.com/owner/repo/` pull, issue, commit or Actions run
+  URL, or the action's run id; references and URLs only when the owner is the record's own and
+  the job name, and a repo name other than the record's own, do not read as security.
+
+Labels and those name slots are checked against a list of security words, not an allowlist, so
+author-chosen names the list misses (`remote-exec`, `login-skipped`) still
+show. That is the accepted residual: they are at most three short words or a repo or job name
+chosen by the org, not a description.
+
+Anything else, including any other URL, shows as `withheld` (a subject is replaced by its digest
+instead). That fails closed on purpose: natural values such as a covering test id
+(`tests/test_x.py::test_y`), an operation key or a failure class always show as `withheld`. The
+summary stays in the local record unless you pass `public-summary: "true"` to the action (or
+`--public-summary` to `qqresults failure open`/`link`). Since the record is write-once, a repeat
+report publishes the summary only if it carries the same summary as the report that wrote it;
+`failure link --public-summary` publishes whatever the record holds. The artifact is a public
+copy written by `--public-copy`, never the record itself.
+
+The security classifier errs towards withholding: records flagged `security`, of kind `fuzz`, or
+whose free text (summary, subject, labels, link values) matches security terms such as
+"overflow", "credential", "segfault", "remote code execution" or "without login" are kept but
+never mirrored to a public issue, even with the opt-in. Words common in ordinary failures (crash,
+panic, heap, leak, certificate, escalated, "not verified") count only in a security phrase
+("heap buffer overflow", "credential leak", "certificate verification disabled", "signature not
+verified"). Names the org chose (the repo, the run id and job, the issue URL) are not
+classified. Text is matched after NFKC normalisation, removing zero-width and other format
+characters, splitting camelCase and turning `_`, `-`, `.`, `/`, `:`, `#` and `@` into spaces,
+so `test_jwt_not_checked` and `open-redirect` count. A security record's artifact holds only its id,
+kind, subject (or its digest), run and a `security` mark, so the store learns the mark and
+`failure link --mirror` on the store record never republishes it. Reporting an existing record
+again with `security: "true"` or security-looking text marks it security too. If a record only
+looks that way after its issue was opened, the issue's text is hidden and it is closed, and the
+step fails asking a repo admin to delete it: editing an issue does not remove the old text from
+its history or from emails already sent. A withdrawn issue counts as a security mark itself: a
+later report (a re-run on a fresh runner) never patches or reopens it, and its record turns
+security. The record's earlier public copy may already be in an artifact by then; this job's
+artifact is replaced by the marks-only one. TODO(suraj): where security records go instead.
+
+Limits: a withdrawn issue is the only mark the action can see, so it holds only until a repo
+admin deletes that issue; after that a fresh report that does not look security-related opens a
+public issue again. Likewise, when the first report is security-related, no issue is opened, so
+nothing on GitHub remembers it, and a later such report from a fresh runner (without
+`security: "true"`) opens a public issue. The store learns the mark only once `collect` has run,
+and the action does not read the store. TODO(expert): a durable mark the action can check before
+opening an issue. The `failure-demo` workflow proves the done-when against the real API
+with a planted held canary.
 
 ## v0 status
 

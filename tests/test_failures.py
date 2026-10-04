@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import zipfile
@@ -64,7 +65,9 @@ def test_a_held_canary_creates_exactly_one_record_and_one_issue(tmp_path):
     issue = gh.issues[0]
     assert issue["labels"] == ["qq-failure", "qq-failure:canary-held"]
     assert f"<!-- qq-failure: {state.record.id} -->" in issue["body"]
-    assert issue["title"] == "[qq canary-held] quirq-ai/xo-space: Canary held: /health probe failed"
+    digest = "sha256:" + hashlib.sha256(b"sha256:abc").hexdigest()[:16]   # not a full digest
+    assert issue["title"] == f"[qq canary-held] quirq-ai/xo-space: probe health {digest}"
+    assert "Canary held" not in issue["body"]      # free text is never public by default
     # a fresh runner (empty scratch dir) still finds the issue by its marker
     other = tmp_path / "other"
     state3, _ = held(other)
@@ -122,12 +125,12 @@ def test_store_imports_the_first_record_and_every_link(tmp_path):
     st = FileStore(tmp_path / "store")
     a, _ = held(tmp_path / "run1")
     b, _ = held(tmp_path / "run2")                   # same event, reported by a second run
-    failures.add_link(b.path, "culprit", "c1")
+    failures.add_link(b.path, "culprit", "c0ffee1")
     assert st.import_failure(a.path) is True
     assert st.import_failure(b.path) is True         # adds the link only
     assert st.import_failure(b.path) is False
     (only,) = st.failures()
-    assert only.record.opened_at == a.record.opened_at and only.links == {"culprit": "c1"}
+    assert only.record.opened_at == a.record.opened_at and only.links == {"culprit": "c0ffee1"}
     assert st.failure(a.record.id).record.id == a.record.id
 
 
@@ -248,7 +251,8 @@ def test_only_issues_whose_body_starts_with_the_marker_match(tmp_path):
 def test_summary_cannot_inject_a_marker_or_close_its_fence(tmp_path):
     other = failures.marker("canary-held-0000")
     state, _ = held(tmp_path, summary=f"{other} @someone ``` done")
-    body = failures.issue_body(state)
+    failures.mark(state.path, "public_summary")
+    body = failures.issue_body(failures.read(state.path))
     assert body.startswith(failures.marker(state.record.id))
     assert "```text\n" + other + " @someone ''' done\n```" in body
 
@@ -262,3 +266,377 @@ def test_summary_cannot_inject_a_marker_or_close_its_fence(tmp_path):
 def test_common_security_phrasing_is_withheld(text):
     f = failures.new("canary-held", "o/x", "s", summary=text)
     assert failures.looks_security_related(f, {})
+
+
+@pytest.mark.parametrize("text", [
+    "Canary held: SIGSEGV in tls handshake", "segfault in decoder", "SIGABRT in libssl",
+    "UAF in renderer", "OOB read in parser", "buffer over-read", "stack smashing detected",
+    "XXE in importer", "prototype pollution", "JWT signature not checked",
+    "CORS allows any origin", "admin page reachable without login"])
+def test_audit_phrasing_is_withheld(text):
+    assert failures.new("canary-held", "o/x", "s", summary=text).security
+
+
+def test_free_text_is_public_only_with_the_opt_in(tmp_path):
+    state, _ = held(tmp_path / "rec")
+    failures.add_link(state.path, "culprit", "quirq-ai/xo-space@c0ffee0")
+    failures.add_link(state.path, "covering_test", "regression check for the new handler")
+    state = failures.read(state.path)
+    body = failures.issue_body(state)
+    assert "Canary held" not in body + failures.issue_title(state)
+    assert "regression check" not in body and "`withheld`" in body and "c0ffee0" in body
+    copy = failures.public_copy(state, tmp_path / "public")
+    text = "".join(p.read_text() for p in copy.rglob("*.json"))
+    assert "Canary held" not in text and "regression check" not in text
+    assert failures.read(copy).closed is False and failures.read(copy).current.culprit
+    assert "Canary held" in (state.path / "failure.json").read_text()   # the record keeps it
+    f = failures.new("red-run", "o/x", "nightly run of the probe suite")
+    assert failures.public_view(f).subject.startswith("sha256:")
+    failures.mark(state.path, "public_summary")
+    state = failures.read(state.path)
+    assert "Canary held" in failures.issue_title(state) and "Canary held" in failures.issue_body(state)
+    copy = failures.public_copy(state, tmp_path / "public")
+    assert "Canary held" in (copy / "failure.json").read_text()
+
+
+@pytest.mark.parametrize("again", [{"security": True}, {"summary": "segfault in decoder"}])
+def test_reporting_again_as_security_withdraws_the_issue(tmp_path, again):
+    gh = FakeGitHub()
+    state, _ = held(tmp_path)
+    github.mirror_issue(state, "o/x", "tok", call=gh)
+    state, created = held(tmp_path, **again)
+    assert not created and state.security and not state.record.security
+    with pytest.raises(github.NeedsDeletion, match="must delete"):
+        github.mirror_issue(state, "o/x", "tok", call=gh)
+    assert gh.issues[0]["state"] == "closed" and "probe" not in gh.issues[0]["body"]
+
+
+def test_cli_upload_is_the_public_copy(tmp_path, monkeypatch):
+    gh = FakeGitHub()
+    monkeypatch.setattr(github, "api", gh)
+    out, pub = tmp_path / "out", tmp_path / "pub"
+    base = ["failure", "open", "--dir", str(tmp_path / "f"), "--kind", "canary-held",
+            "--repo", "o/x", "--subject", "sha256:9", "--summary", "probe failed",
+            "--mirror", "o/x", "--public-copy", str(pub), "--github-output", str(out)]
+    assert cli.main(base) == 0
+    upload = dict(l.split("=", 1) for l in out.read_text().splitlines())["upload"]
+    assert Path(upload).parent == pub and "probe failed" not in (Path(upload) / "failure.json").read_text()
+    assert "probe failed" not in gh.issues[0]["body"]
+    assert cli.main(base + ["--public-summary"]) == 0
+    assert "probe failed" in gh.issues[0]["body"]
+    assert cli.main(base + ["--security"]) == 1          # NeedsDeletion: the issue is withdrawn
+    assert gh.issues[0]["state"] == "closed" and "probe failed" not in gh.issues[0]["body"]
+    out.write_text("")
+    assert cli.main(["failure", "link", failures.failure_id("canary-held", "o/x", "sha256:9"),
+                     "--dir", str(tmp_path / "f"), "--public-copy", str(pub),
+                     "--github-output", str(out)]) == 0
+    upload = dict(l.split("=", 1) for l in out.read_text().splitlines())["upload"]
+    marks = failures.read(Path(upload))      # the security record goes up as its mark only
+    assert marks.security and marks.record.security and "probe" not in marks.record.to_json()
+    assert set(marks.links) == {"security"} and [p.name for p in pub.iterdir()] == [Path(upload).name]
+
+
+PROSE = "admin page open to anonymous users"
+DIGEST = "sha256:" + "9" * 64
+
+
+@pytest.mark.parametrize("field", ["stage", "signal", "channel", "last_good", "first_bad",
+                                   "build_digest", "run_id", "operation"])
+def test_every_free_text_field_is_withheld_publicly(tmp_path, field):
+    state, _ = held(tmp_path / "rec", **{field: PROSE})
+    copy = failures.public_copy(state, tmp_path / "pub")
+    text = (failures.issue_title(state) + failures.issue_body(state)
+            + "".join(p.read_text() for p in copy.rglob("*.json")))
+    assert "anonymous" not in text and "`withheld`" in failures.issue_body(state)
+
+
+def test_short_names_and_structured_values_still_show(tmp_path):
+    sha = "c0ffee0" + "0" * 33
+    state, _ = held(tmp_path, channel="stable", last_good=sha, first_bad="c0ffee1",
+                    build_digest="sha256:" + "a" * 64,
+                    run_id="github/quirq-ai/xo-space/991/1/canary")
+    body = failures.issue_body(state)
+    for value in ("probe", "health", "stable", sha, "c0ffee1", "sha256:" + "a" * 64,
+                  "github/quirq-ai/xo-space/991/1/canary"):
+        assert f"`{value}`" in body
+    assert failures.issue_title(state).startswith("[qq canary-held] quirq-ai/xo-space: probe health ")
+
+
+@pytest.mark.parametrize("value", [
+    "admin_page_open_to_anonymous_users:0", "admin-panel/open-to-everyone#1",
+    "https://x.example/admin-panel-open-to-everyone", "quirq-ai/admin page@c0ffee0",
+    "https://github.com/quirq-ai/xo-space/issues/admin-panel-open", "sha256:0", "sha1:abc",
+    "https://github.com/other-org/xo-space/pull/3", "other-org/repo@c0ffee0",
+    "github/o/x/1/1/admin page open", "g" * 12])
+def test_prose_shaped_like_a_reference_is_withheld(tmp_path, value):
+    assert failures.public_value(value, "quirq-ai/xo-space") == failures.WITHHELD
+    f = failures.new("canary-held", "quirq-ai/xo-space", value)
+    assert failures.public_view(f).subject != value          # replaced by its digest
+    assert value not in failures.issue_title(failures.State(f, {}, tmp_path))
+    state, _ = held(tmp_path)
+    failures.add_link(state.path, "culprit", value)
+    failures.add_link(state.path, "issue", value)
+    state = failures.read(state.path)
+    assert value not in failures.issue_body(state) + failures.issue_title(state)
+    copy = failures.public_copy(state, tmp_path / "pub")
+    assert value not in "".join(p.read_text() for p in copy.rglob("*.json"))
+
+
+@pytest.mark.parametrize("value", [
+    "c0ffee0", "c0ffee0" + "0" * 33, "sha256:" + "a" * 64, "sha512:" + "b" * 128,
+    "sha1:" + "c" * 40, "quirq-ai/xo-space@c0ffee0", "quirq-ai/infra-config#12",
+    "https://github.com/quirq-ai/xo-space/pull/12",
+    "https://github.com/quirq-ai/xo-space/commit/c0ffee0",
+    "https://github.com/quirq-ai/xo-space/actions/runs/991/job/7"])
+def test_structured_references_are_shown(value):
+    assert failures.public_value(value, "quirq-ai/xo-space") == value
+
+
+def _zip(path):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for p in path.rglob("*"):
+            if p.is_file():
+                z.write(p, (Path(path.name) / p.relative_to(path)).as_posix())
+    return buf.getvalue()
+
+
+def _collect(st, artifacts):
+    """collect, against a fake API listing the given {artifact name: zip bytes}, all uploaded by
+    workflow run 1 of o/x (a scheduled run on main)."""
+    run = {"id": 1, "event": "schedule", "path": ".github/workflows/qq-canary.yml",
+           "run_attempt": 1, "head_branch": "main", "head_sha": "c1",
+           "head_repository": {"full_name": "o/x"}}
+
+    def get(url, token):
+        if "/actions/artifacts" in url:
+            return json.dumps({"artifacts": [
+                {"name": n, "id": i, "archive_download_url": n, "size_in_bytes": len(z),
+                 "workflow_run": {"id": 1}} for i, (n, z) in enumerate(artifacts.items())]}).encode()
+        if url.endswith("/actions/runs/1"):
+            return json.dumps(run).encode()
+        if url == f"{github.API}/repos/o/x":
+            return json.dumps({"default_branch": "main"}).encode()
+        if "/compare/" in url and "main...c1?" in url:     # the run's head is on main
+            return json.dumps({"status": "identical"}).encode()
+        return artifacts[url]
+    return github.collect("o/x", st, "", get=get)
+
+
+@pytest.mark.parametrize("same_job", [True, False])
+def test_a_withdrawn_issue_is_never_republished_from_the_store(tmp_path, monkeypatch, same_job):
+    # open (public copy uploaded) -> open --security (issue withdrawn) -> collect -> link --mirror
+    gh = FakeGitHub()
+    monkeypatch.setattr(github, "api", gh)
+    out = tmp_path / "out"
+    fid = failures.failure_id("canary-held", "o/x", DIGEST)
+
+    def open_(job, *extra):
+        out.write_text("")
+        code = cli.main(["failure", "open", "--dir", str(tmp_path / job / "f"), "--kind",
+                         "canary-held", "--repo", "o/x", "--subject", DIGEST, "--stage",
+                         "probe", "--summary", "probe failed", "--mirror", "o/x",
+                         "--run-id", f"github/o/x/1/1/{job}",
+                         "--public-copy", str(tmp_path / job / "pub"),
+                         "--github-output", str(out), *extra])
+        upload = dict(l.split("=", 1) for l in out.read_text().splitlines())["upload"]
+        return code, _zip(Path(upload))
+
+    code, first = open_("job1")
+    assert code == 0 and gh.issues[0]["state"] == "open"
+    code, second = open_("job1" if same_job else "job2", "--security")
+    assert code == 1 and gh.issues[0]["state"] == "closed"     # NeedsDeletion, upload still made
+    st = FileStore(tmp_path / "store")
+    assert _collect(st, {f"{failures.dirname(fid)}-1-1-a": first,
+                         f"{failures.dirname(fid)}-1-1-b": second})[2] == []
+    (stored,) = st.failures()
+    assert stored.security and "probe failed" not in stored.record.to_json()
+    assert cli.main(["failure", "link", fid, "--dir", str(tmp_path / "store" / "failures"),
+                     "--culprit", "c0ffee0", "--mirror", "o/x"]) == 1   # not republished
+    assert len(gh.issues) == 1 and gh.issues[0]["state"] == "closed"
+    assert gh.issues[0]["title"].startswith("[qq failure] withheld")
+    assert "probe" not in gh.issues[0]["body"]
+
+
+def test_a_marks_only_bundle_alone_makes_a_security_record(tmp_path):
+    st = FileStore(tmp_path / "store")
+    state, _ = held(tmp_path / "f", security=True, run_id="github/quirq-ai/xo-space/991/1/canary")
+    copy = failures.public_copy(state, tmp_path / "pub")
+    text = "".join(p.read_text() for p in copy.rglob("*.json"))
+    assert "probe" not in text and "Canary held" not in text and "health" not in text
+    marks = failures.read(copy)
+    assert marks.record.id == state.record.id and marks.record.run_id == state.record.run_id
+    assert set(marks.links) == {"security"} and marks.links["security"] == "true"
+    assert st.import_failure(copy) and st.failure(state.record.id).security
+    assert github.mirror_issue(st.failure(state.record.id), "o/x", "tok",
+                               call=FakeGitHub()) == ("", False)
+
+
+def test_cli_link_stores_only_public_values(tmp_path, capsys):
+    state, _ = held(tmp_path)
+    d = str(tmp_path)
+    assert cli.main(["failure", "link", state.record.id, "--dir", d, "--culprit", "c0ffee0",
+                     "--covering-test", "regression check for the handler"]) == 0
+    st = failures.read(state.path)
+    assert st.links == {"culprit": "c0ffee0", "covering_test": "withheld"} and not st.security
+    assert "stored as 'withheld'" in capsys.readouterr().out
+    assert cli.main(["failure", "link", state.record.id, "--dir", d,
+                     "--fix", "patch for CVE-2026-1"]) == 0
+    st = failures.read(state.path)
+    assert st.security and "CVE" not in json.dumps(st.links)
+
+
+@pytest.mark.parametrize("signal", [
+    "test_jwt_signature_not_checked", "test_cors_any_origin", "test_xxe_importer",
+    "test_uaf_renderer", "test_oob_read", "test_sqli_search", "stack-smashing-detected",
+    "prototype-pollution", "admin-page-reachable-without-login", "denial-of-service",
+    "private-key-in-logs", "open-redirect", "double-free-in-decoder", "openRedirectOnLogin",
+    "JwtNotChecked"])
+def test_snake_and_kebab_case_security_names_are_withheld(signal):
+    f = failures.new("canary-held", "quirq-ai/innernet", "sha256:" + "a" * 64, signal=signal)
+    assert f.security
+    assert failures.public_value(signal, "quirq-ai/innernet", "signal") == failures.WITHHELD
+    assert signal not in failures.issue_title(failures.State(f, {}, Path(".")))
+
+
+@pytest.mark.parametrize("value", [
+    "quirq-ai/admin_panel_open_to_everyone#1",
+    "https://github.com/quirq-ai/login-not-required-on-admin/pull/1",
+    "github/quirq-ai/x/1/1/admin_page_open_to_anyone"])
+def test_name_slots_of_references_are_checked_for_security(tmp_path, value):
+    assert failures.public_value(value, "quirq-ai/innernet") == failures.WITHHELD
+    assert failures.reads_as_security(value)
+    f = failures.new("canary-held", "quirq-ai/innernet", "sha256:" + "a" * 64, run_id=value)
+    assert value not in failures.issue_body(failures.State(f, {}, tmp_path))   # run id: org-chosen, not classified, but withheld
+
+
+@pytest.mark.parametrize("label,shown", [
+    ("probe", True), ("health", True), ("http-5xx", True), ("p99.latency", True),
+    ("test_probe", False), ("tests.test_health::test_probe", False), ("health_check", False),
+    ("smoke-test", False), ("Health", False), ("one-two-three-four", False),
+    ("a" * 33, False)])
+def test_labels_are_a_small_fixed_shape(label, shown):
+    assert (failures.public_value(label, "o/x", "signal") == label) is shown
+
+
+def test_a_withdrawn_issue_is_never_reopened_by_a_later_report(tmp_path, monkeypatch):
+    # first report public, then withdrawn as security, then a fresh runner (a re-run attempt,
+    # new RUNNER_TEMP) reports it again without anything security-looking
+    gh = FakeGitHub()
+    state, _ = held(tmp_path / "run1")
+    github.mirror_issue(state, "o/x", "tok", call=gh)
+    state, _ = held(tmp_path / "run1", security=True)
+    with pytest.raises(github.NeedsDeletion):
+        github.mirror_issue(state, "o/x", "tok", call=gh)
+    withdrawn = dict(gh.issues[0])
+    fresh, _ = held(tmp_path / "run2")
+    assert not fresh.security
+    with pytest.raises(github.NeedsDeletion):
+        github.mirror_issue(fresh, "o/x", "tok", call=gh)
+    assert gh.issues[0] == withdrawn and len(gh.issues) == 1     # not patched, not reopened
+    # through the CLI, the fresh runner's record turns security and uploads only its mark
+    monkeypatch.setattr(github, "api", gh)
+    out, pub = tmp_path / "out", tmp_path / "pub"
+    assert cli.main(["failure", "open", "--dir", str(tmp_path / "run3"), "--kind", "canary-held",
+                     "--repo", "quirq-ai/xo-space", "--subject", "sha256:abc", "--stage", "probe",
+                     "--mirror", "o/x", "--public-copy", str(pub),
+                     "--github-output", str(out)]) == 1
+    outputs = dict(l.split("=", 1) for l in out.read_text().splitlines())
+    assert outputs["security"] == "true" and "dir" not in outputs
+    marks = failures.read(Path(outputs["upload"]))
+    assert marks.record.security and set(marks.links) == {"security"}
+    assert "probe" not in (Path(outputs["upload"]) / "failure.json").read_text()
+    assert gh.issues[0] == withdrawn
+
+
+def test_the_store_only_ever_holds_public_values(tmp_path):
+    # an older action uploaded the full record; import keeps only its public bundle
+    st = FileStore(tmp_path / "store")
+    state, _ = held(tmp_path / "f")
+    failures.add_link(state.path, "covering_test", "regression check for the handler")
+    failures.add_link(state.path, "culprit", "c0ffee0")
+    assert st.import_failure(state.path)
+    stored = st.failure(state.record.id)
+    text = "".join(p.read_text() for p in stored.path.rglob("*.json"))
+    assert "Canary held" not in text and "regression check" not in text and "c0ffee0" in text
+    assert stored.links == {"covering_test": "withheld", "culprit": "c0ffee0"}
+    private = {p.name for p in (state.path / "links").glob("*.json")}
+    public = {p.name for p in (stored.path / "links").glob("*.json")}
+    assert len(public) == 2 and len(private & public) == 1   # renamed from the public body
+    assert not st.import_failure(state.path)                  # the same bundle adds nothing
+    copy = failures.public_copy(state, tmp_path / "pub")
+    assert {p.name for p in (copy / "links").glob("*.json")} == public
+    assert st.import_failure(held(tmp_path / "h", security=True)[0].path)   # adds the mark
+    assert st.failure(state.record.id).security
+    sec, _ = failures.open_record(failures.new("canary-held", "o/x", "c0ffee2", stage="probe",
+                                               security=True), tmp_path / "g")
+    st.import_failure(sec.path)
+    assert st.failure(sec.record.id).security
+    assert "probe" not in (st.failure(sec.record.id).path / "failure.json").read_text()
+
+
+def test_a_repeat_report_cannot_publish_another_reports_summary(tmp_path, monkeypatch):
+    gh = FakeGitHub()
+    monkeypatch.setattr(github, "api", gh)
+    base = ["failure", "open", "--dir", str(tmp_path), "--kind", "canary-held", "--repo", "o/x",
+            "--subject", "sha256:9", "--mirror", "o/x"]
+    assert cli.main(base + ["--summary", "first report text"]) == 0
+    assert cli.main(base + ["--summary", "second report text", "--public-summary"]) == 0
+    assert "report text" not in gh.issues[0]["body"]
+    assert cli.main(base + ["--summary", "first report text", "--public-summary"]) == 0
+    assert "first report text" in gh.issues[0]["body"]
+
+
+def _crafted(tmp_path, **overrides):
+    f = failures.new("canary-held", "o/x", "c0ffee0", stage="probe")
+    record = {**f.to_dict(), **overrides}
+    d = tmp_path / "crafted"
+    (d / "links").mkdir(parents=True)
+    (d / "failure.json").write_text(json.dumps(record))
+    return d
+
+
+@pytest.mark.parametrize("overrides", [
+    {"opened_at": "Heap overflow in parser lets attacker run code"},
+    {"schema": "unsigned updates accepted from mirror"},
+    {"id": "token leak in prod: AKIAEXAMPLE"},
+    {"kind": "whatever prose"},
+    {"subject": ["x"]}, {"stage": 3}, {"security": "no"}, {"repo": {"a": 1}},
+])
+def test_a_crafted_record_never_reaches_the_store(tmp_path, overrides):
+    st = FileStore(tmp_path / "store")
+    with pytest.raises(failures.FailureError):
+        st.import_failure(_crafted(tmp_path, **overrides))
+    assert not (tmp_path / "store" / "failures").exists() or not list(
+        (tmp_path / "store" / "failures").rglob("failure.json"))
+    assert st.import_failure(_crafted(tmp_path / "ok"))      # the same record, well-formed
+
+
+@pytest.mark.parametrize("text", [
+    "CrashLoopBackOff in canary pod", "panic: runtime error in handler",
+    "java.lang.OutOfMemoryError: Java heap space", "goroutine leak in worker",
+    "memory leak in cache", "TLS certificate expired", "escalated to on-call",
+    "rollout not verified within 10m", "config key not required", "kernel panic on boot"])
+def test_ordinary_failures_still_get_an_issue(text):
+    assert not failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
+
+
+@pytest.mark.parametrize("text", [
+    "remote code execution in uploader", "zip slip in extractor", "unsigned update accepted",
+    "SIGILL in decoder", "KASAN: slab-out-of-bounds", "XML external entity in importer",
+    "null pointer dereference in parser", "requests.get(url, verify=False)",
+    "privilege escalation via setuid", "credential leak in logs", "leaked the API key",
+    "certificate verification disabled", "signature not verified", "auth not required on /admin",
+    "heap buffer overflow", "o​pen redirect", "ｏpen redirect"])
+def test_security_phrases_and_disguised_text_are_caught(text):
+    assert failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
+
+
+def test_an_org_chosen_repo_name_is_neither_classified_nor_withheld(tmp_path):
+    f = failures.new("canary-held", "quirq-ai/auth-gateway", "c0ffee0",
+                     run_id="github/quirq-ai/auth-gateway/1/1/canary")
+    assert not f.security
+    pub = failures.public_view(f)
+    assert pub.repo == "quirq-ai/auth-gateway" and pub.run_id == f.run_id
+    assert failures.public_value("quirq-ai/auth-gateway@c0ffee0", f.repo) == "quirq-ai/auth-gateway@c0ffee0"
+    assert failures.public_value("quirq-ai/token-store@c0ffee0", f.repo) == failures.WITHHELD
