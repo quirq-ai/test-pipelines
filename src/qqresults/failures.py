@@ -39,10 +39,12 @@ from qqresults.model import SCHEMA, Failure, FailureKind, canonical_json
 RECORD = "failure.json"
 LINKS = "links"
 TARGET = "target.json"   # a link bundle's {"id", "repo", "run_id", "schema"}, instead of RECORD
-# Marks are links whose value is "true": security (re-reported or flagged later as security),
-# public_summary (the caller opted in to showing the summary publicly) and demo (a planted
-# record, such as failure-demo's, which the scorecard leaves out).
-MARKS = ("security", "public_summary", "demo")
+# Marks are links whose value is "true": security (re-reported or flagged later as security)
+# and public_summary (the caller opted in to showing the summary publicly).
+MARKS = ("security", "public_summary")
+# The only mark a link bundle may carry. public_summary can publish only the summary a record
+# was uploaded with, so it belongs to the failure action's own upload, never to later links.
+BUNDLE_MARKS = ("security",)
 VALUE_LINKS = Failure.LINKS + ("issue",)   # links that carry a value
 LINK_FIELDS = VALUE_LINKS + MARKS          # every field a link file may have
 
@@ -268,10 +270,6 @@ class State:
         return bool(self.links.get("public_summary"))
 
     @property
-    def demo(self) -> bool:
-        return bool(self.links.get("demo"))
-
-    @property
     def missing(self) -> list[str]:
         cur = self.current
         return [n for n in Failure.NEEDED_TO_CLOSE if not getattr(cur, n)]
@@ -399,31 +397,64 @@ def read_target(path: Path) -> Target:
     return Target(fid, data["repo"], data["run_id"])
 
 
-def import_links(src: Path, parent: Path) -> bool:
+# A link's time decides which value is current (later links win), so a time far ahead would
+# outrank every later link forever. A link's time must lie between its record's opening and
+# now, with this much slack for the clock of the runner that wrote it.
+LINK_CLOCK_SKEW = dt.timedelta(minutes=5)
+
+
+def check_link_bundle(src: Path, record: Failure, at_most: dt.datetime) -> Target:
+    """Raise FailureError unless the link bundle at src fits record (the stored record it
+    targets): the same repo, links this version writes, only the marks a link bundle may carry
+    (BUNDLE_MARKS, as "true"), and every time between the record's opening and at_most plus
+    LINK_CLOCK_SKEW. A bundle that does not fit is refused whole, never trimmed."""
+    target = read_target(src)
+    if record.id != target.id:
+        raise FailureError(f"links for {target.id} checked against record {record.id}")
+    if record.repo != target.repo:
+        raise FailureError(f"links for {target.id} name repo {target.repo[:60]!r}, but the "
+                           f"record is for {record.repo}")
+    latest = (at_most + LINK_CLOCK_SKEW).astimezone(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for p in sorted((src / LINKS).glob("*.json")) if (src / LINKS).is_dir() else []:
+        try:
+            link = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError, RecursionError) as e:
+            raise FailureError(f"links for {target.id}: {p.name}: {e}") from None
+        field, value, at = (link.get(k) for k in ("field", "value", "at")) \
+            if isinstance(link, dict) else (None, None, None)
+        if field not in LINK_FIELDS or not isinstance(value, str) or not value \
+                or not isinstance(at, str) or not _TIME.fullmatch(at):
+            raise FailureError(f"links for {target.id}: {p.name} is not a {{field, value, at}} "
+                               "record")
+        if field in MARKS and (field not in BUNDLE_MARKS or value != "true"):
+            raise FailureError(f"links for {target.id}: a link bundle may not carry the {field} "
+                               f"mark {value[:20]!r}")
+        if not record.opened_at <= at <= latest:   # one fixed format, so text order is time order
+            raise FailureError(f"links for {target.id}: {p.name} is dated {at}, not between the "
+                               f"record's opening {record.opened_at} and {latest}")
+    return target
+
+
+def import_links(src: Path, parent: Path, at_most: dt.datetime | None = None) -> bool:
     """Add a link bundle's links to the stored record it targets, filtered as public_bundle
-    filters a record's links. The record must be stored already (collect reads artifacts oldest
-    first, and retries a bundle that came too early). On a record that is or turns security, no
-    value is stored: each link is stored as WITHHELD next to the security mark, so the record can
-    still close without publishing anything. Returns True if anything was added."""
+    filters a record's links, once check_link_bundle accepts it against that record. The record
+    must be stored already (collect reads artifacts oldest first, and retries a bundle that came
+    too early). On a record that is or turns security, no value is stored: each link is stored as
+    WITHHELD next to the security mark, so the record can still close without publishing
+    anything. Returns True if anything was added."""
     target = read_target(src)
     dest = parent / dirname(target.id)
     if not (dest / RECORD).is_file():
         raise FailureError(f"links for {target.id}: the record is not in the store yet")
     state = read(dest)
-    if state.record.repo != target.repo:
-        raise FailureError(f"links for {target.id} name repo {target.repo[:60]!r}, but the "
-                           f"record is for {state.record.repo}")
-    try:
-        links = [json.loads(p.read_text(encoding="utf-8"))
-                 for p in sorted((src / LINKS).glob("*.json")) if (src / LINKS).is_dir()]
-        links = [link for link in links if isinstance(link, dict)]
-        shown = _public_links(links, target.repo, security=False)
-        security = state.security or looks_security_related(
-            state.record, {**state.links, **{f: v for f, v, _ in shown}})
-        if security:
-            shown = [("security", "true", now()), *_public_links(links, target.repo, security=True)]
-    except (OSError, ValueError, RecursionError) as e:
-        raise FailureError(f"links for {target.id}: {e}") from None
+    check_link_bundle(src, state.record, at_most or dt.datetime.now(dt.UTC))
+    links = [json.loads(p.read_text(encoding="utf-8"))
+             for p in sorted((src / LINKS).glob("*.json")) if (src / LINKS).is_dir()]
+    shown = _public_links(links, target.repo, security=False)
+    security = state.security or looks_security_related(
+        state.record, {**state.links, **{f: v for f, v, _ in shown}})
+    if security:
+        shown = [("security", "true", now()), *_public_links(links, target.repo, security=True)]
     added = False
     for field, value, at in shown:
         if not _repeats(dest, field, value, _link_name(field, value, at)):
@@ -585,7 +616,7 @@ def _public_bundle(src: Path, dest: Path) -> None:
 
     A record that is not security-related gets its public view, with its links passed through the
     same filter and renamed from their public bodies. A security record gets a marks-only bundle:
-    its id, kind, subject digest and run, one security mark and its demo mark if any, so whoever
+    its id, kind, subject digest and run, and one security mark, so whoever
     reads the bundle learns the mark (and stops mirroring) and nothing else.
     """
     state = read(src)
@@ -598,8 +629,6 @@ def _public_bundle(src: Path, dest: Path) -> None:
                          subject=subject_digest(state.record.subject),
                          opened_at=pub.opened_at, run_id=pub.run_id, security=True)
         _write_link(dest, "security", "true", state.record.opened_at)   # check_shape: a time
-        if state.demo:
-            _write_link(dest, "demo", "true", state.record.opened_at)
     else:
         record = public_view(state.record, state.public_summary)
         links = [json.loads(p.read_text(encoding="utf-8"))
@@ -636,6 +665,9 @@ def link_copy(state: State, before: set[str], run_id: str, parent: Path) -> Path
                                                "schema": SCHEMA}) + "\n", encoding="utf-8")
     links = [json.loads(p.read_text(encoding="utf-8"))
              for p in sorted((state.path / LINKS).glob("*.json")) if p.name not in before]
+    # Only BUNDLE_MARKS travel: collect refuses a bundle with any other mark.
+    links = [link for link in links if link.get("field") not in MARKS
+             or link.get("field") in BUNDLE_MARKS]
     shown = _public_links(links, f.repo, state.security)
     if state.security:
         shown = [("security", "true", now()), *shown]

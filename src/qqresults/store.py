@@ -157,8 +157,13 @@ class FileStore:
     def import_failure(self, path: Path) -> bool:
         return failures.import_dir(path, self.failures_dir)
 
-    def import_links(self, path: Path) -> bool:
-        return failures.import_links(path, self.failures_dir)
+    def import_links(self, path: Path, at_most=None) -> bool:
+        return failures.import_links(path, self.failures_dir, at_most)
+
+    def stored_failure(self, fid: str):
+        """The stored record with this id (a model.Failure), or None when there is none."""
+        path = self.failures_dir / failures.dirname(fid)
+        return failures.read(path).record if (path / failures.RECORD).is_file() else None
 
     def seen_artifact(self, name: str) -> bool:
         """Whether a failure artifact was already imported (artifacts are immutable once uploaded)."""

@@ -149,6 +149,11 @@ class NeedsDeletion(Error):
     remove the text (edit history, timeline, notification emails), so a person must delete it."""
 
 
+class OrphanLinks(GitHubAPIError):
+    """A link bundle whose record was still not stored LINK_BUNDLE_WAIT after the bundle was
+    uploaded. It is refused for good (and marked as read), not retried at every collect."""
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -402,7 +407,7 @@ def _check_failure_origin(origin: Origin) -> None:
                              f"{_short(origin.head_branch)}")
 
 
-def _check_failure(origin: Origin, path: Path) -> None:
+def _check_failure(origin: Origin, path: Path, now: dt.datetime) -> None:
     """A failure record must come from a default-branch run of its repo and name that run."""
     from qqresults import failures
 
@@ -417,12 +422,13 @@ def _check_failure(origin: Origin, path: Path) -> None:
         raise GitHubAPIError(f"failure {_short(f.id)}: the id does not match its kind, repo and "
                              "subject")
     origin.attempt_of(f"failure {f.id}: run", f.run_id)
-    _check_links(f.id, path)
+    _check_links(f.id, path, f.opened_at, now)
 
 
-def _check_link_bundle(origin: Origin, path: Path) -> None:
+def _check_link_bundle(origin: Origin, path: Path):
     """A link bundle (links added after the record was opened) is held to the same origin rules
-    as a record: a default-branch run of the record's repo, named as the run that linked."""
+    as a record: a default-branch run of the record's repo, named as the run that linked. What
+    it may carry is checked against its stored record (failures.check_link_bundle)."""
     from qqresults import failures
 
     _check_failure_origin(origin)
@@ -431,12 +437,16 @@ def _check_link_bundle(origin: Origin, path: Path) -> None:
         raise GitHubAPIError(f"links for {_short(target.id)} are for {_short(target.repo)} but "
                              f"were found in {origin.repo}")
     origin.attempt_of(f"links for {target.id}: run", target.run_id)
-    _check_links(target.id, path)
+    return target
 
 
-def _check_links(fid: str, path: Path) -> None:
+def _check_links(fid: str, path: Path, opened_at: object, now: dt.datetime) -> None:
+    """Each link is a {field, value, at} record dated between the record's opening and now
+    (with failures.LINK_CLOCK_SKEW): later links win, so a time far ahead would outrank every
+    later link for good."""
     from qqresults import failures
 
+    latest = (now + failures.LINK_CLOCK_SKEW).strftime("%Y-%m-%dT%H:%M:%SZ")
     links = path / failures.LINKS
     for p in sorted(links.glob("*.json")) if links.is_dir() else []:
         try:
@@ -448,6 +458,9 @@ def _check_links(fid: str, path: Path) -> None:
                 and is_time(link.get("at"))):
             raise GitHubAPIError(f"failure {fid}: link {p.name} is not a "
                                  "{field, value, at} record")
+        if not (isinstance(opened_at, str) and opened_at <= link["at"] <= latest):
+            raise GitHubAPIError(f"failure {fid}: link {p.name} is dated {link['at']}, not "
+                                 f"between the record's opening {_short(opened_at)} and {latest}")
 
 
 def _unzip(data: bytes, dest: str) -> None:
@@ -469,7 +482,21 @@ def _unzip(data: bytes, dest: str) -> None:
         raise GitHubAPIError(f"cannot unzip: {type(e).__name__}: {e}") from None
 
 
-def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: Trust) -> bool:
+# How long a link bundle waits for its record. A record and its links come from the same repo
+# and are listed together, oldest first, so a record that is still not stored after a week (28
+# scheduled collects) was refused or has expired; a week still rides out a scorecard outage or a
+# collect fix that takes a few days to land.
+LINK_BUNDLE_WAIT = dt.timedelta(days=7)
+
+
+def _uploaded_before(art: dict, when: dt.datetime) -> bool:
+    """Whether GitHub says the artifact was created before when (False when it does not say)."""
+    created = _rfc3339_utc(str(art.get("created_at") or ""))
+    return bool(created) and created < when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: Trust,
+                     now: dt.datetime) -> bool:
     url = art.get("archive_download_url")
     if not isinstance(url, str) or not url:
         raise GitHubAPIError("the artifact has no archive_download_url")
@@ -488,12 +515,25 @@ def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: T
             if not recs and not links:
                 raise GitHubAPIError("no failure record or link bundle inside")
             for d in recs:        # all of them, before importing any
-                _check_failure(origin, d)
-            for d in links:
-                _check_link_bundle(origin, d)
+                _check_failure(origin, d, now)
+            in_artifact = {}
+            for d in recs:
+                f = failures.read(d).record
+                in_artifact.setdefault(f.id, f)
+            for d in links:       # each against its record, before importing any
+                target = _check_link_bundle(origin, d)
+                record = store.stored_failure(target.id) or in_artifact.get(target.id)
+                if record is None:
+                    if _uploaded_before(art, now - LINK_BUNDLE_WAIT):
+                        raise OrphanLinks(f"links for {target.id}: the record is still not "
+                                          f"stored {LINK_BUNDLE_WAIT.days} days after upload; "
+                                          "refused for good")
+                    raise GitHubAPIError(f"links for {target.id}: the record is not in the store "
+                                         "yet (retried at the next collect)")
+                failures.check_link_bundle(d, record, now)
             # Records first, so a bundle's links can find a record in the same artifact.
             return any([store.import_failure(d) for d in recs]
-                       + [store.import_links(d) for d in links])
+                       + [store.import_links(d, now) for d in links])
         # One bundle at the root, or (with retries, V0-TST-03) one bundle per directory.
         dirs = [root] if (root / "run.json").is_file() else sorted(
             d for d in root.iterdir() if (d / "run.json").is_file())
@@ -504,8 +544,8 @@ def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: T
         return any([store.import_dir(d) for d in dirs])
 
 
-def collect(repo: str, store, token: str, get=http_get,
-            trust: Trust = Trust()) -> tuple[int, int, list[str]]:
+def collect(repo: str, store, token: str, get=http_get, trust: Trust = Trust(),
+            now: dt.datetime | None = None) -> tuple[int, int, list[str]]:
     """Import every result bundle and failure record that the repo's trusted runs kept.
 
     Returns (new, already stored, errors). One bad artifact is reported and skipped, so it does
@@ -513,6 +553,7 @@ def collect(repo: str, store, token: str, get=http_get,
     repo's GITHUB_TOKEN.
     """
     new = old = 0
+    now = now or dt.datetime.now(dt.UTC)
     errors = []
     runs: dict[int, dict] = {}     # workflow run id -> the run, fetched once
     default: list[str] = []
@@ -545,7 +586,7 @@ def collect(repo: str, store, token: str, get=http_get,
                 raise GitHubAPIError(f"size {_short(art.get('size_in_bytes'))} is not at most "
                                      f"{MAX_ARTIFACT_BYTES} bytes")
             origin = _origin(repo, art, trust, token, get, runs, default_branch, in_default)
-            if _import_artifact(art, store, token, get, origin, trust):
+            if _import_artifact(art, store, token, get, origin, trust, now):
                 new += 1
             else:
                 old += 1
@@ -553,6 +594,8 @@ def collect(repo: str, store, token: str, get=http_get,
                 store.mark_artifact(f"{art['name']}-{art.get('id', '')}")
         except Error as e:
             errors.append(f"{repo} artifact {art.get('name')}: {e}")
+            if isinstance(e, OrphanLinks):
+                store.mark_artifact(f"{art['name']}-{art.get('id', '')}")
     return new, old, errors
 
 
@@ -645,21 +688,13 @@ def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
     f = state.current
     existing = _find_issues(repo, f.id, token, call)
     if state.security or any(_withdrawn(i) for i in existing):
-        for issue in existing:
-            _patch(repo, issue, {"title": f"{failures.WITHHELD_TITLE} ({f.id})",
-                                 "body": failures.marker(f.id) + "\n" + failures.WITHHELD_BODY,
-                                 "state": "closed"}, token, call)
-        if existing:
-            urls = ", ".join(i["html_url"] for i in existing)
-            raise NeedsDeletion(f"{f.id} now looks security-related but was mirrored to {urls}; "
-                                "its text is hidden and closed but stays in the edit history. "
-                                "A repo admin must delete the issue.")
+        _withdraw(repo, f.id, existing, token, call)
         return "", False
     title, body = failures.issue_title(state), failures.issue_body(state)
+    want = {"title": title, "body": body, "state": "closed" if state.closed else "open"}
     if existing:
         keep = _close_duplicates(repo, existing, token, call)
-        _patch(repo, keep, {"title": title, "body": body,
-                            "state": "closed" if state.closed else "open"}, token, call)
+        _patch(repo, keep, want, token, call)
         return keep["html_url"], False
     labels = [FAILURE_LABEL, f"{FAILURE_LABEL}:{f.kind}"]
     for name in labels:
@@ -675,7 +710,28 @@ def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
                              "(the token needs issues: write)")
     # Another runner may have opened one at the same moment: keep the lowest number only. The
     # list may not show the issue just created yet, so it is added from the create's response.
-    now_there = {created["number"]: created,
-                 **{i["number"]: i for i in _find_issues(repo, f.id, token, call)}}
-    keep = _close_duplicates(repo, list(now_there.values()), token, call)
+    now_there = list({created["number"]: created,
+                      **{i["number"]: i for i in _find_issues(repo, f.id, token, call)}}.values())
+    if any(_withdrawn(i) for i in now_there):
+        # A racing runner withdrew an issue in the meantime: that is a security mark, so the
+        # issue just opened is withdrawn too.
+        _withdraw(repo, f.id, now_there, token, call)
+    keep = _close_duplicates(repo, now_there, token, call)
+    _patch(repo, keep, want, token, call)   # the kept issue may be another runner's, or closed
     return keep["html_url"], keep["number"] == created["number"]
+
+
+def _withdraw(repo: str, fid: str, issues: list[dict], token: str, call) -> None:
+    """Hide the text of every issue of the record and close it; raise NeedsDeletion if there
+    were any (editing does not remove the old text)."""
+    from qqresults import failures
+
+    for issue in issues:
+        _patch(repo, issue, {"title": f"{failures.WITHHELD_TITLE} ({fid})",
+                             "body": failures.marker(fid) + "\n" + failures.WITHHELD_BODY,
+                             "state": "closed"}, token, call)
+    if issues:
+        urls = ", ".join(i["html_url"] for i in issues)
+        raise NeedsDeletion(f"{fid} now looks security-related but was mirrored to {urls}; "
+                            "its text is hidden and closed but stays in the edit history. "
+                            "A repo admin must delete the issue.")

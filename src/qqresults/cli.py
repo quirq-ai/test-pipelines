@@ -225,9 +225,6 @@ def cmd_failure(args) -> int:
         fields = {k: getattr(args, k) for k in FAILURE_FIELDS if getattr(args, k)}
         f = failures.new(args.kind, args.repo, args.subject, security=args.security, **fields)
         state, created = failures.open_record(f, parent)
-        if args.demo:
-            failures.mark(state.path, "demo")
-            state = failures.read(state.path)
         if args.public_summary:
             # The record is write-once: on a repeat report, publish its summary only if this call
             # would have written the same one (the call that wrote it may not have opted in).
@@ -373,8 +370,6 @@ def build_parser() -> argparse.ArgumentParser:
                     help="security-looking; kept but never mirrored to a public issue")
     fa.add_argument("--public-summary", action="store_true",
                     help="show the summary in the public issue and upload (default: withheld)")
-    fa.add_argument("--demo", action="store_true",
-                    help="a planted demo record; the scorecard leaves it out")
     fa.add_argument("--public-copy", metavar="DIR",
                     help="write the record's public view under DIR, for upload")
     fa.add_argument("--link-copy", metavar="DIR",

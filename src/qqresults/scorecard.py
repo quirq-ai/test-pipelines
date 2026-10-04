@@ -10,6 +10,7 @@ import statistics
 from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 
+from qqresults import failures
 from qqresults.model import FailureKind, Run, RunKind, Verdict, VerdictStatus
 from qqresults.store import FileStore, RunFilter
 
@@ -304,16 +305,29 @@ RECORDED_KINDS = (FailureKind.CANARY_HELD.value, FailureKind.CANARY_ROLLBACK.val
                   FailureKind.AUTO_REVERT.value, FailureKind.FUZZ.value)
 
 
+# The one planted record that .github/workflows/failure-demo.yml reports and closes on every run
+# (V0-TST-04's done-when). It is fixed here, by id, rather than marked by whoever reports it, so no
+# pipeline can take its own open records out of the count.
+DEMO_RECORDS = frozenset({
+    failures.failure_id(FailureKind.CANARY_HELD.value, "quirq-ai/test-pipelines",
+                        "planted-canary-demo-v0"),
+})
+
+
 def failures_recorded(states) -> Metric:
-    """The share of failure records that link culprit, fix and covering test. Planted demo
-    records (the demo mark) and red runs are left out. A security record (every fuzz finding)
-    is stored without its values, so it is counted by id: its links are stored as withheld, which
+    """The share of failure records that link culprit, fix and covering test. Red runs and the
+    planted demo record (DEMO_RECORDS) are left out. A security record (every fuzz finding) is
+    stored without its values, so it is counted by id: its links are stored as withheld, which
     count as linked."""
     m = Metric("Failures fully recorded", "100%", unit="%")
+    red_runs = sum(1 for st in states if st.record.kind not in RECORDED_KINDS)
+    demos = sum(1 for st in states if st.record.kind in RECORDED_KINDS
+                and st.record.id in DEMO_RECORDS)
     counted = {st.record.id: st for st in states
-               if st.record.kind in RECORDED_KINDS and not st.demo}
-    left_out = sum(1 for st in states if st.record.kind not in RECORDED_KINDS or st.demo)
-    note = f" ({left_out} red-run or demo record(s) not counted)" if left_out else ""
+               if st.record.kind in RECORDED_KINDS and st.record.id not in DEMO_RECORDS}
+    notes = [note for n, note in [(red_runs, f"{red_runs} red-run record(s) not counted"),
+                                  (demos, f"{demos} demo record(s) not counted")] if n]
+    note = f" ({'; '.join(notes)})" if notes else ""
     if not counted:
         m.waiting_on = ("held canary, rollback, auto-revert or fuzz records in the window "
                         "(none opened)" + note)

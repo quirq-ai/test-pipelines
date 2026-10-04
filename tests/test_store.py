@@ -138,7 +138,7 @@ def workflow_run(run_id, repo="o/x", event="push", branch="main", sha="c1", atte
 
 
 def _collect_zips(st, repo, zips, runs=(), trust=github.Trust(), default_branch="main",
-                  fetched=None, compare=None):
+                  fetched=None, compare=None, now=None):
     """Collect a fake listing: zips are (name, data[, workflow run id[, size]]), listed newest
     first as GitHub does; runs are workflow_run()s (default: a push to main at c1). compare maps
     a commit to its status against the default branch (default: identical, so on it)."""
@@ -163,7 +163,7 @@ def _collect_zips(st, repo, zips, runs=(), trust=github.Trust(), default_branch=
         if url == f"{github.API}/repos/{repo}":
             return json.dumps({"default_branch": default_branch}).encode()
         return zips[int(url.rsplit("/", 1)[1])][1]
-    return github.collect(repo, st, "tok", get=get, trust=trust)
+    return github.collect(repo, st, "tok", get=get, trust=trust, now=now)
 
 
 def test_collect_imports_each_artifact_once(tmp_path):
@@ -653,17 +653,25 @@ def test_collect_refuses_a_malformed_failure_link(tmp_path):
     assert "is not a {field, value, at} record" in errors[0]
 
 
+def _now(minutes=0):
+    import datetime as dt
+    t = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=minutes)
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _link_zip(fid, repo="o/x", run_id="github/o/x/8/1/link", links=(("culprit", "c0ffee1"),),
-              schema="quirq-results/1"):
+              schema="quirq-results/1", at=None, bundles=None):
     """A link bundle as the link action uploads it (its contents at the zip's root), by default
-    from workflow run 8."""
+    from workflow run 8 and dated now. bundles: several (fid, links) in one artifact instead."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as z:
-        z.writestr("target.json", json.dumps({"id": fid, "repo": repo, "run_id": run_id,
-                                              "schema": schema}))
-        for i, (field, value) in enumerate(links):
-            z.writestr(f"links/{i}.json", json.dumps(
-                {"field": field, "value": value, "at": "2026-10-04T10:00:00Z"}))
+        for prefix, (bid, blinks) in ([("", (fid, links))] if bundles is None else
+                                      [(f"qq-failure-{b}/", (b, l)) for b, l in bundles]):
+            z.writestr(f"{prefix}target.json", json.dumps(
+                {"id": bid, "repo": repo, "run_id": run_id, "schema": schema}))
+            for i, (field, value) in enumerate(blinks):
+                z.writestr(f"{prefix}links/{i}.json", json.dumps(
+                    {"field": field, "value": value, "at": at or _now()}))
     return f"qq-failure-{fid}-link-8-1-abcd0123", buf.getvalue()
 
 
@@ -688,6 +696,15 @@ def test_collect_adds_a_link_bundle_to_its_stored_record(tmp_path):
     ({}, {"fid": "canary-held-xyz"}, "the id is not <kind>-<16 hex>"),
     ({}, {"schema": "other/1"}, "schema is not"),
     ({}, {"links": (("kind", "x"),)}, "is not a {field, value, at} record"),
+    # Only the security mark may travel in a link bundle: refused whole, not stripped.
+    ({}, {"links": (("culprit", "c0ffee1"), ("public_summary", "true"))},
+     "may not carry the public_summary mark"),
+    ({}, {"links": (("security", "false"),)}, "may not carry the security mark"),
+    ({}, {"links": (("demo", "true"),)}, "is not a {field, value, at} record"),
+    # A link dated far ahead would outrank every later link for good; one before the record
+    # was opened cannot be about it.
+    ({}, {"at": "9999-12-31T23:59:59Z"}, "is dated 9999-12-31T23:59:59Z, not between"),
+    ({}, {"at": "2020-01-01T00:00:00Z"}, "is dated 2020-01-01T00:00:00Z, not between"),
 ])
 def test_collect_refuses_forged_link_bundles(tmp_path, run, kw, error):
     from qqresults import failures
@@ -699,6 +716,59 @@ def test_collect_refuses_forged_link_bundles(tmp_path, run, kw, error):
                                    [_demo_run(), _demo_run(8, **run)], DEMO,
                                    compare={"t1": "ahead"})
     assert new == 0 and error in errors[0] and st.failure(fid).links == {}
+
+
+def test_a_link_dated_within_the_clock_skew_is_taken(tmp_path):
+    from qqresults import failures
+    art = _failure_zip(tmp_path / "f")
+    fid = failures.failure_id("canary-held", "o/x", "planted")
+    st = FileStore(tmp_path / "store")
+    assert _collect_zips(st, "o/x", [(*art, 7), (*_link_zip(fid, at=_now(4)), 8)],
+                         [_demo_run(), _demo_run(8)], DEMO) == (2, 0, [])
+
+
+def test_a_failure_artifacts_links_must_be_dated_after_its_opening(tmp_path):
+    from qqresults import failures
+    name, data = _failure_zip(tmp_path / "f")
+    buf = io.BytesIO(data)
+    with zipfile.ZipFile(buf, "a") as z:
+        z.writestr(f"{name.rsplit('-7-1', 1)[0]}/links/z-culprit.json", json.dumps(
+            {"field": "culprit", "value": "c0ffee1", "at": "9999-12-31T23:59:59Z"}))
+    st = FileStore(tmp_path / "store")
+    new, _, errors = _collect_zips(st, "o/x", [(name, buf.getvalue(), 7)], [_demo_run()], DEMO)
+    assert new == 0 and "is dated 9999-12-31T23:59:59Z" in errors[0] and st.failures() == []
+
+
+def test_an_artifact_of_link_bundles_is_imported_whole_or_not_at_all(tmp_path):
+    from qqresults import failures
+    art = _failure_zip(tmp_path / "f")
+    fid = failures.failure_id("canary-held", "o/x", "planted")
+    missing = failures.failure_id("canary-held", "o/x", "never reported")
+    st = FileStore(tmp_path / "store")
+    assert _collect_zips(st, "o/x", [(*art, 7)], [_demo_run()], DEMO)[2] == []
+    both = _link_zip(fid, bundles=[(fid, (("culprit", "c0ffee1"),)),
+                                   (missing, (("culprit", "c0ffee2"),))])
+    new, _, errors = _collect_zips(st, "o/x", [(*both, 8)], [_demo_run(8)], DEMO)
+    assert new == 0 and "not in the store yet" in errors[0]
+    assert st.failure(fid).links == {}          # the first bundle was not imported either
+
+
+def test_a_link_bundle_whose_record_never_comes_is_refused_for_good(tmp_path):
+    import datetime as dt
+    from qqresults import failures
+    fid = failures.failure_id("canary-held", "o/x", "never reported")
+    created = dt.datetime(2026, 10, 4, 10, 0, 0, tzinfo=dt.UTC)   # _collect_zips' first artifact
+    links = _link_zip(fid, at="2026-10-04T10:00:00Z")
+    st = FileStore(tmp_path / "store")
+    for days, seen in ((6, False), (8, True)):
+        now = created + dt.timedelta(days=days)
+        new, old, errors = _collect_zips(st, "o/x", [(*links, 8)], [_demo_run(8)], DEMO, now=now)
+        assert new == 0 and old == 0
+        assert ("refused for good" in errors[0]) is seen
+        assert ("retried at the next collect" in errors[0]) is not seen
+    # marked as read: the next collect does not fetch it again
+    assert _collect_zips(st, "o/x", [(*links, 8)], [_demo_run(8)], DEMO,
+                         now=created + dt.timedelta(days=9)) == (0, 1, [])
 
 
 def test_a_record_reported_twice_keeps_its_first_report(tmp_path):

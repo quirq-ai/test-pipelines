@@ -139,8 +139,14 @@ must be the one its kind, repo and subject give (unless the subject is the publi
 then still be `<kind>-<16 hex>`), and its
 `run_id` must name the run. A link bundle (from the `link` action) is held to the same: its
 `target.json` must name a record of the repo by a `<kind>-<16 hex>` id and name the run in its
-`run_id`, and its links are added only to a record already stored (a bundle listed before its
-record is retried at the next collect). Records are type-checked (strings,
+`run_id`. Its links are added only to a record already stored, and every bundle in an artifact
+is checked against its record before any is imported: a bundle whose record is not stored yet
+is retried at the next collect, and refused for good (and not read again) once it is 7 days
+old, since a record still missing after 28 scheduled collects was refused or has expired. A
+link bundle may carry no mark but `security`; one with any other mark is refused whole. Every
+link, in a record's artifact or a link bundle, must be dated between its record's opening and
+5 minutes from now (later links win, so a link dated far ahead would outrank every later one).
+Records are type-checked (strings,
 finite non-negative numbers, booleans, RFC 3339 UTC times like `2026-10-04T10:00:00Z`);
 artifacts over 20 MB, zipped or not, and bundles over 50,000 results are refused. Artifacts are
 read oldest first, so a record reported again keeps the opening time and run of its first report.
@@ -153,8 +159,7 @@ queue (`merge_group`, including a fork's PR once it is approved into the queue) 
 pull request can make that run's bundle say what they like, within its kind, run and commit. A
 failure record's links are additive: a later default-branch run can add links (and so close the
 record) to a record an earlier run opened, and a record with a digested subject may carry any id,
-so a default-branch run of an allowed workflow can add to any record of its repo, including the
-demo mark that leaves a record out of the scorecard.
+so a default-branch run of an allowed workflow can add to any record of its repo.
 
 The `results` branch is only ever added to, by the `scorecard` workflow.
 TODO(suraj): add a ruleset on the `results` branch that blocks force-pushes and deletion (only
@@ -263,8 +268,9 @@ writes the full record. Keep the detail where it belongs (the PR, the postmortem
 A record closes only when culprit, fix and covering test are linked (infra-config
 `postmortem.toml` `record_needs`), and the scorecard reports the share that are (TODO(suraj):
 plan §8 also lists the operation). The scorecard counts held canaries, canary rollbacks,
-auto-reverts and fuzz findings opened in the window; red-run records and records with the demo
-mark (`demo: "true"` on the failure action, as `failure-demo` passes) are left out. A fuzz
+auto-reverts and fuzz findings opened in the window; red-run records and the one planted record
+that `failure-demo` reports (fixed by its id in `scorecard.DEMO_RECORDS`, so no pipeline can
+take its own records out) are left out, each noted in the card. A fuzz
 finding, like any security record, is stored only as its id and marks, so it is counted by id
 and closes on its `withheld` links. A link stored as `withheld` counts as linked, so a record can
 close on values nobody can read publicly.

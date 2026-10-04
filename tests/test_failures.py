@@ -291,6 +291,63 @@ def test_a_create_closes_duplicates_its_list_shows(tmp_path):
     assert all(i["state_reason"] == "duplicate" for i in gh.issues[1:])
 
 
+def test_after_a_create_a_withdrawn_racing_issue_withdraws_the_new_one(tmp_path):
+    # Another runner's issue was withdrawn (a security mark) while the list lagged: the issue
+    # just opened must not stay public.
+    gh = FakeGitHub()
+    state, _ = held(tmp_path)
+    marker = failures.marker(state.record.id)
+    gh("POST", f"{github.API}/repos/o/x/issues", "tok",
+       {"title": f"{failures.WITHHELD_TITLE} ({state.record.id})", "state": "closed",
+        "body": marker + "\n" + failures.WITHHELD_BODY, "labels": ["qq-failure"]})
+    hidden = {1}
+
+    def lagging(method, url, token, body=None):
+        status, data = gh(method, url, token, body)
+        if method == "GET" and "/issues?" in url and hidden:
+            data = [i for i in data if i["number"] not in hidden]
+            hidden.clear()
+        return status, data
+
+    with pytest.raises(github.NeedsDeletion):
+        github.mirror_issue(state, "o/x", "tok", call=lagging)
+    assert [i["state"] for i in gh.issues] == ["closed", "closed"]
+    assert all(i["title"].startswith(failures.WITHHELD_TITLE) for i in gh.issues)
+
+
+def test_after_a_create_the_kept_issue_matches_the_record(tmp_path):
+    # The lowest issue (another runner's, closed early) is kept: it is reopened while the
+    # record is open, and the new one is closed as a duplicate.
+    gh = FakeGitHub()
+    state, _ = held(tmp_path)
+    gh("POST", f"{github.API}/repos/o/x/issues", "tok",
+       {"title": "t", "body": failures.marker(state.record.id), "labels": ["qq-failure"],
+        "state": "closed"})
+    hidden = {1}
+
+    def lagging(method, url, token, body=None):
+        status, data = gh(method, url, token, body)
+        if method == "GET" and "/issues?" in url and hidden:
+            data = [i for i in data if i["number"] not in hidden]
+            hidden.clear()
+        return status, data
+
+    url, made = github.mirror_issue(state, "o/x", "tok", call=lagging)
+    assert url == "https://github.com/o/x/issues/1" and not made
+    assert [i["state"] for i in gh.issues] == ["open", "closed"]
+    assert gh.issues[0]["body"] == failures.issue_body(state)
+    assert gh.issues[1]["state_reason"] == "duplicate"
+
+
+def test_a_closed_record_opens_its_issue_closed(tmp_path):
+    gh = FakeGitHub()
+    state, _ = held(tmp_path)
+    for field in ("culprit", "fix", "covering_test"):
+        failures.add_link(state.path, field, "c0ffee1")
+    url, made = github.mirror_issue(failures.read(state.path), "o/x", "tok", call=gh)
+    assert made and gh.issues[0]["state"] == "closed"
+
+
 def test_only_issues_whose_body_starts_with_the_marker_match(tmp_path):
     gh = FakeGitHub()
     state, _ = held(tmp_path)
@@ -984,9 +1041,9 @@ def test_a_crafted_link_bundle_cannot_publish_values_on_a_security_record(tmp_pa
         {"id": state.record.id, "repo": "o/x", "run_id": "github/o/x/1/1/j",
          "schema": "quirq-results/1"}))
     (crafted / "links" / "a.json").write_text(json.dumps(
-        {"field": "culprit", "value": "o/x@c0ffee1", "at": "2026-10-04T10:00:00Z"}))
+        {"field": "culprit", "value": "o/x@c0ffee1", "at": failures.now()}))
     (crafted / "links" / "b.json").write_text(json.dumps(
-        {"field": "issue", "value": "https://github.com/o/x/issues/3", "at": "2026-10-04T10:00:00Z"}))
+        {"field": "issue", "value": "https://github.com/o/x/issues/3", "at": failures.now()}))
     assert _collect(st, {f"{name}-link-1-1-c": _zip(crafted)})[2] == []
     stored = st.failure(state.record.id)
     assert stored.links["culprit"] == "withheld" and "issue" not in stored.links
@@ -1002,7 +1059,7 @@ def test_a_crafted_link_bundle_cannot_publish_values_on_a_security_record(tmp_pa
          "schema": "quirq-results/1"}))
     for field, value in (("culprit", "o/x@c0ffee1"), ("security", "true")):
         (marked / "links" / f"{field}.json").write_text(json.dumps(
-            {"field": field, "value": value, "at": "2026-10-04T10:00:00Z"}))
+            {"field": field, "value": value, "at": failures.now()}))
     assert _collect(plain, {f"{name2}-link-1-1-c": _zip(marked)})[2] == []
     stored2 = plain.failure(state2.record.id)
     assert stored2.security and stored2.links["culprit"] == "withheld"
@@ -1030,22 +1087,27 @@ def test_the_same_link_value_is_stored_once(tmp_path, monkeypatch):
         assert stored.links["culprit"] == value
 
 
-def test_the_demo_mark_reaches_the_store_and_the_scorecard_leaves_it_out(tmp_path, monkeypatch):
+def test_the_scorecard_leaves_out_only_the_planted_demo_record(tmp_path):
+    # The demo record is fixed by id; no report or link can take another record out.
     import datetime as dt
-    state, record = _open_and_upload(tmp_path, monkeypatch, "--demo")
-    assert state.demo
     st = FileStore(tmp_path / "store")
-    name = failures.dirname(state.record.id)
-    assert _collect(st, {f"{name}-1-1-a": record})[2] == []
-    assert st.failures()[0].demo
+    repo = "quirq-ai/test-pipelines"
+    for kind, subject in (("canary-held", "planted-canary-demo-v0"),   # failure-demo.yml's
+                          ("canary-held", "a real held canary"),
+                          ("red-run", "github/quirq-ai/test-pipelines/1/1/j")):
+        f = failures.new(kind, repo, subject, run_id=f"github/{repo}/1/1/j")
+        state, _ = failures.open_record(f, tmp_path / "scratch")
+        st.import_failure(state.path)
+    demo = failures.failure_id("canary-held", repo, "planted-canary-demo-v0")
+    assert scorecard.DEMO_RECORDS == {demo}
     now = dt.datetime.now(dt.UTC)
     card = scorecard.compute(st, now - dt.timedelta(days=1), now + dt.timedelta(minutes=1))
-    m = next(m for m in card.repos["o/x"] if m.name == "Failures fully recorded")
-    assert not m.measured and "1 red-run or demo record(s) not counted" in m.waiting_on
-    # a security demo record keeps its demo mark in the marks-only copy
-    sec, _ = held(tmp_path / "sec", security=True)
-    failures.mark(sec.path, "demo")
-    assert failures.read(failures.public_copy(failures.read(sec.path), tmp_path / "pub2")).demo
+    m = next(m for m in card.repos[repo] if m.name == "Failures fully recorded")
+    assert m.value == 0.0 and m.detail.startswith("0 of 1 records")
+    assert "(1 red-run record(s) not counted; 1 demo record(s) not counted)" in m.detail
+    with pytest.raises(SystemExit):     # there is no demo mark to set
+        cli.main(["failure", "open", "--dir", str(tmp_path / "x"), "--kind", "canary-held",
+                  "--repo", repo, "--subject", "mine", "--demo"])
 
 
 def test_scorecard_counts_canaries_rollbacks_reverts_and_fuzz_findings(tmp_path):
@@ -1073,7 +1135,7 @@ def test_scorecard_counts_canaries_rollbacks_reverts_and_fuzz_findings(tmp_path)
     card = scorecard.compute(st, now - dt.timedelta(days=1), now + dt.timedelta(minutes=1))
     m = next(m for m in card.repos["o/x"] if m.name == "Failures fully recorded")
     assert m.value == 50.0 and m.detail.startswith("2 of 4 records")
-    assert "1 red-run or demo record(s) not counted" in m.detail
+    assert "(1 red-run record(s) not counted)" in m.detail
     assert "1 security record(s) counted by id" in m.detail
 
 
@@ -1084,3 +1146,17 @@ def test_cli_link_copy_needs_the_run_that_linked(tmp_path):
     with pytest.raises(SystemExit):
         cli.main(["failure", "open", "--dir", str(tmp_path), "--kind", "canary-held", "--repo",
                   "o/x", "--subject", "s", "--link-copy", str(tmp_path / "out")])
+
+
+def test_a_link_bundle_carries_no_mark_but_security(tmp_path, monkeypatch):
+    # failure link --public-summary marks the local record; the bundle leaves that mark out,
+    # since collect refuses a bundle carrying it.
+    state, record = _open_and_upload(tmp_path, monkeypatch)
+    _, bundle = _link_and_upload(tmp_path, state.record.id, "--culprit", "c0ffee1",
+                                 "--public-summary")
+    assert failures.read(state.path).public_summary
+    fields = {json.loads(p.read_text())["field"] for p in (bundle / "links").glob("*.json")}
+    assert fields == {"culprit"}
+    st = FileStore(tmp_path / "store")
+    name = failures.dirname(state.record.id)
+    assert _collect(st, {f"{name}-1-1-a": record, f"{name}-link-1-1-b": _zip(bundle)})[2] == []

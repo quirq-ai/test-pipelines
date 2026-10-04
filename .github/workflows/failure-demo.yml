@@ -3,7 +3,7 @@
 # then checks there is one issue with its marker and one record in a store collected from the
 # artifacts. The planted record is then linked and closed through the link action, whose upload
 # closes the stored record too. Its subject never changes, so every run reuses the same record and
-# issue. It carries the demo mark, so the scorecard leaves it out.
+# issue. The scorecard leaves this one record out (scorecard.DEMO_RECORDS).
 name: failure-demo
 on:
   workflow_dispatch:
@@ -49,7 +49,6 @@ jobs:
           summary: "Planted held canary (V0-TST-04 demo, not a real failure)"
           stage: probe
           signal: health
-          demo: "true"
       - id: second
         uses: ./failure
         with:
@@ -58,7 +57,6 @@ jobs:
           summary: "Planted held canary (V0-TST-04 demo, not a real failure)"
           stage: probe
           signal: health
-          demo: "true"
       - name: one record, one issue
         env:
           GITHUB_TOKEN: ${{ github.token }}

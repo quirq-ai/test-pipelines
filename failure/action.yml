@@ -40,7 +40,6 @@ inputs:
   operation: {description: Key of the operation that held or rolled it back., required: false, default: ""}
   security: {description: Set to "true" to never mirror it publicly., required: false, default: "false"}
   public-summary: {description: Set to "true" to show the summary in the issue and artifact., required: false, default: "false"}
-  demo: {description: Set to "true" for a planted demo record (the scorecard leaves it out)., required: false, default: "false"}
   issue-repo:
     description: Where the issue goes (default this repository).
     required: false
@@ -73,7 +72,6 @@ runs:
         QQ_OPERATION: ${{ inputs.operation }}
         QQ_SECURITY: ${{ inputs.security }}
         QQ_PUBLIC_SUMMARY: ${{ inputs.public-summary }}
-        QQ_DEMO: ${{ inputs.demo }}
         QQ_ISSUE_REPO: ${{ inputs.issue-repo }}
       run: |
         set -euo pipefail
@@ -102,7 +100,6 @@ runs:
         fi
         [ "$QQ_SECURITY" != "true" ] || args+=(--security)
         [ "$QQ_PUBLIC_SUMMARY" != "true" ] || args+=(--public-summary)
-        [ "$QQ_DEMO" != "true" ] || args+=(--demo)
         dir="$RUNNER_TEMP/qq-failures"   # shared by every call in the job, so a repeat finds the record
         # One artifact name per job (a matrix leg is a job too), so another job's upload of the
         # same record never overwrites this job's security mark; repeats in this job overwrite.
