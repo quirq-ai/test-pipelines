@@ -142,3 +142,19 @@ def test_pasted_captured_output_with_long_attributes_is_still_cut():
             + b']]></failure></testcase></testsuite>')
     (r,) = junit.parse(data, "r")
     assert "SECRET" not in r.message
+
+
+def test_the_failure_type_is_kept_short_and_stripped():
+    xml = (b'<testsuite name="s"><testcase classname="c" name="a">'
+           b'<failure type="  java.lang.AssertionError " message="expected 1"/></testcase>'
+           b'<testcase classname="c" name="b"><error type="' + b"X" * 500 + b'"/></testcase>'
+           b'<testcase classname="c" name="c"><failure message="Failed"/></testcase>'
+           b'<testcase classname="c" name="d"><skipped type="pytest.skip"/></testcase>'
+           b'<testcase classname="c" name="e"><failure type="A"/><failure type="B"/>'
+           b'<failure type="A"/></testcase>'
+           b'<testcase classname="c" name="f"><failure type="A"/><failure message="x"/>'
+           b'</testcase></testsuite>')
+    types = {r.test_id: r.failure_type for r in junit.parse(xml, "r")}
+    assert types == {"c::a": "java.lang.AssertionError", "c::b": "X" * junit.MAX_TYPE,
+                     "c::c": "", "c::d": "", "c::e": "A / B",
+                     "c::f": ""}

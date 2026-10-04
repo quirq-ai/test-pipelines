@@ -213,7 +213,16 @@ class Result(_Record):
     raw: str = ""                   # the original report element, truncated; "" unless the sink
                                     # was asked to keep it (--keep-raw-junit)
     metrics: dict[str, dict[str, Any]] = field(default_factory=dict)  # name -> {value, unit}; for bench
+    failure_type: str = ""          # the `type` of <failure>/<error> (junit.MAX_TYPE), when given
     schema: str = SCHEMA
+
+    def to_dict(self) -> dict[str, Any]:
+        """Without failure_type when it is "", so a Result with no type keeps the bytes and the
+        id it had before the field existed."""
+        data = super().to_dict()
+        if not data["failure_type"]:
+            del data["failure_type"]
+        return data
 
     @property
     def id(self) -> str:

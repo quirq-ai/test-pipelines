@@ -517,3 +517,98 @@ def test_any_base_run_that_disagrees_blocks():
     missing = retry.decide(run, fail, retries,
                            [base("", "FAIL"), bundle.Bundle(base("-run2", "FAIL").run, [], same)])
     assert not missing.passed and "no result without the change" in missing.tests[0].reason
+
+
+def _decide_kinds(change, base, change_type="", base_type=""):
+    """decide() with one FAIL with the change, one retry and two base runs, all FAIL."""
+    run = Run(id="r", repo="o/x", kind="presubmit", commit="c")
+
+    def bundle_of(role, suffix, message, failure_type):
+        c = retry.child_run(run, role, commit="b" * 40 if role == "base" else "")
+        c = Run.from_dict({**c.to_dict(), "id": f"{c.id}{suffix}"})
+        rs = [Result(run_id=c.id, test_id="t::a", status="FAIL", expected=False, message=message,
+                     failure_type=failure_type)]
+        return bundle.Bundle(c, rs, retry.verdict.compute(c, rs))
+
+    first = [Result(run_id="r", test_id="t::a", status="FAIL", expected=False, message=change,
+                    failure_type=change_type)]
+    return retry.decide(run, first, [bundle_of("retry", "1", change, change_type)],
+                        [bundle_of("base", "", base, base_type),
+                         bundle_of("base", "-run2", base, base_type)])
+
+
+NO_KIND = "no signal: no kind to compare"
+
+
+@pytest.mark.parametrize("change, base, reason", [
+    # 1. an ANSI code and a space ahead of the text: the escape was the kind on both sides
+    ("\x1b[31m ValueError: bad\x1b[0m", "\x1b[31m FileNotFoundError: gen/x\x1b[0m",
+     "no signal: fails differently without the change (FileNotFoundError: vs ValueError:)"),
+    ("[31m ValueError: bad", "[31m FileNotFoundError: gen/x",   # ESC dropped by the runner
+     "no signal: fails differently without the change (FileNotFoundError: vs ValueError:)"),
+    # 2. a generic message for every failure, and pytest's `E   ` prefix
+    ("Failed", "Failed", NO_KIND),
+    ("FAIL: TestX", "FAIL: TestX", NO_KIND),
+    ("error: exit status 1", "Error: exit status 1", NO_KIND),
+    ("failure", "failure", NO_KIND),
+    ("E   ValueError: bad\nE   more", "E   FileNotFoundError: gen/x",
+     "no signal: fails differently without the change (FileNotFoundError: vs ValueError:)"),
+    ("E", "E", NO_KIND),
+    # 3. no message attribute: the first body line of a traceback
+    ("def test_lookup():\n    table = calc.load(...)\nE   ValueError: bad",
+     "def test_lookup():\n    table = calc.load(...)\nE   FileNotFoundError: gen/x", NO_KIND),
+    # 4. a message that was only captured output, cut out by the R3 cap
+    ("[captured output removed] ValueError: bad", "[captured output removed] FileNotFoundError",
+     NO_KIND),
+    ("--- 1 ---", "--- 1 ---", NO_KIND),           # no letters
+    # review of #25: a capital E inside the first word is not the pytest marker
+    ("FAILURE", "FAILURE", NO_KIND),
+    ("FAILURE see log", "FAILURE see log", NO_KIND),
+    # generic words behind other punctuation, and in other cases
+    ("FAILED.", "FAILED.", NO_KIND),
+    ("Error!", "Error!", NO_KIND),
+    ("Def", "Def", NO_KIND),
+], ids=["ansi", "ansi-no-esc", "generic-Failed", "generic-FAIL", "generic-error",
+        "generic-failure", "pytest-E", "bare-E", "def", "captured", "no-letters",
+        "FAILURE", "FAILURE-words", "FAILED-dot", "Error-bang", "Def"])
+def test_an_uninformative_kind_never_exonerates(change, base, reason):
+    # AUDIT-R5 second review: each of these used to be one kind on both sides, so any failure
+    # on base exonerated any failure with the change.
+    v = _decide_kinds(change, base)
+    assert not v.passed and v.tests[0].status == "UNEXPECTED"
+    assert v.tests[0].reason.startswith(reason)
+
+
+@pytest.mark.parametrize("change, base", [
+    ("\x1b[31m AssertionError: planted\x1b[0m", "\x1b[1;31mAssertionError: planted"),
+    ("E   AssertionError: planted", "E   AssertionError: planted\nE   assert False"),
+], ids=["ansi", "pytest-E"])
+def test_the_same_kind_behind_markup_still_exonerates(change, base):
+    v = _decide_kinds(change, base)
+    assert v.passed and v.tests[0].status == "EXONERATED"
+
+
+def test_the_failure_type_is_the_kind_when_every_failure_has_one():
+    # The same first word, but a different exception type: no signal.
+    v = _decide_kinds("expected 1 but was 2", "expected 1 but was 2",
+                      change_type="java.lang.IllegalStateException",
+                      base_type="java.io.FileNotFoundException")
+    assert not v.passed and v.tests[0].reason == (
+        "no signal: fails differently without the change "
+        "(java.io.FileNotFoundException vs java.lang.IllegalStateException)")
+    # Generic messages that carry the same type are one kind.
+    same = _decide_kinds("Failed", "Failed", change_type="AssertionError",
+                         base_type="AssertionError")
+    assert same.passed and same.tests[0].status == "EXONERATED"
+    # A generic type is no kind either.
+    generic = _decide_kinds("AssertionError: x", "AssertionError: x", change_type="failure",
+                            base_type="failure")
+    assert not generic.passed and generic.tests[0].reason.startswith(NO_KIND)
+    # A root exception class is no kind either.
+    for root in ("Exception", "java.lang.Throwable"):
+        broad = _decide_kinds("x", "y", change_type=root, base_type=root)
+        assert not broad.passed and broad.tests[0].reason.startswith(NO_KIND)
+    # A type on one side only: the messages decide, for every result alike.
+    one_sided = _decide_kinds("AssertionError: x", "AssertionError: y",
+                              change_type="AssertionError")
+    assert one_sided.passed and one_sided.tests[0].status == "EXONERATED"
