@@ -59,7 +59,8 @@ def test_github_merge_group_is_a_gate_run(tmp_path):
         "head_sha": "m1", "head_ref": "refs/heads/gh-readonly-queue/main/pr-42-b0", "base_sha": "b0",
         "base_ref": "refs/heads/main"}, "repository": {"default_branch": "main"}})
     run = github.run_from_env(env)
-    assert run.kind == RunKind.GATE and run.commit == "m1" and run.base_commit == "b0"
+    assert run.kind == RunKind.GATE and run.commit == "m1" and run.base_commit == "m1^1"
+    assert run.change.base_sha == "b0"
     assert run.change.number == 42 and run.branch == "main"
     assert run.id == "github/quirq-ai/xo-space/991/2/presubmit"
     assert run.url == "https://github.com/quirq-ai/xo-space/actions/runs/991/attempts/2"
@@ -68,7 +69,10 @@ def test_github_merge_group_is_a_gate_run(tmp_path):
 def test_github_pull_request_and_push(tmp_path):
     pr = github.run_from_env(gh_env(tmp_path, "pull_request", {"pull_request": {
         "number": 7, "head": {"sha": "h7"}, "base": {"sha": "b7", "ref": "main"}}}), name="unit")
-    assert (pr.kind, pr.change.number, pr.change.head_sha, pr.base_commit) == ("presubmit", 7, "h7", "b7")
+    assert (pr.kind, pr.change.number, pr.change.head_sha, pr.base_commit) == ("presubmit", 7, "h7", "m1^1")
+    target = github.run_from_env(gh_env(tmp_path, "pull_request_target", {"pull_request": {
+        "number": 7, "head": {"sha": "h7"}, "base": {"sha": "b7", "ref": "main"}}}))
+    assert target.base_commit == "b7"   # pull_request_target tests the branch, not a merge
     assert pr.id.endswith("/presubmit/unit")
     push = github.run_from_env(gh_env(tmp_path, "push", {"before": "p0",
                                                          "repository": {"default_branch": "main"}}))

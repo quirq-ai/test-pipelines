@@ -51,7 +51,9 @@ inputs:
     required: false
     default: ""
   base:
-    description: The base commit for rerun (default the run's base, from the event).
+    description: >-
+      The only base for rerun. Default: the tested commit without the change (a PR or queue
+      entry's first parent, a push's before) and also the target branch's commit, both must fail.
     required: false
     default: ""
   infra-config:

@@ -96,7 +96,7 @@ class Run(_Record):
     kind: str                       # a RunKind
     commit: str                     # the commit that was tested (for the gate: the merge result)
     backend: str = ""               # which backend described the run; see backends/
-    base_commit: str = ""           # the base it was merged onto, when known
+    base_commit: str = ""           # the tree without the change (e.g. <commit>^1 in a queue)
     branch: str = ""
     change: Change | None = None
     workflow: str = ""
