@@ -169,7 +169,7 @@ def test_a_failed_base_setup_never_exonerates(tmp_path, state):
     checked = retry.recheck(run, sink.junit.parse_file(repo / "results/junit.xml", run.id),
                             CMD, repo, Policy(), base,
                             setup='[ "$QQ_SIDE" = change ]')          # fails on the base side
-    assert not checked.verdict.passed and checked.base is None
+    assert not checked.verdict.passed and not checked.bases
     assert "setup command failed on the base side" in checked.verdict.reason
 
 
@@ -180,3 +180,61 @@ def test_a_failed_restore_fails_the_step(tmp_path, state):
         retry.recheck(run, sink.junit.parse_file(repo / "results/junit.xml", run.id),
                       CMD, repo, Policy(), base, setup='[ "$QQ_SIDE" = base ]')
     assert len(git(repo, "worktree", "list").splitlines()) == 1   # the base worktree is gone
+
+
+def _queue_run(repo, tmp_path, target):
+    from qqresults.model import Change
+    run = first_run(repo, tmp_path)
+    return Run.from_dict({**run.to_dict(), "kind": "gate", "base_commit": f"{run.commit}^1",
+                          "change": Change(repo="o/x", number=2, base_sha=target).to_dict()})
+
+
+def test_a_fix_queued_ahead_cannot_exonerate_a_change_that_breaks_the_test_again(tmp_path, state):
+    # Main is red on t::add; fix A is queued ahead; entry B breaks t::add again. The queue tests
+    # merge(A, B); its base_sha is main, where t::add also fails, and its first parent is A.
+    repo, main = repo_with(tmp_path, "t::add fail\n", "t::add pass\n")    # HEAD is fix A
+    (repo / "cases.txt").write_text("t::add fail\n")
+    git(repo, "commit", "-q", "-am", "entry B")
+    run = _queue_run(repo, tmp_path, main)
+    assert retry.candidate_bases(run) == [f"{run.commit}^1", main]
+    path, b = sink.sink(run, ["results/*.xml"], repo, tmp_path / "out", rerun_cmd=CMD)
+    assert statuses(b) == {"t::add": "UNEXPECTED"} and not b.verdict.passed
+
+
+def test_a_rebase_queue_cannot_exonerate_a_pr_whose_earlier_commit_broke_the_test(tmp_path, state):
+    # Main is green; the PR's c1 breaks t::add and c2 is unrelated. A rebase queue tests c2,
+    # whose first parent c1 also fails; main (base_sha) passes, so the failure is the PR's.
+    repo, main = repo_with(tmp_path, "t::add pass\n", "t::add fail\n")    # HEAD is c1
+    (repo / "other.txt").write_text("x")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "c2")
+    path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
+                        tmp_path / "out", rerun_cmd=CMD)
+    assert statuses(b) == {"t::add": "UNEXPECTED"}
+
+
+def test_a_failure_at_every_base_is_still_exonerated(tmp_path, state):
+    repo, main = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")
+    path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
+                        tmp_path / "out", rerun_cmd=CMD)
+    assert statuses(b) == {"t::add": "EXONERATED"} and len(b.verdict.inputs) == 2   # retry1, one base run
+
+
+def test_two_distinct_bases_both_run(tmp_path, state):
+    repo, main = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")    # HEAD is c1
+    (repo / "other.txt").write_text("x")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "c2")
+    path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
+                        tmp_path / "out", rerun_cmd=CMD)
+    assert statuses(b) == {"t::add": "EXONERATED"}
+    assert [i.rsplit("/", 1)[1] for i in b.verdict.inputs] == ["retry1", "base", "base2"]
+    assert (tmp_path / "out" / "qq-results-local_o_x_r1_base2").is_dir()
+
+
+def test_a_second_base_that_cannot_be_checked_out_never_exonerates(tmp_path, state):
+    repo, _ = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")
+    path, b = sink.sink(_queue_run(repo, tmp_path, "0" * 40), ["results/*.xml"], repo,
+                        tmp_path / "out", rerun_cmd=CMD)
+    assert statuses(b) == {"t::add": "UNEXPECTED"} and "base comparison failed" in b.verdict.reason
+    assert (tmp_path / "out" / "qq-results-local_o_x_r1_base").is_dir()   # the first base is kept

@@ -119,9 +119,12 @@ directory. If the tests import installed code (an editable install, a build outs
 pass `setup`: it runs in the base worktree before the base tests and in the change's checkout
 afterwards, or the base side would test the change's code and wrongly exonerate it. If the base
 cannot be checked out or `setup` fails there, the retries are still stored and nothing is
-exonerated; if `setup` fails to restore the change, the step fails. In the merge
-queue the base is the target branch, so failures from changes queued ahead count against this
-one, which errs towards blocking. The rerun command comes from the builder, so the core never names a runner;
+exonerated; if `setup` fails to restore the change, the step fails. The base is the tested
+commit without this change: for a pull request or a merge-queue entry, the tested merge commit's
+first parent; for a push, the commit before it. When the target branch's commit (base_sha)
+differs, the test must also fail there: a failure is exonerated only if it fails at every base.
+So neither a fix queued ahead nor a rebase queue (whose first parent is the PR's own earlier
+commit) can exonerate a regression. The rerun command comes from the builder, so the core never names a runner;
 `$QQ_RETRY_TESTS` lists the failed test ids for a command that can select them. CI proves the
 done-when with `tools/planted_demo.sh`: the planted failure is exonerated, and changes that break
 a test or the code under it still block. "Through the gate" waits for the merge queue (V0-ORG-03).
