@@ -2,8 +2,11 @@
 
     qqresults sink --junit GLOB [--junit GLOB ...] --out DIR [--backend github|local] [--kind K]
                    [--rerun CMD [--base SHA] [--infra-config PATH]] [--fail-on-verdict]
+                   [--keep-raw-junit]
         Normalize this job's JUnit reports into one write-once run bundle under DIR; with
-        --rerun, retry failed tests and compare them with base first (V0-TST-03).
+        --rerun, retry failed tests and compare them with base first (V0-TST-03). Results keep
+        structured fields and the head of each message; --keep-raw-junit also keeps each
+        <testcase> element, captured output included, which publishes it for good.
     qqresults show BUNDLE_DIR [--json]
         Print a bundle's verdict.
     qqresults import --store DIR BUNDLE_DIR...
@@ -68,7 +71,7 @@ def cmd_sink(args) -> int:
         pol = dataclasses.replace(pol, compare_with_base=False)
     path, b = sink.sink(run, args.junit, Path(args.root).resolve(), Path(args.out),
                         rerun_cmd=args.rerun or "", policy=pol, base_commit=args.base or "",
-                        setup=args.setup or "")
+                        setup=args.setup or "", keep_raw=args.keep_raw_junit)
     v = b.verdict
     print(f"run {run.id} ({run.kind}): {len(b.results)} result(s) -> {path}")
     print(f"verdict: {'PASS' if v.passed else 'FAIL'} {v.counts} {v.reason}".rstrip())
@@ -297,6 +300,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-base", action="store_true", help="do not compare with base")
     s.add_argument("--fail-on-verdict", action="store_true",
                    help="exit 1 when the verdict fails (use when the sink decides the check)")
+    s.add_argument("--keep-raw-junit", action="store_true",
+                   help="also keep each <testcase> element, <system-out>/<system-err> included "
+                        "(up to 16,000 characters), in the bundle: it is published permanently "
+                        "in the artifact and the write-once results store")
     s.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"),
                    help=argparse.SUPPRESS)
     s.set_defaults(func=cmd_sink)

@@ -22,7 +22,7 @@ def test_pytest_report_is_normalized(junit_dir):
     assert (skipped.status, skipped.expected, skipped.message.split("\n")[0]) == (
         Status.SKIP, True, "not yet")
     assert bad.duration_s == 0.002
-    assert bad.raw.startswith("<testcase") and bad.source == "pytest.xml"
+    assert bad.raw == "" and bad.source == "pytest.xml"     # kept only with keep_raw (audit R3)
     assert all(r.run_id == "run-1" for r in rs.values())
 
 
@@ -72,7 +72,42 @@ def test_entity_bomb_is_refused():
 def test_long_messages_are_truncated():
     data = b'<testsuite name="s"><testcase name="a"><failure message="' + b"x" * 10_000 + b'"/></testcase></testsuite>'
     (r,) = junit.parse(data, "r")
-    assert len(r.message) < 4_100 and r.message.endswith("characters truncated]")
+    assert len(r.message) < 1_100 and r.message.endswith("characters truncated]")
+
+
+CAPTURED = b"""<testsuite name="s"><testcase name="a"><failure message="assert 1 == 2">Traceback
+""" + b"".join(b"  frame %d\n" % i for i in range(100)) + b"""</failure>
+    <system-out>TOKEN=hunter2 printed by the test</system-out>
+    <system-err>password: hunter3</system-err></testcase></testsuite>"""
+
+
+def test_by_default_only_the_head_of_the_message_is_kept():
+    (r,) = junit.parse(CAPTURED, "r")
+    assert r.raw == ""
+    assert "hunter2" not in r.to_json() and "hunter3" not in r.to_json()
+    lines = r.message.split("\n")
+    assert lines[0] == "assert 1 == 2" and lines[1] == "Traceback"
+    assert len(lines) == junit.MAX_MESSAGE_LINES + 1 and lines[-1] == "... [82 lines truncated]"
+
+
+def test_captured_output_pasted_into_a_message_is_cut_out():
+    data = b"""<testsuite name="s"><testcase name="a"><failure message="boom">before
+        &lt;system-out&gt;TOKEN=hunter2&lt;/system-out&gt; after
+        &lt;SYSTEM-ERR attr="x"&gt;unterminated hunter3</failure></testcase></testsuite>"""
+    (r,) = junit.parse(data, "r")
+    assert "hunter2" not in r.message and "hunter3" not in r.message
+    assert "before" in r.message and "after" in r.message
+    assert r.message.count("[captured output removed]") == 2
+
+
+def test_keep_raw_keeps_the_element_capped():
+    (r,) = junit.parse(CAPTURED, "r", keep_raw=True)
+    assert r.raw.startswith("<testcase") and "<system-out>TOKEN=hunter2" in r.raw
+    assert len(r.message.split("\n")) == junit.MAX_MESSAGE_LINES + 1   # capped all the same
+    big = b'<testsuite name="s"><testcase name="a"><system-out>' + b"x" * 20_000 + \
+        b"</system-out></testcase></testsuite>"
+    (r,) = junit.parse(big, "r", keep_raw=True)
+    assert len(r.raw) < junit.MAX_RAW + 50 and r.raw.endswith("characters truncated]")
 
 
 @pytest.mark.parametrize("time, expected", [("1.5", 1.5), ("1,5", None), ("nan", None),

@@ -103,6 +103,19 @@ def test_cli_sink_and_show(tmp_path, junit_dir, capsys):
     assert "UNEXPECTED tests.test_greet::test_goodbye" in shown.replace("  ", " ").replace("  ", " ")
 
 
+def test_raw_junit_is_kept_only_on_request(tmp_path, junit_dir):
+    root = good_reports(tmp_path, junit_dir)
+    base = ["sink", "--backend", "local", "--repo", "o/x", "--commit", "c", "--junit",
+            "results/*.xml", "--root", str(root)]
+    assert cli.main(base + ["--out", str(tmp_path / "default")]) == 0
+    (path,) = (tmp_path / "default").iterdir()
+    assert all(r.raw == "" for r in bundle.read(path).results)
+    assert '"raw":""' in (path / bundle.RESULTS).read_text()      # the field is still written
+    assert cli.main(base + ["--out", str(tmp_path / "kept"), "--keep-raw-junit"]) == 0
+    (path,) = (tmp_path / "kept").iterdir()
+    assert all(r.raw.startswith("<testcase") for r in bundle.read(path).results)
+
+
 def test_cli_reports_bad_xml_in_one_line(tmp_path, junit_dir, capsys):
     code = cli.main(["sink", "--backend", "local", "--repo", "o/x", "--commit", "c", "--junit",
                      "not-junit.xml", "--root", str(junit_dir), "--out", str(tmp_path)])

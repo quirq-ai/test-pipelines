@@ -96,7 +96,7 @@ def git(cwd: Path, *args: str) -> str:
 
 
 def run_tests(cmd: str, cwd: Path, tests: list[str], run: Run, runner: Runner = shell,
-              side: str = "change") -> list[Result]:
+              side: str = "change", keep_raw: bool = False) -> list[Result]:
     """Run cmd once in cwd and return its results for `tests`."""
     with tempfile.TemporaryDirectory(prefix="qq-retry-") as tmp:
         out = Path(tmp) / "junit"
@@ -107,7 +107,8 @@ def run_tests(cmd: str, cwd: Path, tests: list[str], run: Run, runner: Runner = 
         wanted = set(tests)
         results = []
         for path in sorted(out.rglob("*.xml")):
-            results += [r for r in junit.parse_file(path, run.id, source=path.relative_to(out).as_posix())
+            source = path.relative_to(out).as_posix()
+            results += [r for r in junit.parse_file(path, run.id, source=source, keep_raw=keep_raw)
                         if r.test_id in wanted]
         return results
 
@@ -186,7 +187,8 @@ class Rechecked:
 
 
 def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy,
-            base_commit: str = "", runner: Runner = shell, setup: str = "") -> Rechecked:
+            base_commit: str = "", runner: Runner = shell, setup: str = "",
+            keep_raw: bool = False) -> Rechecked:
     """Retry the failed tests, then compare the still-failing ones with base."""
     retries: list[bundle.Bundle] = []
     failing = [c.test_id for c in verdict.compute(run, results).tests
@@ -200,7 +202,7 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
     remaining = list(failing)
     for n in range(1, policy.retry_failed + 1):
         child = child_run(run, "retry", n)
-        rs = run_tests(cmd, cwd, remaining, child, runner, side="change")
+        rs = run_tests(cmd, cwd, remaining, child, runner, side="change", keep_raw=keep_raw)
         child = Run.from_dict({**child.to_dict(), "results_found": bool(rs)})
         retries.append(bundle.Bundle(child, rs, verdict.compute(child, rs)))
         remaining = [t for t in remaining if not _passed(t, rs)]
@@ -217,7 +219,7 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
                 if _resolve(cwd, commit) in {b.run.commit for b in bases}:
                     continue                  # e.g. the first parent is base_sha itself
                 bases += run_on_base(run, remaining, cmd, cwd, commit, runner, setup, n,
-                                     runs=policy.retry_failed + 1)
+                                     runs=policy.retry_failed + 1, keep_raw=keep_raw)
             except RetryError as e:   # keep the run and its retries; never exonerate without data
                 base_error = str(e)
                 break
@@ -239,7 +241,7 @@ def _resolve(cwd: Path, commit: str) -> str:
 
 def run_on_base(run: Run, tests: list[str], cmd: str, cwd: Path, base_commit: str,
                 runner: Runner = shell, setup: str = "", n: int = 1,
-                runs: int = 1) -> list[bundle.Bundle]:
+                runs: int = 1, keep_raw: bool = False) -> list[bundle.Bundle]:
     """Run the tests `runs` times at base_commit, in one worktree set up once."""
     try:
         git(cwd, "cat-file", "-e", f"{base_commit}^{{commit}}")
@@ -259,7 +261,7 @@ def run_on_base(run: Run, tests: list[str], cmd: str, cwd: Path, base_commit: st
             out = []
             for k in range(1, runs + 1):
                 c = child if k == 1 else Run.from_dict({**child.to_dict(), "id": f"{child.id}-run{k}"})
-                rs = run_tests(cmd, tree, tests, c, runner, side="base")
+                rs = run_tests(cmd, tree, tests, c, runner, side="base", keep_raw=keep_raw)
                 c = Run.from_dict({**c.to_dict(), "results_found": bool(rs)})
                 out.append(bundle.Bundle(c, rs, verdict.compute(c, rs)))
         finally:

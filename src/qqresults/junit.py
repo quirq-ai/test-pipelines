@@ -12,14 +12,24 @@ if adapters start emitting very large reports.
 from __future__ import annotations
 
 import math
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from qqresults.errors import Error
 from qqresults.model import Result, Status
 
-MAX_MESSAGE = 4_000     # characters of a failure message kept on the normalized Result
-MAX_RAW = 16_000        # characters of the original <testcase> element kept as raw
+# What a Result keeps is published for good: in the bundle artifact and on the write-once
+# `results` branch. So by default it holds the structured fields and the head of the failure
+# message only, never the <testcase> element with its <system-out>/<system-err>, which can hold
+# anything a test printed (audit R3). The head of a message (the assertion and the first frames)
+# is what tells failures apart; the rest is in the job log, which can be deleted.
+MAX_MESSAGE = 1_000     # characters of a failure or skip message kept on the normalized Result
+MAX_MESSAGE_LINES = 20  # and lines of it, so a long traceback keeps only its head
+MAX_RAW = 16_000        # characters of the original <testcase> element kept as raw, opt-in only
+
+_CAPTURED = re.compile(r"<(system-out|system-err)\b[^>]*?(?:/>|>.*?(?:</\1\s*>|$))",
+                       re.DOTALL | re.IGNORECASE)
 
 
 class JUnitError(Error):
@@ -30,6 +40,20 @@ def _truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + f"\n... [{len(text) - limit} characters truncated]"
+
+
+def _cap_message(text: str) -> str:
+    """At most MAX_MESSAGE_LINES lines and MAX_MESSAGE characters, without captured output.
+
+    <system-out>/<system-err> are siblings of <failure>, so they are never part of a message;
+    a runner that pastes them into the message text as markup still has them cut out here.
+    """
+    text = _CAPTURED.sub("[captured output removed]", text)
+    lines = text.split("\n")
+    if len(lines) > MAX_MESSAGE_LINES:
+        text = "\n".join(lines[:MAX_MESSAGE_LINES]) + (
+            f"\n... [{len(lines) - MAX_MESSAGE_LINES} lines truncated]")
+    return _truncate(text, MAX_MESSAGE)
 
 
 def _duration(value: str | None) -> float | None:
@@ -56,7 +80,7 @@ def _outcome(case: ET.Element) -> tuple[Status, str]:
     for tag, status in (("error", Status.CRASH), ("failure", Status.FAIL), ("skipped", Status.SKIP)):
         children = case.findall(tag)
         if children:
-            return status, _truncate("\n\n".join(_message(c) for c in children), MAX_MESSAGE)
+            return status, _cap_message("\n\n".join(_message(c) for c in children))
     return Status.PASS, ""
 
 
@@ -69,8 +93,12 @@ def _cases(element: ET.Element, suite: str):
             yield from _cases(child, child.get("name") or suite)
 
 
-def parse(data: bytes, run_id: str, source: str = "") -> list[Result]:
-    """Normalize one JUnit XML report into Results for run_id."""
+def parse(data: bytes, run_id: str, source: str = "", keep_raw: bool = False) -> list[Result]:
+    """Normalize one JUnit XML report into Results for run_id.
+
+    raw stays empty unless keep_raw: the element (with its captured output) is then kept, up to
+    MAX_RAW characters, and published with the rest of the bundle.
+    """
     try:
         root = ET.fromstring(data)
     except ET.ParseError as e:
@@ -98,14 +126,14 @@ def parse(data: bytes, run_id: str, source: str = "") -> list[Result]:
             message=message,
             file=case.get("file") or "",
             source=source,
-            raw=_truncate(ET.tostring(case, encoding="unicode"), MAX_RAW),
+            raw=_truncate(ET.tostring(case, encoding="unicode"), MAX_RAW) if keep_raw else "",
         ))
     return results
 
 
-def parse_file(path: Path, run_id: str, source: str = "") -> list[Result]:
+def parse_file(path: Path, run_id: str, source: str = "", keep_raw: bool = False) -> list[Result]:
     try:
         data = path.read_bytes()
     except OSError as e:
         raise JUnitError(f"{path}: cannot read: {e.strerror}") from None
-    return parse(data, run_id, source or str(path))
+    return parse(data, run_id, source or str(path), keep_raw=keep_raw)
