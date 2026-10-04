@@ -50,7 +50,7 @@ def test_unmeasured_metrics_name_what_they_wait_on(tmp_path):
     assert not metric(card, "quirq-ai/innernet", "Main-red time").measured
     md = scorecard.to_markdown(card)
     assert "| Gate time-to-green | not measured |" in md
-    assert "| Cache hit rate | at least 90% (P3+) | V0-RBE-01" in md
+    assert "| Cache hit rate | at least 90% (P3+) | V0-RBE-02" in md
 
 
 def test_red_main_at_the_end_counts_until_now(tmp_path):
@@ -290,3 +290,48 @@ def test_a_newer_green_before_an_older_red_is_not_negative_red_time(tmp_path):
     _push(st, "p2", "c2", "c1", "2026-10-04T10:10:00Z")              # already green
     m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Main-red time")
     assert m.value == 0.0 and "red now" not in m.detail
+
+
+def test_stored_runs_of_unknown_status_are_not_waiting_on_runs(tmp_path):
+    from qqresults import bundle, verdict
+    from qqresults.model import Run
+    st = FileStore(tmp_path)
+    for rid, kind in (("pr", "presubmit"), ("post", "postsubmit")):
+        # No test results and no job status (a sink before job status was recorded, say).
+        run = Run(id=rid, repo="quirq-ai/innernet", kind=kind, commit="c1",
+                  finished_at="2026-10-04T09:00:00Z", results_found=False)
+        st.put(bundle.Bundle(run, [], verdict.compute(run, [])))
+    card = scorecard.compute(st, SINCE, UNTIL)
+    for name, stored in (("Presubmit runs passed", "1 presubmit runs stored, status unknown"),
+                         ("Post-submit runs passed", "1 postsubmit runs stored, status unknown"),
+                         ("Main-red time", "1 postsubmit runs stored, status unknown"),
+                         ("Flake rate", "2 presubmit, gate and post-submit runs stored, status unknown")):
+        m = metric(card, "quirq-ai/innernet", name)
+        assert not m.measured and m.detail.startswith(stored) and not m.waiting_on, name
+    md = scorecard.to_markdown(card)
+    assert "runs stored, status unknown" in md and "waiting on presubmit runs" not in md
+    assert "waiting on post-submit runs" not in md
+    assert metric(card, "quirq-ai/innernet", "Gate runs passed").waiting_on == "gate runs in the store"
+
+
+def test_a_repo_with_no_runs_has_no_count_of_runs_without_results(tmp_path):
+    card = scorecard.compute(FileStore(tmp_path), SINCE, UNTIL, repos=["quirq-ai/innernet"])
+    m = metric(card, "quirq-ai/innernet", "Runs with no test results")
+    assert m.value is None and not m.measured and m.waiting_on
+    assert "| Runs with no test results | not measured |" in scorecard.to_markdown(card)
+    # Runs that are not presubmit, gate or post-submit (perf's) do not make it zero either.
+    st = FileStore(tmp_path / "perf")
+    st.put(make("perf1", kind="other", commit="c9", finished="2026-10-04T12:00:00Z"))
+    assert not metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space",
+                      "Runs with no test results").measured
+
+
+def test_every_not_measured_row_names_a_plan_item_or_says_there_is_none():
+    import re
+    for name, _, waiting_on in scorecard.NOT_MEASURED:
+        assert (re.match(r"V[01]-[A-Z]{3}-\d{2}\b", waiting_on)
+                or waiting_on == "TODO(suraj): no item yet"), name
+    rows = {name: w for name, _, w in scorecard.NOT_MEASURED}
+    assert rows["Pinned and mirrored deps"].startswith("V0-SYN-03")
+    assert rows["Rollback time"].startswith("V0-REL-02")
+    assert rows["Reproducibility"].startswith("V1-TCH-01")

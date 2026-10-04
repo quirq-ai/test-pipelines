@@ -211,7 +211,10 @@ def main_red(runs: list[tuple[Run, Verdict]], since: dt.datetime, until: dt.date
         if key not in jobs or (r.attempt, r.finished_at) > (jobs[key][0].attempt, jobs[key][0].finished_at):
             jobs[key] = (r, v)
     if not commits:
-        m.waiting_on = "post-submit runs that store results (the sink on each repo's main)"
+        if stored := sum(1 for r, _ in runs if r.kind == RunKind.POSTSUBMIT):
+            m.detail = unknown(stored, RunKind.POSTSUBMIT.value)
+        else:
+            m.waiting_on = "post-submit runs that store results (the sink on each repo's main)"
         return m
     # A commit is red as soon as its first job fails, and green once its last job has passed.
     states = {}
@@ -249,9 +252,13 @@ def flake_rate(runs: list[tuple[Run, Verdict]]) -> Metric:
     """Runs that passed only on retry: a FLAKY test inside the run (V0-TST-03), or a job that
     failed and then passed when re-run on the same commit (a later attempt)."""
     m = Metric("Flake rate", "under 1%", unit="%")
-    verifying = [(r, v) for r, v in runs if r.kind in VERIFYING and red(r, v) is not None]
+    stored = [(r, v) for r, v in runs if r.kind in VERIFYING]
+    verifying = [(r, v) for r, v in stored if red(r, v) is not None]
     if not verifying:
-        m.waiting_on = "presubmit, gate or post-submit runs in the store"
+        if stored:
+            m.detail = unknown(len(stored), "presubmit, gate and post-submit")
+        else:
+            m.waiting_on = "presubmit, gate or post-submit runs in the store"
         return m
     attempts: dict[tuple[str, str], list[tuple[Run, Verdict]]] = defaultdict(list)
     for r, v in verifying:
@@ -267,12 +274,21 @@ def flake_rate(runs: list[tuple[Run, Verdict]]) -> Metric:
     return m
 
 
+def unknown(stored: int, what: str) -> str:
+    """The detail of a metric whose runs are stored but say nothing (cancelled or unknown)."""
+    return (f"{stored} {what} runs stored, status unknown (cancelled, or no test results and no "
+            "job status)")
+
+
 def pass_rate(runs: list[tuple[Run, Verdict]], kind: str, name: str) -> Metric:
     m = Metric(name, "measured", unit="%")
     of_kind = [red(r, v) for r, v in runs if r.kind == kind]
     counted = [x for x in of_kind if x is not None]
     if not counted:
-        m.waiting_on = f"{kind} runs in the store"
+        if of_kind:
+            m.detail = unknown(len(of_kind), kind)
+        else:
+            m.waiting_on = f"{kind} runs in the store"
         return m
     passed = counted.count(False)
     m.value = round(100 * passed / len(counted), 1)
@@ -295,32 +311,36 @@ def failures_recorded(states) -> Metric:
 
 def missing_results(runs: list[tuple[Run, Verdict]]) -> Metric:
     m = Metric("Runs with no test results", "0", unit="runs")
+    verifying = sum(1 for r, _ in runs if r.kind in VERIFYING)
+    if not verifying:            # no runs is not zero runs without results
+        m.waiting_on = "presubmit, gate or post-submit runs in the store"
+        return m
     m.value = sum(1 for r, v in runs if r.kind in VERIFYING
                   and not (r.results_found and v.counts) and r.job_status != "cancelled")
-    verifying = sum(1 for r, _ in runs if r.kind in VERIFYING)
     m.detail = (f"of {verifying} presubmit, gate and post-submit runs; a repo with no test "
                 "reports (only a typecheck, say) shows up here, not as red")
     return m
 
 
-# Plan §8 metrics this version cannot measure yet, and what will measure them.
+# Plan §8 metrics this version cannot measure yet, and the work items (quirq-infra v0.md and
+# v1.md) that will measure them.
 NOT_MEASURED = [
     ("Repos behind the gate", "100% by end of P1", "V0-ORG-03 merge queue and V0-ONB-01/02 manifests"),
     ("Landed on a green merge result", "100% (enforced)", "V0-ORG-03 merge queue: gate runs on merge-group SHAs"),
     ("Time to revert a culprit", "mean under 30 min", "V0-GAR-03 auto-revert"),
-    ("Expired quarantines", "0", "v1 quarantine with expiry"),
-    ("Cache hit rate", "at least 90% (P3+)", "V0-RBE-01 executor reporting reused actions"),
-    ("Reproducibility", "100% of deterministic targets", "remote-build digest comparison"),
-    ("Pinned and mirrored deps", "100%", "quirq-ai/sync"),
+    ("Expired quarantines", "0", "V1-TST-01 flake quarantine with expiry"),
+    ("Cache hit rate", "at least 90% (P3+)", "V0-RBE-02 action cache with hit counters (V1-RBE-01 shared cache)"),
+    ("Reproducibility", "100% of deterministic targets", "V1-TCH-01 reproducibility check"),
+    ("Pinned and mirrored deps", "100%", "V0-SYN-03 pin check and V1-SYN-01 mirroring policy"),
     ("Release cadence", "canary daily", "V0-REL-03 daily canary"),
-    ("Rollback time", "under 10 min", "release rollback drill"),
+    ("Rollback time", "under 10 min", "V0-REL-02 channel rollback and its drill"),
     ("Unattended canary days", "14 in a row by P5", "V0-REL-03 daily canary"),
-    ("Canary hold or rollback time", "under 15 min", "V0-REL-03 and health signals"),
-    ("Postmortem action items closed", "at least 90%", "postmortem tracking (v1)"),
-    ("Open recurring failure classes", "0", "v1 failure classes"),
-    ("Fuzz finding turnaround", "under 24 h", "v1 fuzzers"),
-    ("Intervention rate", "falling every month", "GitHub PR data (scorecard v1)"),
-    ("Revert precision", "at least 90%", "V0-GAR-03 auto-revert"),
+    ("Canary hold or rollback time", "under 15 min", "V0-REL-03 daily canary and V1-REL-01 soak with health signals"),
+    ("Postmortem action items closed", "at least 90%", "TODO(suraj): no item yet"),
+    ("Open recurring failure classes", "0", "V1-TST-04 failure classes and recurrence"),
+    ("Fuzz finding turnaround", "under 24 h", "V1-REC-03 and V1-REC-04 fuzzing"),
+    ("Intervention rate", "falling every month", "TODO(suraj): no item yet"),
+    ("Revert precision", "at least 90%", "V1-GAR-02 revert precision tracking"),
     ("CI cost per landed change", "measured against the V0-ORG-04 ceiling", "V0-ORG-04 compute ceiling and billing data"),
 ]
 

@@ -91,7 +91,10 @@ post-submit and presubmit runs, and runs that stored no results. A run with test
 when its verdict failed; one without (a repo whose only check is a typecheck, or a job that
 broke before its tests) is red only when the job itself failed, and a cancelled job, such as one
 superseded by a newer push, is not counted. The sink records the job's status for this. Every other plan §8 metric is
-listed as not measured, with the item that will measure it; nothing unmeasured shows as zero.
+listed as not measured, with the work item (quirq-infra v0 or v1) that will measure it, or
+`TODO(suraj): no item yet`; nothing unmeasured shows as zero. A metric whose runs are stored but
+say nothing (cancelled, or no results and no job status) is not measured and says "runs stored,
+status unknown" rather than waiting on runs.
 
 ### What collect trusts
 
