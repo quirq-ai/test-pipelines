@@ -20,20 +20,31 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.14"
+      # The pin must be a full commit id: a branch or tag name would move under the pin, and a
+      # newline would inject extra step outputs.
       - name: read the gate pin
         id: gatepin
-        run: python -c "import tomllib; print('commit=' + tomllib.load(open('pins.toml', 'rb'))['gate']['commit'])" >> "$GITHUB_OUTPUT"
+        run: |
+          python - >> "$GITHUB_OUTPUT" <<'PY'
+          import re, sys, tomllib
+          commit = tomllib.load(open("pins.toml", "rb"))["gate"]["commit"]
+          if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+              sys.exit(f"pins.toml [gate] commit must be a 40-character lowercase hex commit id, got {commit!r}")
+          print("commit=" + commit)
+          PY
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: quirq-ai/gate
           ref: ${{ steps.gatepin.outputs.commit }}
           path: .qq/gate
           persist-credentials: false
+      # From source with the standard library only: no pip, so nothing from PyPI runs in the job
+      # that uploads this repo's postsubmit bundle. -S skips site-packages, -P keeps the checkout
+      # off sys.path, so only the pinned gate source and the standard library are importable.
       - name: core code names no language, build tool or deploy target (gate's agnosticism guard)
-        run: |
-          python -m venv .qq/gate-venv
-          .qq/gate-venv/bin/pip install --quiet -e .qq/gate
-          .qq/gate-venv/bin/qqgate guard --repo test-pipelines --github .
+        env:
+          PYTHONPATH: .qq/gate/src
+        run: python -S -P -c 'import sys; from qqgate.cli import main; sys.exit(main())' guard --repo test-pipelines --github .
       - run: |   # qqresults runs from source; only the pinned test runner is installed
           python -m pip install --quiet --only-binary=:all: "pytest==9.1.1"
           echo "$GITHUB_WORKSPACE/tools/bin" >> "$GITHUB_PATH"
