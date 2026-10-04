@@ -36,6 +36,11 @@ fail there too: a failure is exonerated only if it fails at every base. That kee
 closed: an entry queued ahead that fixes the test (base_sha fails, the first parent passes), and a
 rebase queue testing a PR's last commit (the first parent is the PR's own earlier commit, which
 fails; base_sha passes).
+One case stays open: in a rebase queue where an entry ahead fixes the test and the PR's own
+earlier commit breaks it again, both bases fail, so the failure is exonerated. Neither base is
+"the entries ahead without this PR"; that tree is the queue commit minus all of the PR's commits.
+TODO(expert): derive that base (the PR's commit count, from the queue branch's pr-<n> ref) once
+the org's merge queue and its merge method are decided (ORG-03).
 """
 from __future__ import annotations
 

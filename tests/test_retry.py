@@ -218,3 +218,23 @@ def test_a_failure_at_every_base_is_still_exonerated(tmp_path, state):
     path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
                         tmp_path / "out", rerun_cmd=CMD)
     assert statuses(b) == {"t::add": "EXONERATED"} and len(b.verdict.inputs) == 2   # retry1, one base run
+
+
+def test_two_distinct_bases_both_run(tmp_path, state):
+    repo, main = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")    # HEAD is c1
+    (repo / "other.txt").write_text("x")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "c2")
+    path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
+                        tmp_path / "out", rerun_cmd=CMD)
+    assert statuses(b) == {"t::add": "EXONERATED"}
+    assert [i.rsplit("/", 1)[1] for i in b.verdict.inputs] == ["retry1", "base", "base2"]
+    assert (tmp_path / "out" / "qq-results-local_o_x_r1_base2").is_dir()
+
+
+def test_a_second_base_that_cannot_be_checked_out_never_exonerates(tmp_path, state):
+    repo, _ = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")
+    path, b = sink.sink(_queue_run(repo, tmp_path, "0" * 40), ["results/*.xml"], repo,
+                        tmp_path / "out", rerun_cmd=CMD)
+    assert statuses(b) == {"t::add": "UNEXPECTED"} and "base comparison failed" in b.verdict.reason
+    assert (tmp_path / "out" / "qq-results-local_o_x_r1_base").is_dir()   # the first base is kept
