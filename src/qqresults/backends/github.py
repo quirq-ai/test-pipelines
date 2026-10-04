@@ -104,6 +104,7 @@ def run_from_env(env: Mapping[str, str], kind: str = "", name: str = "") -> Run:
 
 API = "https://api.github.com"
 ARTIFACT_PREFIX = "qq-results-"
+FAILURE_PREFIX = "qq-failure-"
 
 
 class GitHubAPIError(Error):
@@ -144,13 +145,14 @@ def http_get(url: str, token: str) -> bytes:
 
 
 def list_result_artifacts(repo: str, token: str, get=http_get, max_pages: int = 20) -> list[dict]:
-    """The repo's unexpired qq-results-* artifacts, newest first."""
+    """The repo's unexpired qq-results-* and qq-failure-* artifacts, newest first."""
     found = []
     for page in range(1, max_pages + 1):
         data = json.loads(get(f"{API}/repos/{repo}/actions/artifacts?per_page=100&page={page}", token))
         artifacts = data.get("artifacts", [])
         found.extend(a for a in artifacts
-                     if a.get("name", "").startswith(ARTIFACT_PREFIX) and not a.get("expired"))
+                     if a.get("name", "").startswith((ARTIFACT_PREFIX, FAILURE_PREFIX))
+                     and not a.get("expired"))
         if len(artifacts) < 100:
             break
     return found
@@ -166,8 +168,13 @@ def _import_artifact(repo: str, art: dict, store, token: str, get) -> bool:
                 z.extractall(tmp)
         except zipfile.BadZipFile:
             raise GitHubAPIError("not a zip archive") from None
-        # One bundle at the root, or (with retries, V0-TST-03) one bundle per directory.
         root = Path(tmp)
+        if art["name"].startswith(FAILURE_PREFIX):
+            recs = [d for d in [root, *sorted(root.iterdir())] if (d / "failure.json").is_file()]
+            if not recs:
+                raise GitHubAPIError("no failure record inside")
+            return any([store.import_failure(d) for d in recs])
+        # One bundle at the root, or (with retries, V0-TST-03) one bundle per directory.
         dirs = [root] if (root / "run.json").is_file() else sorted(
             d for d in root.iterdir() if (d / "run.json").is_file())
         if not dirs:
@@ -185,7 +192,7 @@ def collect(repo: str, store, token: str, get=http_get) -> tuple[int, int, list[
     new = old = 0
     errors = []
     for art in list_result_artifacts(repo, token, get):
-        if store.has(art["name"]):
+        if art["name"].startswith(ARTIFACT_PREFIX) and store.has(art["name"]):
             old += 1
             continue
         try:
@@ -196,3 +203,77 @@ def collect(repo: str, store, token: str, get=http_get) -> tuple[int, int, list[
         except Error as e:
             errors.append(f"{repo} artifact {art.get('name')}: {e}")
     return new, old, errors
+
+
+# --- mirroring failure records to issues (V0-TST-04) ------------------------------------------
+
+FAILURE_LABEL = "qq-failure"
+
+
+def api(method: str, url: str, token: str, body: dict | None = None) -> tuple[int, object]:
+    """Call the REST API with a JSON body. Returns (status, parsed JSON or None)."""
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+               "User-Agent": "qqresults", "Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read()
+            return resp.status, json.loads(raw) if raw else None
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except urllib.error.URLError as e:
+        raise GitHubAPIError(f"{method} {url}: {e.reason}") from None
+
+
+def _find_issue(repo: str, fid: str, token: str, call) -> dict | None:
+    marker = f"<!-- qq-failure: {fid} -->"
+    for page in range(1, 51):
+        status, issues = call("GET", f"{API}/repos/{repo}/issues?labels={FAILURE_LABEL}"
+                              f"&state=all&per_page=100&page={page}", token)
+        if status != 200:
+            raise GitHubAPIError(f"{repo}: listing {FAILURE_LABEL} issues: HTTP {status}")
+        for issue in issues:
+            if marker in (issue.get("body") or ""):
+                return issue
+        if len(issues) < 100:
+            return None
+    return None
+
+
+def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
+    """Create or update the one labelled issue that mirrors a failure record.
+
+    Returns (issue URL, created). A security-looking record is never mirrored: returns ("", False).
+    The issue is found by a marker in its body, so a second call never opens a second issue.
+    """
+    from qqresults import failures  # core module; imported here to keep backends import-light
+
+    call = call or api
+    f = state.current
+    if failures.looks_security_related(f):
+        return "", False
+    title, body = failures.issue_title(f), failures.issue_body(state)
+    issue = _find_issue(repo, f.id, token, call)
+    if issue:
+        want = {"title": title, "body": body, "state": "closed" if state.closed else "open"}
+        if any(issue.get(k) != v for k, v in want.items()):
+            status, _ = call("PATCH", f"{API}/repos/{repo}/issues/{issue['number']}", token, want)
+            if status != 200:
+                raise GitHubAPIError(f"{repo}#{issue['number']}: updating the issue: HTTP {status}")
+        return issue["html_url"], False
+    labels = [FAILURE_LABEL, f"{FAILURE_LABEL}:{f.kind}"]
+    for name in labels:
+        status, _ = call("POST", f"{API}/repos/{repo}/labels", token,
+                         {"name": name, "color": "b60205",
+                          "description": "quirq infra failure record (test-pipelines)"})
+        if status not in (201, 422):   # 422: the label exists already
+            raise GitHubAPIError(f"{repo}: creating label {name}: HTTP {status}")
+    status, created = call("POST", f"{API}/repos/{repo}/issues", token,
+                           {"title": title, "body": body, "labels": labels})
+    if status != 201:
+        raise GitHubAPIError(f"{repo}: opening the failure issue: HTTP {status} "
+                             "(the token needs issues: write)")
+    return created["html_url"], True

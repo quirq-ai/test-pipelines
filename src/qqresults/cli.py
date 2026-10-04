@@ -14,6 +14,12 @@
         Read the store.
     qqresults scorecard --store DIR [--days N] [--json]
         Plan §8's metrics from the store.
+    qqresults failure open --dir DIR --kind K --repo R --subject S [--summary ...] [--mirror REPO]
+    qqresults failure link --dir DIR ID --culprit C --fix F --covering-test T [--mirror REPO]
+    qqresults failure list --dir DIR
+        Failure records (V0-TST-04): one per held canary, rollback or auto-revert, mirrored
+        to one labelled GitHub issue (token from GITHUB_TOKEN). DIR is a store's failures/
+        directory or a scratch directory that the backend keeps.
 """
 from __future__ import annotations
 
@@ -24,9 +30,9 @@ import os
 import sys
 from pathlib import Path
 
-from qqresults import __version__, backends, bundle, policy, scorecard, sink, store
+from qqresults import __version__, backends, bundle, failures, policy, scorecard, sink, store
 from qqresults.errors import Error
-from qqresults.model import RunKind
+from qqresults.model import FailureKind, RunKind
 
 
 def _run(args):
@@ -148,6 +154,62 @@ def cmd_scorecard(args) -> int:
     return 0
 
 
+def _mirror(state: failures.State, repo: str) -> failures.State:
+    gh = backends.load("github")
+    url, created = gh.mirror_issue(state, repo, os.environ.get("GITHUB_TOKEN", ""))
+    if not url:
+        print(f"issue: withheld, the record looks security-related (never mirrored publicly)")
+        return state
+    print(f"issue: {url} ({'opened' if created else 'up to date'})")
+    if state.links.get("issue") != url:
+        failures.add_link(state.path, "issue", url)
+    return failures.read(state.path)
+
+
+def _report(state: failures.State, created: bool | None, gh_output: str | None) -> None:
+    f = state.current
+    verb = "" if created is None else ("opened " if created else "already open: ")
+    print(f"{verb}{f.id} ({f.kind}, {f.repo}) at {state.path}")
+    print("closed" if state.closed else "open; missing " + ", ".join(state.missing))
+    if gh_output:
+        with open(gh_output, "a", encoding="utf-8") as out:
+            out.write(f"id={f.id}\ndir={state.path}\nname={state.path.name}\n"
+                      f"issue={state.links.get('issue', '')}\ncreated={str(bool(created)).lower()}\n")
+
+
+FAILURE_FIELDS = ("channel", "build_digest", "last_good", "first_bad", "stage", "signal",
+                  "run_id", "operation", "summary")
+
+
+def cmd_failure(args) -> int:
+    parent = Path(args.dir)
+    if args.action == "open":
+        fields = {k: getattr(args, k) for k in FAILURE_FIELDS if getattr(args, k)}
+        f = failures.new(args.kind, args.repo, args.subject, security=args.security, **fields)
+        state, created = failures.open_record(f, parent)
+        if args.mirror:
+            state = _mirror(state, args.mirror)
+        _report(state, created, args.github_output)
+    elif args.action == "link":
+        path = parent / failures.dirname(args.id)
+        failures.read(path)  # fails clearly if the record is not here
+        for field in failures.LINK_FIELDS:
+            value = getattr(args, field, None)
+            if value:
+                failures.add_link(path, field, value)
+        state = failures.read(path)
+        if args.mirror:
+            state = _mirror(state, args.mirror)
+        _report(state, None, args.github_output)
+    else:
+        for d in sorted(parent.iterdir()) if parent.is_dir() else []:
+            if (d / failures.RECORD).is_file():
+                st = failures.read(d)
+                print(f"{st.record.opened_at}  {'closed' if st.closed else 'open  '}  "
+                      f"{st.record.kind:<16} {st.record.repo}  {st.record.id}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="qqresults", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -220,11 +282,37 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--repo", action="append", help="also list a repo with no runs yet")
     sc.add_argument("--json", action="store_true")
     sc.set_defaults(func=cmd_scorecard)
+
+    fa = sub.add_parser("failure", help="failure records with an issue mirror")
+    fa.add_argument("action", choices=["open", "link", "list"])
+    fa.add_argument("id", nargs="?", help="link: the record id")
+    fa.add_argument("--dir", required=True, help="where records live (a store's failures/)")
+    fa.add_argument("--kind", choices=[k.value for k in FailureKind])
+    fa.add_argument("--repo", help="open: owner/name of the repo that failed")
+    fa.add_argument("--subject", help="open: what failed (build digest, commit or run id)")
+    for name in FAILURE_FIELDS:
+        fa.add_argument("--" + name.replace("_", "-"), dest=name)
+    fa.add_argument("--security", action="store_true",
+                    help="open: security-looking; kept but never mirrored to a public issue")
+    for name in failures.LINK_FIELDS:
+        if name != "operation":
+            fa.add_argument("--" + name.replace("_", "-"), dest=name, help="link")
+    fa.add_argument("--mirror", metavar="OWNER/NAME",
+                    help="mirror to one labelled issue in this repo (GITHUB_TOKEN, issues: write)")
+    fa.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"),
+                    help=argparse.SUPPRESS)
+    fa.set_defaults(func=cmd_failure)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.command == "failure":
+        need = {"open": ("kind", "repo", "subject"), "link": ("id",)}.get(args.action, ())
+        missing = [n for n in need if not getattr(args, n)]
+        if missing:
+            parser.error(f"failure {args.action} needs " + ", ".join("--" + m for m in missing))
     try:
         return args.func(args)
     except Error as e:

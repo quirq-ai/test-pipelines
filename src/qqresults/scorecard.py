@@ -175,6 +175,17 @@ def pass_rate(runs: list[tuple[Run, Verdict]], kind: str, name: str) -> Metric:
     return m
 
 
+def failures_recorded(states) -> Metric:
+    m = Metric("Failures fully recorded", "100%", unit="%")
+    if not states:
+        m.waiting_on = "failure records in the window (none opened)"
+        return m
+    closed = sum(1 for st in states if st.closed)
+    m.value = round(100 * closed / len(states), 1)
+    m.detail = f"{closed} of {len(states)} records link culprit, fix and covering test"
+    return m
+
+
 def missing_results(runs: list[tuple[Run, Verdict]]) -> Metric:
     m = Metric("Runs with no test results", "0", unit="runs")
     m.value = sum(1 for r, v in runs if not (r.results_found and v.counts)
@@ -197,7 +208,6 @@ NOT_MEASURED = [
     ("Rollback time", "under 10 min", "release rollback drill"),
     ("Unattended canary days", "14 in a row by P5", "V0-REL-03 daily canary"),
     ("Canary hold or rollback time", "under 15 min", "V0-REL-03 and health signals"),
-    ("Failures fully recorded", "100%", "V0-TST-04 failure records"),
     ("Postmortem action items closed", "at least 90%", "postmortem tracking (v1)"),
     ("Open recurring failure classes", "0", "v1 failure classes"),
     ("Fuzz finding turnaround", "under 24 h", "v1 fuzzers"),
@@ -217,6 +227,11 @@ def compute(store: FileStore, since: dt.datetime, until: dt.datetime,
         by_repo[r.repo].append((r, v))
     for repo in repos or []:
         by_repo.setdefault(repo, [])
+    fails = defaultdict(list)
+    for st in store.failures():
+        if fmt_time(since) <= st.record.opened_at <= fmt_time(until):
+            fails[st.record.repo].append(st)
+            by_repo.setdefault(st.record.repo, [])
     card = Scorecard(generated_at=fmt_time(dt.datetime.now(dt.UTC)), since=fmt_time(since),
                      until=fmt_time(until))
     for repo in sorted(by_repo):
@@ -229,6 +244,7 @@ def compute(store: FileStore, since: dt.datetime, until: dt.datetime,
             pass_rate(rr, RunKind.POSTSUBMIT.value, "Post-submit runs passed"),
             pass_rate(rr, RunKind.PRESUBMIT.value, "Presubmit runs passed"),
             missing_results(rr),
+            failures_recorded(fails[repo]),
         ]
     card.not_measured = [Metric(n, t, waiting_on=w) for n, t, w in NOT_MEASURED]
     return card

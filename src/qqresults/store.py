@@ -1,6 +1,7 @@
 """The results store v0: write-once run bundles in a directory tree, with simple queries.
 
     <root>/runs/<bundle name>/run.json, results.jsonl, verdict.json
+    <root>/failures/<record dir>/failure.json, links/*.json      (failures.py, V0-TST-04)
 
 v0 has no cloud, so the tree is plain files. On GitHub it lives on this repo's `results` branch
 (see .github/workflows/scorecard.yml), which keeps every run past the 90 days GitHub keeps
@@ -20,7 +21,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from qqresults import bundle
+from qqresults import bundle, failures
 from qqresults.errors import Error
 from qqresults.model import Result, Run, Verdict
 
@@ -63,6 +64,7 @@ class FileStore:
     def __init__(self, root: Path):
         self.root = Path(root)
         self.runs_dir = self.root / "runs"
+        self.failures_dir = self.root / "failures"
 
     # --- writing ------------------------------------------------------------------------------
 
@@ -137,6 +139,24 @@ class FileStore:
 
     def has(self, bundle_name: str) -> bool:
         return (self.runs_dir / bundle_name / bundle.RUN).is_file()
+
+    # --- failure records ----------------------------------------------------------------------
+
+    def import_failure(self, path: Path) -> bool:
+        return failures.import_dir(path, self.failures_dir)
+
+    def failures(self) -> list[failures.State]:
+        if not self.failures_dir.is_dir():
+            return []
+        return sorted((failures.read(d) for d in self.failures_dir.iterdir()
+                       if (d / failures.RECORD).is_file()),
+                      key=lambda st: (st.record.opened_at, st.record.id))
+
+    def failure(self, fid: str) -> failures.State:
+        path = self.failures_dir / failures.dirname(fid)
+        if not (path / failures.RECORD).is_file():
+            raise StoreError(f"failure {fid} is not in the store at {self.root}")
+        return failures.read(path)
 
 
 def open_store(location: str | Path, backend: str = "files") -> FileStore:

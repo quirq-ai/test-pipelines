@@ -1,0 +1,83 @@
+# V0-TST-04 done-when, against the real GitHub API: a held canary creates exactly one failure
+# record and one issue. Reports the same planted held canary twice (as a retrying pipeline would),
+# then checks there is one issue with its marker and one record in a store collected from the
+# artifacts. The planted record is then linked and closed. Its subject never changes, so every run
+# reuses the same record and issue.
+name: failure-demo
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - failure/**
+      - src/qqresults/failures.py
+      - src/qqresults/backends/github.py
+      - .github/workflows/failure-demo.yml
+  push:
+    branches: [main]
+    paths:
+      - failure/**
+      - src/qqresults/failures.py
+      - src/qqresults/backends/github.py
+      - .github/workflows/failure-demo.yml
+permissions:
+  contents: read
+  issues: write      # open and update the one demo issue in this repo
+  actions: read      # collect this run's failure artifact
+concurrency:
+  group: failure-demo
+  cancel-in-progress: false
+jobs:
+  held-canary:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - id: first
+        uses: ./failure
+        with:
+          kind: canary-held
+          subject: planted-canary-demo-v0
+          summary: "Planted held canary (V0-TST-04 demo, not a real failure)"
+          stage: probe
+          signal: health
+      - id: second
+        uses: ./failure
+        with:
+          kind: canary-held
+          subject: planted-canary-demo-v0
+          summary: "Planted held canary (V0-TST-04 demo, not a real failure)"
+          stage: probe
+          signal: health
+      - name: one record, one issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          FIRST_ISSUE: ${{ steps.first.outputs.issue }}
+          SECOND_ISSUE: ${{ steps.second.outputs.issue }}
+          SECOND_CREATED: ${{ steps.second.outputs.created }}
+          ID: ${{ steps.first.outputs.id }}
+        run: |
+          set -euo pipefail
+          test -n "$FIRST_ISSUE" && test "$FIRST_ISSUE" = "$SECOND_ISSUE"
+          test "$SECOND_CREATED" = "false"
+          issues=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues?labels=qq-failure&state=all&per_page=100" \
+                     --jq "[.[] | select(.body | contains(\"<!-- qq-failure: $ID -->\"))] | length" \
+                   | awk '{s+=$1} END {print s}')
+          echo "issues with the record's marker: $issues"
+          test "$issues" = "1"
+          python -m pip install --quiet .
+          qqresults collect --store "$RUNNER_TEMP/store" --repo "$GITHUB_REPOSITORY"
+          records=$(qqresults failure list --dir "$RUNNER_TEMP/store/failures" | grep -c "$ID" || true)
+          echo "records with id $ID: $records"
+          test "$records" = "1"
+          echo "OK: one failure record ($ID) and one issue ($FIRST_ISSUE)"
+      - name: link and close the planted record
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          qqresults failure link "${{ steps.first.outputs.id }}" --dir "$RUNNER_TEMP/store/failures"
+          --culprit "planted (demo)" --fix "none needed (demo)"
+          --covering-test "tests/test_failures.py::test_a_held_canary_creates_exactly_one_record_and_one_issue"
+          --mirror "$GITHUB_REPOSITORY"
