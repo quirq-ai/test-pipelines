@@ -39,7 +39,13 @@ inputs:
   signal: {description: The health signal or test that fired., required: false, default: ""}
   operation: {description: Key of the operation that held or rolled it back., required: false, default: ""}
   security: {description: Set to "true" to never mirror it publicly., required: false, default: "false"}
-  public-summary: {description: Set to "true" to show the summary in the issue and artifact., required: false, default: "false"}
+  public-summary:
+    description: >-
+      Set to "true" to show the summary in the issue and artifact. Whether it looks
+      security-related is decided by a word list that can miss, so keep this off for any failure
+      that touches input handling.
+    required: false
+    default: "false"
   issue-repo:
     description: Where the issue goes (default this repository).
     required: false
