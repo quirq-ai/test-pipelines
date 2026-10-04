@@ -605,7 +605,8 @@ def test_the_failure_type_is_the_kind_when_every_failure_has_one():
                             base_type="failure")
     assert not generic.passed and generic.tests[0].reason.startswith(NO_KIND)
     # A root exception class is no kind either.
-    for root in ("Exception", "java.lang.Throwable"):
+    for root in ("Exception", "java.lang.Throwable", "kotlin.Exception", "System.Exception",
+                 "builtins.BaseException"):
         broad = _decide_kinds("x", "y", change_type=root, base_type=root)
         assert not broad.passed and broad.tests[0].reason.startswith(NO_KIND)
     # A type on one side only: the messages decide, for every result alike.
