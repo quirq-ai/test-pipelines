@@ -604,9 +604,11 @@ def test_collect_caps_artifact_size_and_results(tmp_path, monkeypatch):
 # --- failure records --------------------------------------------------------------------------
 
 def _failure_zip(tmp_path, repo="o/x", run_id="github/o/x/7/1/held-canary", subject="planted",
-                 fid=None, links=(), public_subject=None):
+                 fid=None, links=(), public_subject=None, opened_at=None):
     from qqresults import failures
     f = failures.new("canary-held", repo, subject, run_id=run_id)
+    if opened_at:
+        f = Failure.from_dict({**f.to_dict(), "opened_at": opened_at})
     if fid:
         f = Failure.from_dict({**f.to_dict(), "id": fid})
     if public_subject:     # the public copy, which keeps the id of the raw subject
@@ -822,6 +824,81 @@ def test_a_link_bundle_whose_record_never_comes_is_refused_for_good(tmp_path):
                          now=created + dt.timedelta(days=9)) == (0, 1, [])
 
 
+@pytest.mark.parametrize("days", [1, 8])
+def test_a_link_bundle_older_than_its_record_is_taken_in_the_same_collect(tmp_path, days):
+    # AUDIT-S4 follow-up: the links' artifact is older than the record's (the record's upload was
+    # retried), so collect reads it first. It must wait for the rest of the listing, not be
+    # refused, and never be marked as read while its record is stored by the same collect.
+    import datetime as dt
+    from qqresults import failures
+    record = _failure_zip(tmp_path / "f")
+    fid = failures.failure_id("canary-held", "o/x", "planted")
+    st = FileStore(tmp_path / "store")
+    now = dt.datetime.now(dt.UTC) + dt.timedelta(days=days)
+    assert _collect_zips(st, "o/x", [(*_link_zip(fid), 8), (*record, 7)],
+                         [_demo_run(), _demo_run(8)], DEMO, now=now) == (2, 0, [])
+    assert st.failure(fid).links == {"culprit": "c0ffee1"}
+
+
+@pytest.mark.parametrize("minutes,ok", [(-4, True), (-6, False)])
+def test_a_link_dated_just_before_its_record_is_within_the_clock_skew(tmp_path, minutes, ok):
+    # AUDIT-S4 follow-up: a link written seconds after the record by a runner whose clock is
+    # behind is dated before the opening; it must not be refused (and retried) forever.
+    import datetime as dt
+    from qqresults import failures
+    opened = dt.datetime.now(dt.UTC).replace(microsecond=0)
+    art = _failure_zip(tmp_path / "f", opened_at=opened.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    fid = failures.failure_id("canary-held", "o/x", "planted")
+    at = (opened + dt.timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    st = FileStore(tmp_path / "store")
+    new, _, errors = _collect_zips(st, "o/x", [(*art, 7), (*_link_zip(fid, at=at), 8)],
+                                   [_demo_run(), _demo_run(8)], DEMO)
+    assert (errors == []) is ok and new == (2 if ok else 1)
+    assert st.failure(fid).links == ({"culprit": "c0ffee1"} if ok else {})
+    if not ok:
+        assert f"is dated {at}, not between" in errors[0]
+
+
+@pytest.mark.parametrize("opened_at,ok", [
+    ("1970-01-01T00:00:00Z", False),
+    ("2026-10-03T09:00:00Z", False),     # more than 24 h before workflow run 7 was created
+    ("2026-10-03T10:00:00Z", True),      # within 24 h before it
+    ("2026-10-04T09:30:00Z", True),
+    ("9999-01-01T00:00:00Z", False),
+])
+def test_a_records_opening_is_bounded_by_its_workflow_run(tmp_path, opened_at, ok):
+    # AUDIT-S4 follow-up: a record dated 1970 fell outside every scorecard window.
+    import datetime as dt
+    st = FileStore(tmp_path / "store")
+    art = _failure_zip(tmp_path / "f", opened_at=opened_at)
+    new, _, errors = _collect_zips(st, "o/x", [(*art, 7)], [_demo_run()], DEMO,
+                                   now=dt.datetime(2026, 10, 4, 12, 0, tzinfo=dt.UTC))
+    assert (new, errors == []) == (int(ok), ok)
+    if not ok:
+        assert f"opened at '{opened_at}', not between 2026-10-03T09:30:00Z" in errors[0]
+        assert st.failures() == []
+
+
+def test_a_records_opening_may_follow_the_runs_last_update_by_the_clock_skew(tmp_path):
+    import datetime as dt
+    now = dt.datetime(2026, 10, 4, 10, 0, tzinfo=dt.UTC)
+    for name, opened_at, ok in (("ok", "2026-10-04T11:04:00Z", True),
+                                ("late", "2026-10-04T11:06:00Z", False)):
+        st = FileStore(tmp_path / name)
+        art = _failure_zip(tmp_path / f"f-{name}", opened_at=opened_at)
+        run = {**_demo_run(), "updated_at": "2026-10-04T11:00:00Z"}
+        new, _, errors = _collect_zips(st, "o/x", [(*art, 7)], [run], DEMO, now=now)
+        assert (new == 1) is ok and (errors == []) is ok
+
+
+def test_a_record_from_a_run_without_a_creation_time_is_refused(tmp_path):
+    run = _demo_run()
+    run.pop("created_at")
+    st = FileStore(tmp_path / "store")
+    new, _, errors = _collect_zips(st, "o/x", [(*_failure_zip(tmp_path / "f"), 7)], [run], DEMO)
+    assert new == 0 and "has no creation time" in errors[0] and st.failures() == []
+
+
 def test_a_record_reported_twice_keeps_its_first_report(tmp_path):
     # GitHub lists artifacts newest first; collect reads them oldest first, so the second
     # report (another run, a later opening time) does not replace the first.
@@ -895,3 +972,17 @@ def test_a_digested_failure_record_must_still_have_an_id_of_its_kind(tmp_path, f
     st = FileStore(tmp_path / "store")
     new, _, errors = _collect_zips(st, "o/x", [(*art, 7)], [_demo_run()], DEMO)
     assert new == 0 and "the id does not match" in errors[0] and st.failures() == []
+
+
+def test_history_skips_a_stored_run_whose_results_do_not_read(tmp_path, capsys):
+    # AUDIT-S10: runs() skipped such a bundle, but history() raised on it and stopped the query.
+    st = FileStore(tmp_path)
+    st.put(make("good", finished="2026-10-04T10:00:00Z"))
+    path = bundle.write(make("bad", finished="2026-10-04T11:00:00Z"), st.runs_dir)
+    (path / "results.jsonl").chmod(0o644)
+    (path / "results.jsonl").write_text("{not json\n")
+    assert [run.id for run, _ in st.history("t::a")] == ["good"]
+    assert list(st.skipped) == [path.name] and "not readable" in st.skipped[path.name]
+    assert cli.main(["query", "history", "--store", str(tmp_path), "--test", "t::a"]) == 0
+    out = capsys.readouterr()
+    assert "good" in out.out and "warning:" in out.err and path.name in out.err
