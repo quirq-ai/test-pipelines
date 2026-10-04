@@ -104,21 +104,33 @@ artifact's workflow run (`GET /repos/{repo}/actions/runs/{id}`, fetched once per
   `.github/workflows/presubmit.yml`. The `scorecard` workflow adds `failure-demo.yml` for this
   repo and `perf.yml` for perf.
 
+A run is on the default branch only when its head branch is the default branch's name and its
+head commit is in that branch's history (`GET /repos/{repo}/compare/{default}...{sha}` is
+`identical` or `behind`, fetched once per commit), so a tag named like the default branch is not.
 Every bundle in it must then name that run and one of its attempts in its id
-(`github/<repo>/<run id>/<attempt>/<job>`), test the run's head commit (for a pull request, the
-change's head; a dispatched backfill and V0-TST-03's base run are the exceptions), and claim the
-kind its event gives: `merge_group` is `gate`, `pull_request` is `presubmit`, a push to the
-default branch is `postsubmit`, a schedule or dispatch on the default branch is `postsubmit`,
-`canary` or `other`, and a push, schedule or dispatch off it only `other`. A run may name
-another repo only as kind `other` from a repo given with `--cross-repo` (the `scorecard`
-workflow passes `quirq-ai/perf`). Failure records are taken only from push, schedule or dispatch
-runs on the default branch; the record must be for the repo, its id must be the one its kind,
+(`github/<repo>/<run id>/<attempt>/<job>`) and claim the kind its event gives: `merge_group` is
+`gate`, `pull_request` is `presubmit`, a push to the default branch is `postsubmit`, a schedule
+or dispatch on the default branch is `postsubmit`, `canary` or `other`, and a push, schedule or
+dispatch off it only `other`. Its `commit` must be the run's head commit (a dispatched backfill
+and V0-TST-03's base run are the exceptions). For a pull request, whose run tests GitHub's merge
+commit that the API does not name, `commit` is not checked; instead the change's `head_sha` must
+be the run's head commit, and its `number` one of the run's `pull_requests` when GitHub lists any
+(it does for a same-repo PR). A run may name another repo only as kind `other`, from a
+default-branch run of a repo given with `--cross-repo` (the `scorecard` workflow passes
+`quirq-ai/perf`). Failure records are taken only from push, schedule or dispatch runs on the
+default branch; the record must be for the repo, its id must be the one its kind,
 repo and subject give, and its `run_id` must name the run. Records are type-checked (strings,
 finite non-negative numbers, booleans, RFC 3339 UTC times like `2026-10-04T10:00:00Z`);
 artifacts over 20 MB, zipped or not, and bundles over 50,000 results are refused. Artifacts are
 read oldest first. A refused artifact is a warning (`--strict` makes it fail the step). A stored
 record that does not read is left out of queries and the scorecard, with a warning and a count
 in the card, so it cannot break them.
+
+What this still trusts: a run's own code shapes its record. Anyone whose change runs in the merge
+queue (`merge_group`, including a fork's PR once it is approved into the queue) or as a same-repo
+pull request can make that run's bundle say what they like, within its kind, run and commit. A
+failure record's links are additive: a later default-branch run can add links (and so close the
+record) to a record an earlier run opened.
 
 The `results` branch is only ever added to, by the `scorecard` workflow.
 TODO(suraj): add a ruleset on the `results` branch that blocks force-pushes and deletion (only

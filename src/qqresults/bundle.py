@@ -61,6 +61,6 @@ def read(path: Path) -> Bundle:
         results = [Result.from_dict(json.loads(line))
                    for line in (path / RESULTS).read_text(encoding="utf-8").splitlines() if line]
         verdict = Verdict.from_dict(json.loads((path / VERDICT).read_text(encoding="utf-8")))
-    except (OSError, ValueError, TypeError, AttributeError) as e:
+    except (OSError, ValueError, TypeError, AttributeError, RecursionError) as e:
         raise BundleError(f"{path}: not a readable results bundle: {e}") from None
     return Bundle(run, results, verdict)

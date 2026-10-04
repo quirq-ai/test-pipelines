@@ -152,6 +152,8 @@ def test_collect_imports_failure_artifacts(tmp_path):
             return json.dumps(run).encode()
         if url == f"{github.API}/repos/{repo}":
             return json.dumps({"default_branch": "main"}).encode()
+        if "/compare/main...c1" in url:
+            return json.dumps({"status": "identical"}).encode()
         return buf.getvalue()
 
     st = FileStore(tmp_path / "store")

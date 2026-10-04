@@ -15,8 +15,10 @@ import json
 import re
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
+import zlib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +45,8 @@ def _event(env: Mapping[str, str]) -> dict:
 def kind_for(event_name: str, branch: str, default_branch: str) -> RunKind:
     if event_name == "merge_group":
         return RunKind.GATE
+    # pull_request_target is presubmit when a job describes itself, but collect never takes it
+    # (Origin.kinds): it runs the base branch's workflow, not the change's.
     if event_name in ("pull_request", "pull_request_target"):
         return RunKind.PRESUBMIT
     if event_name == "push" and default_branch and branch == default_branch:
@@ -209,7 +213,8 @@ class Origin:
     path: str
     head_branch: str
     head_sha: str
-    on_default: bool      # head_branch is the repo's default branch
+    on_default: bool      # head_branch is the default branch and head_sha is in its history
+    pull_requests: tuple[int, ...] = ()   # the PRs GitHub links to the run (same-repo PRs only)
 
     def kinds(self) -> set[str]:
         """The run kinds a bundle from this run may claim."""
@@ -255,7 +260,7 @@ def _get_json(url: str, token: str, get) -> dict:
 
 
 def _origin(repo: str, art: dict, trust: Trust, token: str, get, runs: dict,
-            default_branch) -> Origin:
+            default_branch, in_default) -> Origin:
     """The artifact's workflow run, checked against what collect trusts (one fetch per run)."""
     run_id = _int((art.get("workflow_run") or {}).get("id"))
     if run_id < 1:
@@ -268,6 +273,7 @@ def _origin(repo: str, art: dict, trust: Trust, token: str, get, runs: dict,
         raise GitHubAPIError(f"workflow run {run_id} ran code from {_short(head_repo)}, not "
                              f"{repo} (a fork's pull request?); only {repo}'s own runs are stored")
     path = str(run.get("path") or "").split("@", 1)[0]
+    # fnmatch's * also matches /, so a glob covers subdirectories too.
     if not any(fnmatch.fnmatchcase(path, g) for g in trust.workflows):
         raise GitHubAPIError(f"workflow run {run_id} is from {_short(path)}, which is not an "
                              "allowed workflow (--workflow)")
@@ -275,9 +281,17 @@ def _origin(repo: str, art: dict, trust: Trust, token: str, get, runs: dict,
     if attempts < 1:
         raise GitHubAPIError(f"workflow run {run_id}: no run_attempt")
     branch = str(run.get("head_branch") or "")
-    return Origin(repo=repo, run_id=run_id, attempts=attempts, event=str(run.get("event") or ""),
-                  path=path, head_branch=branch, head_sha=str(run.get("head_sha") or ""),
-                  on_default=bool(branch) and branch == default_branch())
+    event = str(run.get("event") or "")
+    sha = str(run.get("head_sha") or "")
+    # head_branch is only a ref's short name: a tag named like the default branch has it too, so
+    # the commit must also be in the default branch's history. Only these events use on_default.
+    on_default = (event in FAILURE_EVENTS and bool(branch) and branch == default_branch()
+                  and bool(sha) and in_default(sha))
+    prs = run.get("pull_requests")
+    numbers = tuple(_int(p.get("number")) for p in prs if isinstance(p, dict)) \
+        if isinstance(prs, list) else ()
+    return Origin(repo=repo, run_id=run_id, attempts=attempts, event=event, path=path,
+                  head_branch=branch, head_sha=sha, on_default=on_default, pull_requests=numbers)
 
 
 def _check_bundle(origin: Origin, trust: Trust, b: bundle.Bundle) -> None:
@@ -290,16 +304,22 @@ def _check_bundle(origin: Origin, trust: Trust, b: bundle.Bundle) -> None:
         raise GitHubAPIError(f"run {run.id} claims kind {_short(run.kind)}, which a "
                              f"{origin.event or 'unknown'} run{where} cannot produce")
     if run.repo != origin.repo:
-        if origin.repo not in trust.cross_repo or run.kind != RunKind.OTHER.value:
+        if (origin.repo not in trust.cross_repo or run.kind != RunKind.OTHER.value
+                or not origin.on_default):
             raise GitHubAPIError(f"run {run.id} is for {run.repo} but was found in {origin.repo}; "
-                                 "only kind 'other' from a --cross-repo repo may name another repo")
+                                 "only kind 'other' from a default-branch run of a --cross-repo "
+                                 "repo may name another repo")
         # It names the other repo's commit (perf measures it), which this run's head cannot vouch for.
     elif origin.event == "pull_request":
         # The run tests GitHub's merge of the PR, which the API does not name; the PR's head
-        # must be the run's head.
+        # must be the run's head, and the PR one GitHub links to the run when it lists any
+        # (it does for same-repo PRs). run.commit, the merge, is not checked.
         if run.change is None or run.change.head_sha != origin.head_sha:
             raise GitHubAPIError(f"run {run.id}: its change head is not {origin.head_sha}, the "
                                  "commit its workflow run tested")
+        if origin.pull_requests and run.change.number not in origin.pull_requests:
+            raise GitHubAPIError(f"run {run.id}: change {_short(run.change.number)} is not a pull "
+                                 f"request of its workflow run {origin.run_id}")
     elif run.role == "base" and run.parent and run.id.startswith(run.parent + "/"):
         pass   # V0-TST-03's base run tests the base commit; its parent is checked against the head
     elif run.role == "backfill" and origin.event == "workflow_dispatch":
@@ -319,8 +339,9 @@ def _check_failure(origin: Origin, path: Path) -> None:
 
     if origin.event not in FAILURE_EVENTS or not origin.on_default:
         raise GitHubAPIError(f"failure records are taken only from {', '.join(FAILURE_EVENTS)} "
-                             f"runs on the default branch, not a {origin.event or 'unknown'} run "
-                             f"on {_short(origin.head_branch)}")
+                             "runs of a commit on the default branch, not a "
+                             f"{origin.event or 'unknown'} run of {_short(origin.head_sha)} on "
+                             f"{_short(origin.head_branch)}")
     f = failures.read(path).record
     if f.repo != origin.repo:
         raise GitHubAPIError(f"failure {_short(f.id)} is for {_short(f.repo)} but was found in "
@@ -333,7 +354,7 @@ def _check_failure(origin: Origin, path: Path) -> None:
     for p in sorted(links.glob("*.json")) if links.is_dir() else []:
         try:
             link = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, RecursionError) as e:
             raise GitHubAPIError(f"failure {f.id}: link {p.name}: {e}") from None
         if not (isinstance(link, dict) and link.get("field") in failures.LINK_FIELDS
                 and isinstance(link.get("value"), str) and link["value"]
@@ -355,6 +376,10 @@ def _unzip(data: bytes, dest: str) -> None:
             z.extractall(dest)
     except zipfile.BadZipFile:
         raise GitHubAPIError("not a zip archive") from None
+    # An encrypted member (RuntimeError), corrupt or truncated data (zlib.error, EOFError), an
+    # unknown compression method (NotImplementedError) or a bad name (OSError, ValueError).
+    except (RuntimeError, zlib.error, EOFError, NotImplementedError, OSError, ValueError) as e:
+        raise GitHubAPIError(f"cannot unzip: {type(e).__name__}: {e}") from None
 
 
 def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: Trust) -> bool:
@@ -393,12 +418,21 @@ def collect(repo: str, store, token: str, get=http_get,
     errors = []
     runs: dict[int, dict] = {}     # workflow run id -> the run, fetched once
     default: list[str] = []
+    history: dict[tuple[str, str], bool] = {}   # (repo, sha) -> in the default branch's history
 
     def default_branch() -> str:
         if not default:
             default.append(str(_get_json(f"{API}/repos/{repo}", token, get)
                                .get("default_branch") or ""))
         return default[0]
+
+    def in_default(sha: str) -> bool:
+        if (repo, sha) not in history:
+            base = urllib.parse.quote(default_branch(), safe="/")
+            url = f"{API}/repos/{repo}/compare/{base}...{urllib.parse.quote(sha, safe='')}?per_page=1"
+            # identical or behind: sha is the default branch's head or one of its ancestors.
+            history[(repo, sha)] = _get_json(url, token, get).get("status") in ("identical", "behind")
+        return history[(repo, sha)]
 
     for art in list_result_artifacts(repo, token, get):
         if (store.has(art["name"]) if art["name"].startswith(ARTIFACT_PREFIX)
@@ -410,7 +444,7 @@ def collect(repo: str, store, token: str, get=http_get,
             if not 0 <= size <= MAX_ARTIFACT_BYTES:
                 raise GitHubAPIError(f"size {_short(art.get('size_in_bytes'))} is not at most "
                                      f"{MAX_ARTIFACT_BYTES} bytes")
-            origin = _origin(repo, art, trust, token, get, runs, default_branch)
+            origin = _origin(repo, art, trust, token, get, runs, default_branch, in_default)
             if _import_artifact(art, store, token, get, origin, trust):
                 new += 1
             else:

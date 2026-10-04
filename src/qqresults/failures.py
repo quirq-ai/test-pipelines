@@ -155,7 +155,7 @@ def read(path: Path) -> State:
         for p in sorted((path / LINKS).glob("*.json")) if (path / LINKS).is_dir() else []:
             link = json.loads(p.read_text(encoding="utf-8"))
             links[link["field"]] = link["value"]   # later links win
-    except (OSError, ValueError, TypeError, KeyError, AttributeError) as e:
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError) as e:
         raise FailureError(f"{path}: not a readable failure record: {e}") from None
     return State(record, links, path)
 

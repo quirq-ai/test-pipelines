@@ -102,9 +102,10 @@ def workflow_run(run_id, repo="o/x", event="push", branch="main", sha="c1", atte
 
 
 def _collect_zips(st, repo, zips, runs=(), trust=github.Trust(), default_branch="main",
-                  fetched=None):
+                  fetched=None, compare=None):
     """Collect a fake listing: zips are (name, data[, workflow run id[, size]]), listed newest
-    first as GitHub does; runs are workflow_run()s (default: a push to main at c1)."""
+    first as GitHub does; runs are workflow_run()s (default: a push to main at c1). compare maps
+    a commit to its status against the default branch (default: identical, so on it)."""
     by_id = {r["id"]: r for r in runs}
     listing = {"artifacts": [
         {"id": 100 + i, "name": z[0], "expired": False, "archive_download_url": f"https://dl/{i}",
@@ -120,6 +121,9 @@ def _collect_zips(st, repo, zips, runs=(), trust=github.Trust(), default_branch=
         if "/actions/runs/" in url:
             rid = int(url.rsplit("/", 1)[1])
             return json.dumps(by_id.get(rid) or workflow_run(rid, repo=repo)).encode()
+        if url.startswith(f"{github.API}/repos/{repo}/compare/{default_branch}..."):
+            sha = url.split("...", 1)[1].split("?", 1)[0]
+            return json.dumps({"status": (compare or {}).get(sha, "identical")}).encode()
         if url == f"{github.API}/repos/{repo}":
             return json.dumps({"default_branch": default_branch}).encode()
         return zips[int(url.rsplit("/", 1)[1])][1]
@@ -301,6 +305,66 @@ def test_collect_refuses_a_run_id_or_commit_its_workflow_run_did_not_produce(tmp
     assert "change head" in _refused(tmp_path / "d", pr, workflow_run(1, event="pull_request"))
 
 
+def test_postsubmit_needs_a_commit_in_the_default_branchs_history(tmp_path):
+    b = make("github/o/x/1/1/postsubmit", commit="t1", fail=True, repo="o/x")
+    # A tag named main: head_branch is "main", but the commit is not on main (unreviewed).
+    for event in ("push", "workflow_dispatch"):
+        st = FileStore(tmp_path / event)
+        _, _, errors = _collect_zips(st, "o/x", [(*zipped(b), 1)],
+                                     [workflow_run(1, event=event, sha="t1")],
+                                     compare={"t1": "ahead"})
+        assert "off the default branch" in errors[0] and st.runs() == []
+    st = FileStore(tmp_path / "diverged")
+    _, _, errors = _collect_zips(st, "o/x", [(*zipped(b), 1)], [workflow_run(1, sha="t1")],
+                                 compare={"t1": "diverged"})
+    assert "off the default branch" in errors[0] and st.runs() == []
+    # An older commit of main (behind its head) is on it; the comparison is made once per commit.
+    st, fetched = FileStore(tmp_path / "behind"), []
+    c = make("github/o/x/2/1/postsubmit", commit="t1", repo="o/x")
+    assert _collect_zips(st, "o/x", [(*zipped(b), 1), (*zipped(c), 2)],
+                         [workflow_run(1, sha="t1"), workflow_run(2, sha="t1")],
+                         compare={"t1": "behind"}, fetched=fetched) == (2, 0, [])
+    assert sum("/compare/" in u for u in fetched) == 1
+
+
+def test_collect_refuses_a_pull_request_the_run_is_not_for(tmp_path):
+    pr = make("github/o/x/1/1/presubmit", kind="presubmit", repo="o/x", change=7)
+    pr = bundle.Bundle(Run.from_dict({**pr.run.to_dict(), "change": {
+        "repo": "o/x", "number": 8, "head_sha": "pr-head"}}), pr.results, pr.verdict)
+    run = {**workflow_run(1, event="pull_request", branch="feature", sha="pr-head"),
+           "pull_requests": [{"number": 7}]}
+    assert "is not a pull request of its workflow run" in _refused(tmp_path / "a", pr, run)
+    # GitHub lists no pull requests for some runs; then only the head is checked.
+    st = FileStore(tmp_path / "b")
+    assert _collect_zips(st, "o/x", [(*zipped(pr), 1)], [{**run, "pull_requests": []}])[::2] \
+        == (1, [])
+
+
+def test_cross_repo_runs_must_be_on_the_default_branch(tmp_path):
+    perf = zipped(make("github/o/perf/2/1/measure/xo", kind="other", commit="xo-sha"))
+    trust = github.Trust(workflows=(".github/workflows/perf.yml",), cross_repo=frozenset({"o/perf"}))
+    runs = [workflow_run(2, repo="o/perf", branch="side", path=".github/workflows/perf.yml")]
+    _, _, errors = _collect_zips(FileStore(tmp_path), "o/perf", [(*perf, 2)], runs, trust)
+    assert "default-branch run" in errors[0]
+
+
+def test_collect_refuses_unreadable_artifacts_and_keeps_going(tmp_path):
+    good = zipped(make("github/o/x/1/1/j", repo="o/x"))
+    corrupt = io.BytesIO()
+    with zipfile.ZipFile(corrupt, "w", zipfile.ZIP_DEFLATED) as z:
+        z.writestr("run.json", "x" * 1000)
+    data = bytearray(corrupt.getvalue())
+    start = data.index(b"run.json") + len("run.json")     # the local header's name, then the data
+    data[start:start + 8] = b"\xff" * 8
+    deep = zipped(make("github/o/x/2/1/j", repo="o/x"),
+                  mutate=lambda f, text: "[" * 100_000 + "]" * 100_000 if f == bundle.RUN else text)
+    st = FileStore(tmp_path)
+    new, _, errors = _collect_zips(st, "o/x", [("qq-results-corrupt", bytes(data), 1),
+                                               (*deep, 2), (*good, 1)])
+    assert new == 1 and len(errors) == 2
+    assert "cannot unzip" in errors[0] and "not a readable results bundle" in errors[1]
+
+
 def test_a_forged_bundle_cannot_take_a_real_runs_id_first(tmp_path):
     st = FileStore(tmp_path)
     real_id = "github/o/x/555/1/postsubmit"
@@ -445,6 +509,15 @@ def test_collect_refuses_forged_failures(tmp_path, run, kw, error):
     assert new == 0 and error in errors[0] and st.failures() == []
     _, _, errors = _collect_zips(st, "o/x", [(*art, 7)], [_demo_run(**run)])
     assert "not an allowed workflow" in errors[0] or "fork" in errors[0]
+
+
+def test_collect_refuses_a_failure_from_a_tag_named_like_the_default_branch(tmp_path):
+    art = _failure_zip(tmp_path / "f")
+    st = FileStore(tmp_path / "store")
+    new, _, errors = _collect_zips(st, "o/x", [(*art, 7)], [_demo_run(sha="t1")], DEMO,
+                                   compare={"t1": "ahead"})
+    assert new == 0 and "runs of a commit on the default branch" in errors[0]
+    assert st.failures() == []
 
 
 def test_collect_refuses_a_malformed_failure_link(tmp_path):

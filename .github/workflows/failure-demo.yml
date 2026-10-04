@@ -60,6 +60,7 @@ jobs:
           SECOND_ISSUE: ${{ steps.second.outputs.issue }}
           SECOND_CREATED: ${{ steps.second.outputs.created }}
           ID: ${{ steps.first.outputs.id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           test -n "$FIRST_ISSUE" && test "$FIRST_ISSUE" = "$SECOND_ISSUE"
@@ -73,9 +74,10 @@ jobs:
           echo "issues with the record's marker (not closed as duplicate): $issues"
           test "$issues" = "1"
           python -m pip install --quiet .
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            # collect takes failure records only from default-branch runs, so a PR checks the
-            # record its own job wrote (the directory the failure action keeps).
+          if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            # collect takes failure records only from default-branch runs, so any other ref (a PR,
+            # a dispatch on a branch or tag) checks the record its own job wrote (the directory the
+            # failure action keeps).
             mkdir -p "$RUNNER_TEMP/store" && cp -R "$RUNNER_TEMP/qq-failures" "$RUNNER_TEMP/store/failures"
           else
             qqresults collect --store "$RUNNER_TEMP/store" --repo "$GITHUB_REPOSITORY" \
