@@ -48,7 +48,7 @@ def test_unmeasured_metrics_name_what_they_wait_on(tmp_path):
     assert not metric(card, "quirq-ai/innernet", "Main-red time").measured
     md = scorecard.to_markdown(card)
     assert "| Gate time-to-green | not measured |" in md
-    assert "| Failures fully recorded | 100% | V0-TST-04 failure records |" in md
+    assert "| Cache hit rate | at least 90% (P3+) | V0-RBE-01" in md
 
 
 def test_red_main_at_the_end_counts_until_now(tmp_path):

@@ -117,10 +117,16 @@ def _rfc3339_utc(text: str) -> str:
 
 API = "https://api.github.com"
 ARTIFACT_PREFIX = "qq-results-"
+FAILURE_PREFIX = "qq-failure-"
 
 
 class GitHubAPIError(Error):
     pass
+
+
+class NeedsDeletion(Error):
+    """A public issue holds a record that now looks security-related. Editing it does not
+    remove the text (edit history, timeline, notification emails), so a person must delete it."""
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -157,13 +163,14 @@ def http_get(url: str, token: str) -> bytes:
 
 
 def list_result_artifacts(repo: str, token: str, get=http_get, max_pages: int = 20) -> list[dict]:
-    """The repo's unexpired qq-results-* artifacts, newest first."""
+    """The repo's unexpired qq-results-* and qq-failure-* artifacts, newest first."""
     found = []
     for page in range(1, max_pages + 1):
         data = json.loads(get(f"{API}/repos/{repo}/actions/artifacts?per_page=100&page={page}", token))
         artifacts = data.get("artifacts", [])
         found.extend(a for a in artifacts
-                     if a.get("name", "").startswith(ARTIFACT_PREFIX) and not a.get("expired"))
+                     if a.get("name", "").startswith((ARTIFACT_PREFIX, FAILURE_PREFIX))
+                     and not a.get("expired"))
         if len(artifacts) < 100:
             break
     return found
@@ -179,8 +186,13 @@ def _import_artifact(repo: str, art: dict, store, token: str, get) -> bool:
                 z.extractall(tmp)
         except zipfile.BadZipFile:
             raise GitHubAPIError("not a zip archive") from None
-        # One bundle at the root, or (with retries, V0-TST-03) one bundle per directory.
         root = Path(tmp)
+        if art["name"].startswith(FAILURE_PREFIX):
+            recs = [d for d in [root, *sorted(root.iterdir())] if (d / "failure.json").is_file()]
+            if not recs:
+                raise GitHubAPIError("no failure record inside")
+            return any([store.import_failure(d) for d in recs])
+        # One bundle at the root, or (with retries, V0-TST-03) one bundle per directory.
         dirs = [root] if (root / "run.json").is_file() else sorted(
             d for d in root.iterdir() if (d / "run.json").is_file())
         if not dirs:
@@ -218,7 +230,8 @@ def collect(repo: str, store, token: str, get=http_get) -> tuple[int, int, list[
     new = old = 0
     errors = []
     for art in list_result_artifacts(repo, token, get):
-        if store.has(art["name"]):
+        if (store.has(art["name"]) if art["name"].startswith(ARTIFACT_PREFIX)
+                else store.seen_artifact(f"{art['name']}-{art.get('id', '')}")):
             old += 1
             continue
         try:
@@ -226,6 +239,107 @@ def collect(repo: str, store, token: str, get=http_get) -> tuple[int, int, list[
                 new += 1
             else:
                 old += 1
+            if art["name"].startswith(FAILURE_PREFIX):
+                store.mark_artifact(f"{art['name']}-{art.get('id', '')}")
         except Error as e:
             errors.append(f"{repo} artifact {art.get('name')}: {e}")
     return new, old, errors
+
+
+# --- mirroring failure records to issues (V0-TST-04) ------------------------------------------
+
+FAILURE_LABEL = "qq-failure"
+
+
+def api(method: str, url: str, token: str, body: dict | None = None) -> tuple[int, object]:
+    """Call the REST API with a JSON body. Returns (status, parsed JSON or None)."""
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
+               "User-Agent": "qqresults", "Content-Type": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read()
+            return resp.status, json.loads(raw) if raw else None
+    except urllib.error.HTTPError as e:
+        return e.code, None
+    except urllib.error.URLError as e:
+        raise GitHubAPIError(f"{method} {url}: {e.reason}") from None
+
+
+def _find_issues(repo: str, fid: str, token: str, call) -> list[dict]:
+    """Every issue (not PR) whose body starts with the record's marker, lowest number first."""
+    from qqresults import failures
+
+    marker = failures.marker(fid)
+    found = []
+    for page in range(1, 51):
+        status, issues = call("GET", f"{API}/repos/{repo}/issues?labels={FAILURE_LABEL}"
+                              f"&state=all&per_page=100&page={page}", token)
+        if status != 200:
+            raise GitHubAPIError(f"{repo}: listing {FAILURE_LABEL} issues: HTTP {status}")
+        found += [i for i in issues if "pull_request" not in i
+                  and (i.get("body") or "").startswith(marker)]
+        if len(issues) < 100:
+            break
+    return sorted(found, key=lambda i: i["number"])
+
+
+def _patch(repo: str, issue: dict, want: dict, token: str, call) -> None:
+    if any(issue.get(k) != v for k, v in want.items()):
+        status, _ = call("PATCH", f"{API}/repos/{repo}/issues/{issue['number']}", token, want)
+        if status != 200:
+            raise GitHubAPIError(f"{repo}#{issue['number']}: updating the issue: HTTP {status}")
+
+
+def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
+    """Create or update the one labelled issue that mirrors a failure record.
+
+    Returns (issue URL, created). The issue is found again by the marker its body starts with,
+    so a second call never opens a second issue; if two runners race and both open one, the
+    higher-numbered duplicate is closed. A security-looking record is never mirrored: it returns
+    ("", False). An issue opened before the record looked that way has its title and body
+    replaced and is closed, then NeedsDeletion is raised: the old text stays in its edit history
+    and in emails already sent, so only deleting the issue (a repo admin) removes it.
+    """
+    from qqresults import failures  # core module; imported here to keep backends import-light
+
+    call = call or api
+    f = state.current
+    existing = _find_issues(repo, f.id, token, call)
+    if state.security:
+        for issue in existing:
+            _patch(repo, issue, {"title": f"[qq failure] withheld ({f.id})",
+                                 "body": failures.marker(f.id) + "\n" + failures.WITHHELD_BODY,
+                                 "state": "closed"}, token, call)
+        if existing:
+            urls = ", ".join(i["html_url"] for i in existing)
+            raise NeedsDeletion(f"{f.id} now looks security-related but was mirrored to {urls}; "
+                                "its text is hidden and closed but stays in the edit history. "
+                                "A repo admin must delete the issue.")
+        return "", False
+    title, body = failures.issue_title(f), failures.issue_body(state)
+    if existing:
+        _patch(repo, existing[0], {"title": title, "body": body,
+                                   "state": "closed" if state.closed else "open"}, token, call)
+        return existing[0]["html_url"], False
+    labels = [FAILURE_LABEL, f"{FAILURE_LABEL}:{f.kind}"]
+    for name in labels:
+        status, _ = call("POST", f"{API}/repos/{repo}/labels", token,
+                         {"name": name, "color": "b60205",
+                          "description": "quirq infra failure record (test-pipelines)"})
+        if status not in (201, 422):   # 422: the label exists already
+            raise GitHubAPIError(f"{repo}: creating label {name}: HTTP {status}")
+    status, created = call("POST", f"{API}/repos/{repo}/issues", token,
+                           {"title": title, "body": body, "labels": labels})
+    if status != 201:
+        raise GitHubAPIError(f"{repo}: opening the failure issue: HTTP {status} "
+                             "(the token needs issues: write)")
+    # Another runner may have opened one at the same moment: keep the lowest number only.
+    now_there = _find_issues(repo, f.id, token, call)
+    if now_there and now_there[0]["number"] != created["number"]:
+        _patch(repo, created, {"state": "closed", "state_reason": "duplicate"}, token, call)
+        return now_there[0]["html_url"], False
+    return created["html_url"], True

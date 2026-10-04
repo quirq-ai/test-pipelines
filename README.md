@@ -118,14 +118,48 @@ one, which errs towards blocking. The rerun command comes from the builder, so t
 done-when with `tools/planted_demo.sh`: the planted failure is exonerated, and changes that break
 a test or the code under it still block. "Through the gate" waits for the merge queue (V0-ORG-03).
 
+## Failure records (V0-TST-04)
+
+Every held canary, canary rollback and auto-revert opens one write-once `Failure` record (plan
+§5.10), mirrored to one GitHub issue labelled `qq-failure` and `qq-failure:<kind>`:
+
+```yaml
+- uses: quirq-ai/test-pipelines/failure@<commit>     # needs issues: write
+  with:
+    kind: canary-held                                 # canary-held | canary-rollback | auto-revert | red-run | fuzz
+    subject: ${{ steps.build.outputs.digest }}        # same kind, repo and subject: same record
+    summary: "Canary held: /health probe failed"
+    stage: probe
+    signal: health
+```
+
+The record id is derived from kind, repo and subject, and the issue carries the id in a hidden
+marker, so reporting the same event twice (a retried pipeline, a second runner) still gives one
+record and one issue. What is learned later is added as link records, never by rewriting:
+
+```sh
+qqresults failure link <id> --dir <store>/failures --culprit <change> --fix <change> \
+  --covering-test <test id> --mirror quirq-ai/xo-space    # updates the issue; closes it when complete
+```
+
+A record closes only when culprit, fix and covering test are linked (infra-config
+`postmortem.toml` `record_needs`), and the scorecard reports the share that are. Security-looking
+records (flagged, or matching words such as "overflow" or "credential") are kept but never
+mirrored to a public issue, and their failure artifact is not uploaded. If a record only looks
+that way after its issue was opened, the issue's text is hidden and it is closed, and the step
+fails asking a repo admin to delete it: editing an issue does not remove the old text from its
+history or from emails already sent. The record itself may already be in a public artifact by
+then. TODO(suraj): where those go instead. The `failure-demo` workflow
+proves the done-when against the real API with a planted held canary.
+
 ## v0 status
 
 | Item | What | PR | State |
 |---|---|---|---|
 | V0-TST-01 | Result schema and JUnit sink | #2 | merged |
 | V0-TST-02 | Results store v0 and scorecard v0 | #3 | merged |
-| V0-TST-03 | Verdict: retry, then compare with base | #4 | in review |
-| V0-TST-04 | Failure records with issue mirror | | not started |
+| V0-TST-03 | Verdict: retry, then compare with base | #4 | merged |
+| V0-TST-04 | Failure records with issue mirror | #6 | in review |
 
 ## Working here
 
