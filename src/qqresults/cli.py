@@ -12,11 +12,13 @@
     qqresults import --store DIR BUNDLE_DIR...
         Add sink bundles to the results store (write-once).
     qqresults collect --store DIR --repo OWNER/NAME... [--workflow GLOB...] [--cross-repo OWNER/NAME...]
+                      [--report FILE]
         Add every bundle the repos' own runs of trusted workflows kept (token from GITHUB_TOKEN).
+        --report appends what each repo collected and skipped, and why.
     qqresults query runs|results|history --store DIR [filters] [--json]
         Read the store.
-    qqresults scorecard --store DIR [--days N] [--json]
-        Plan §8's metrics from the store.
+    qqresults scorecard --store DIR [--days N] [--json] [--collect-report FILE]
+        Plan §8's metrics from the store; with --collect-report, says whether collect was complete.
     qqresults failure open --dir DIR --kind K --repo R --subject S [--summary ...] [--mirror REPO]
     qqresults failure link --dir DIR ID --culprit C --fix F --covering-test T [--mirror REPO]
                            [--run-id RUN --link-copy OUT]
@@ -112,17 +114,34 @@ def cmd_collect(args) -> int:
     trust = gh.Trust(workflows=tuple(args.workflow or ()),
                      cross_repo=frozenset(args.cross_repo or ()))
     failed = False
+    # Every repo is logged as started first, so a crash leaves the scorecard a repo that did
+    # not finish rather than a report that looks complete.
     for repo in args.repo:
+        _log_collect(args.report, {"repo": repo, "finished": False})
+    for repo in args.repo:
+        listed, refused = True, []
         try:
-            new, old, errors = gh.collect(repo, st, token, trust=trust)
+            new, old, errors = gh.collect(repo, st, token, trust=trust, refused=refused)
         except Error as e:   # one repo failing to list must not hide the others
-            new, old, errors = 0, 0, [f"{repo}: {e}"]
-        print(f"{repo}: {new} new, {old} already stored, {len(errors)} skipped")
+            new, old, errors, listed = 0, 0, [f"{repo}: {e}"], False
+        print(f"{repo}: {new} new, {old} already stored, {len(errors)} skipped, "
+              f"{len(refused)} refused (not trusted)")
         for e in errors:
             print(f"qqresults: warning: {e}", file=sys.stderr)
+        for e in refused:
+            print(f"qqresults: refused (not trusted): {e}", file=sys.stderr)
+        _log_collect(args.report, {"repo": repo, "finished": True, "listed": listed, "new": new,
+                                   "stored": old, "skipped": errors, "refused": refused})
         failed |= bool(errors)
     # A bad artifact is skipped with a warning so it cannot block every later collection.
     return 1 if failed and args.strict else 0
+
+
+def _log_collect(path: str | None, entry: dict) -> None:
+    """Append one line to collect's report, which `scorecard --collect-report` reads."""
+    if path:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, sort_keys=True) + "\n")
 
 
 def _utc(text: str) -> str:
@@ -170,6 +189,8 @@ def cmd_scorecard(args) -> int:
     until = dt.datetime.now(dt.UTC)
     st = store.open_store(args.store)
     card = scorecard.compute(st, until - dt.timedelta(days=args.days), until, repos=args.repo)
+    if args.collect_report:
+        card.collect = scorecard.collect_status(Path(args.collect_report))
     for message in st.skipped.values():
         print(f"qqresults: warning: {message}", file=sys.stderr)
     if args.json:
@@ -301,8 +322,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--rerun", metavar="CMD",
                    help="retry failed tests with this shell command, then compare with base "
                         "(it writes JUnit to $QQ_JUNIT_DIR; $QQ_RETRY_TESTS lists the failed ids)")
-    s.add_argument("--base", help="one more base commit for --rerun; a failure must also fail "
-                                  "at the run's own bases")
+    s.add_argument("--base", help="one more base commit for --rerun, as a full 40-hex commit id "
+                                  "(otherwise the comparison is refused and the failures stay "
+                                  "unexpected); a failure must also fail at the run's own bases")
     s.add_argument("--setup", metavar="CMD",
                    help="prepares a checkout for --rerun: runs in the base worktree before its "
                         "tests and in the change's checkout after ($QQ_SIDE says which)")
@@ -342,6 +364,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "another repo (perf); needs --workflow, and only its push, schedule "
                          "and dispatch runs on the default branch are stored")
     co.add_argument("--strict", action="store_true", help="exit 1 if any artifact was skipped")
+    co.add_argument("--report", metavar="FILE",
+                    help="append what was collected and skipped, per repo, as JSON lines, for "
+                         "scorecard --collect-report")
     co.set_defaults(func=cmd_collect)
 
     q = sub.add_parser("query", help="read the results store")
@@ -365,6 +390,9 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--days", type=int, default=7)
     sc.add_argument("--repo", action="append", help="also list a repo with no runs yet")
     sc.add_argument("--json", action="store_true")
+    sc.add_argument("--collect-report", metavar="FILE",
+                    help="collect --report's file: the card says whether that collect was "
+                         "complete, and what it skipped and why")
     sc.set_defaults(func=cmd_scorecard)
 
     fa = sub.add_parser("failure", help="failure records with an issue mirror")

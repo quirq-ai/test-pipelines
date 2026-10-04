@@ -3,4 +3,4 @@
 
 [gate]
 source = "https://github.com/quirq-ai/gate"
-commit = "e718c70e1af337cd67d7e73d06f5d7e471bf7929"   # main with the agnosticism guard (V0-GAT-02)
+commit = "30e76fce939cdbffef9f7037dc47d6d39e55bc10"   # main: guard without the allows #26 made unnecessary (gate #18)
