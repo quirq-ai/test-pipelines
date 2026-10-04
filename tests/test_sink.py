@@ -138,6 +138,11 @@ def test_unreadable_bundle_line_is_a_bundle_error(tmp_path, junit_dir):
     ("2026-10-04T14:00:00+02:00", "2026-10-04T12:00:00Z"),
     ("2026-10-04t12:00:00z", "2026-10-04T12:00:00Z"),   # RFC 3339 allows lowercase
     ("2026-10-04T12:00:00", ""),          # no zone: ignored
+    ("2026-10-04T12:00:00.75+02:00", "2026-10-04T10:00:00Z"),   # a fraction is allowed
+    # ISO 8601 forms that are not RFC 3339, which fromisoformat alone would take
+    ("20261004T120000Z", ""), ("2026-W40-7T12:00Z", ""), ("2026-10-04T12:00Z", ""),
+    ("2026-10-04 12:00:00Z", ""), ("2026-10-04T12:00:00+0200", ""), ("2026-10-04T12:00:00+24:00", ""),
+    ("2026-277T12:00:00Z", ""), ("2026-10-04T12:00:00.Z", ""),
     ("yesterday", ""), ("", "")])
 def test_gate_timing_sets_queued_at(tmp_path, value, expected):
     env = gh_env(tmp_path, "merge_group", {"merge_group": {"head_ref": "refs/heads/gh-readonly-queue/main/pr-1-x"}},

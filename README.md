@@ -82,7 +82,7 @@ qqresults collect --store .qq/store --repo quirq-ai/xo-space   # needs GITHUB_TO
 ```
 
 Scorecard v0 measures, per repo: gate time-to-green p50/p90 (gate runs carry their queue-entry
-time once `quirq-ai/gate/timing` exports `QQ_QUEUED_AT` before the sink, V0-GAT-04; one sample per green gate workflow run, from its first queue entry to the last
+time once `quirq-ai/gate/timing` exports `QQ_QUEUED_AT`, a strict RFC 3339 time, before the sink, V0-GAT-04; one sample per green gate workflow run, from its first queue entry to the last
 finish of the latest attempt of each job, so a re-run counts its whole wait and red runs are
 not counted), main-red minutes per week, flake rate, pass rates of gate,
 post-submit and presubmit runs, and runs that stored no results. A run with test results is red
@@ -115,7 +115,8 @@ dispatch off it only `other`. Its `commit` must be the run's head commit (a disp
 and V0-TST-03's base run are the exceptions). For a pull request, whose run tests GitHub's merge
 commit that the API does not name, `commit` is not checked; instead the change's `head_sha` must
 be the run's head commit, and its `number` one of the run's `pull_requests` when GitHub lists any
-(it does for a same-repo PR). A run may name another repo only as kind `other`, from a repo given
+(it does for a same-repo PR). A gate run's `queued_at` must lie between 24 hours before GitHub
+created its workflow run and the run's finish, so one bad runner clock cannot dominate p90. A run may name another repo only as kind `other`, from a repo given
 with `--cross-repo` (the `scorecard` workflow passes `quirq-ai/perf`). Such a source can name any
 repo, so everything from it is held to more: `--workflow` must be given (its default globs never
 apply to it, and collecting it without one is an error), and only its push, schedule, dispatch

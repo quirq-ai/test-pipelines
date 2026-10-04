@@ -111,13 +111,23 @@ def run_from_env(env: Mapping[str, str], kind: str = "", name: str = "") -> Run:
     )
 
 
+# RFC 3339 only: YYYY-MM-DDTHH:MM:SS, an optional fraction, then Z or +-HH:MM. fromisoformat alone
+# also takes ISO 8601's basic (20261004T120000Z) and week (2026-W40-7T12:00Z) forms.
+RFC3339 = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?"
+                     r"(Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])")
+# A gate run's queue entry is at most this long before GitHub created its workflow run.
+MAX_QUEUE_WAIT = dt.timedelta(hours=24)
+
+
 def _rfc3339_utc(text: str) -> str:
-    """text as RFC 3339 UTC ("...Z"), or "" when it is missing or not a timestamp with a zone."""
-    try:
-        t = dt.datetime.fromisoformat(text.strip().upper().replace("Z", "+00:00"))
-    except ValueError:
+    """text as RFC 3339 UTC ("...Z"), or "" when it is missing or not a strict RFC 3339 time
+    (RFC3339; lowercase t and z, which RFC 3339 allows, are read as T and Z)."""
+    text = text.strip().upper()
+    if not RFC3339.fullmatch(text):
         return ""
-    if t.tzinfo is None:
+    try:
+        t = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
         return ""
     return t.astimezone(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -229,6 +239,7 @@ class Origin:
     head_sha: str
     on_default: bool      # head_branch is the default branch and head_sha is in its history
     pull_requests: tuple[int, ...] = ()   # the PRs GitHub links to the run (same-repo PRs only)
+    created_at: str = ""  # when GitHub created the run (RFC 3339 UTC); "" when it did not say
 
     def kinds(self) -> set[str]:
         """The run kinds a bundle from this run may claim."""
@@ -311,7 +322,8 @@ def _origin(repo: str, art: dict, trust: Trust, token: str, get, runs: dict,
                              f"branch are stored, not workflow run {run_id} ({event or 'unknown'} "
                              f"of {_short(sha)} on {_short(branch)})")
     return Origin(repo=repo, run_id=run_id, attempts=attempts, event=event, path=path,
-                  head_branch=branch, head_sha=sha, on_default=on_default, pull_requests=numbers)
+                  head_branch=branch, head_sha=sha, on_default=on_default, pull_requests=numbers,
+                  created_at=_rfc3339_utc(str(run.get("created_at") or "")))
 
 
 def _check_bundle(origin: Origin, trust: Trust, b: bundle.Bundle) -> None:
@@ -350,10 +362,28 @@ def _check_bundle(origin: Origin, trust: Trust, b: bundle.Bundle) -> None:
     elif run.commit != origin.head_sha:
         raise GitHubAPIError(f"run {run.id}: commit {_short(run.commit)} is not "
                              f"{origin.head_sha}, the commit its workflow run tested")
+    if run.queued_at:
+        _check_queued(origin, run)
     if len(b.results) > MAX_RESULTS:
         raise GitHubAPIError(f"run {run.id}: {len(b.results)} results, more than {MAX_RESULTS}")
     if b.verdict.run_id != run.id or any(r.run_id != run.id for r in b.results):
         raise GitHubAPIError(f"run {run.id}: its results or verdict name another run")
+
+
+def _check_queued(origin: Origin, run: Run) -> None:
+    """A queue entry lies between MAX_QUEUE_WAIT before GitHub created the workflow run and the
+    run's finish, so one runner's bad clock (or a 1970 default) cannot dominate gate timing."""
+    def at(text: str) -> dt.datetime:
+        return dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+    queued = at(run.queued_at)
+    earliest = at(origin.created_at) - MAX_QUEUE_WAIT if origin.created_at else None
+    if (run.finished_at and queued > at(run.finished_at)) or (earliest and queued < earliest):
+        low = earliest.strftime("%Y-%m-%dT%H:%M:%SZ") if earliest else "any time"
+        raise GitHubAPIError(f"run {run.id}: queued_at {run.queued_at} is not between {low} "
+                             f"(24 h before workflow run {origin.run_id} was created) and its "
+                             f"finish {run.finished_at or 'unknown'}; check the runner's clock "
+                             "and quirq-ai/gate/timing")
 
 
 def _check_failure(origin: Origin, path: Path) -> None:

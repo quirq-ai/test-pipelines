@@ -101,13 +101,17 @@ def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
     latest attempt of each of its jobs is (red() as everywhere else; a job that says nothing,
     such as a cancelled one, is ignored), at the last of those jobs' finish. Red runs never
     reached green and are not counted.
+
+    A job's queue time counts only when it precedes that job's own finish, so one job's bad clock
+    cannot stretch its run's wait; collect also refuses one more than 24 h before GitHub created
+    the workflow run (backends/github.py).
     """
     m = Metric("Gate time-to-green", "P1: p50 under 15 min, p90 under 30 min", unit="min")
     groups: dict[str, list[tuple[Run, Verdict]]] = {}
     for r, v in runs:
         if r.kind == RunKind.GATE:
             groups.setdefault(workflow_key(r), []).append((r, v))
-    waits, red_runs, untimed, silent = [], 0, 0, 0
+    waits, red_runs, untimed, silent, late = [], 0, 0, 0, 0
     for jobs in groups.values():
         latest: dict[str, tuple[Run, Verdict]] = {}
         for r, v in jobs:
@@ -124,7 +128,11 @@ def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
         if not states:
             silent += 1                       # every job cancelled or unknown
             continue
-        queued = [parse_time(r.queued_at) for r, _ in jobs if r.queued_at]
+        stamped = [(parse_time(r.queued_at), r) for r, _ in jobs if r.queued_at]
+        queued = [q for q, r in stamped if not r.finished_at or q <= parse_time(r.finished_at)]
+        if stamped and not queued:
+            late += 1                         # every queue time is after its job finished
+            continue
         finished = [parse_time(r.finished_at) for (r, v), s in zip(latest.values(), states)
                     if s is False and r.finished_at]
         if not queued or not finished:
@@ -132,7 +140,7 @@ def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
             continue
         waits.append((max(finished) - min(queued)).total_seconds() / 60)
     minutes = [w for w in waits if w >= 0]   # a clock or input error is not a negative wait
-    dropped = len(waits) - len(minutes)
+    dropped = len(waits) - len(minutes) + late
     notes = [note for n, note in [
         (red_runs, f"{red_runs} red gate run(s) not counted"),
         (untimed, f"{untimed} green run(s) without a queue time"),

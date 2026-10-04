@@ -207,3 +207,19 @@ def test_green_runs_without_a_queue_time_are_noted(tmp_path):
     st.put(_gate_job("lint", "2026-10-04T09:05:00Z", queued="", run_no=78))
     m = gate(st)
     assert m.value == 5.0 and "1 green run(s) without a queue time" in m.detail
+
+
+def test_one_jobs_queue_time_after_its_own_finish_does_not_set_the_runs_wait(tmp_path):
+    # lint's clock is off: its queue time is after it finished, so test's queue time is used.
+    st = FileStore(tmp_path)
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z", queued="2026-10-04T09:20:00Z"))
+    st.put(_gate_job("test", "2026-10-04T09:30:00Z", queued="2026-10-04T09:10:00Z"))
+    m = gate(st)
+    assert m.value == 20.0 and "skipped" not in m.detail
+
+
+def test_a_run_whose_every_queue_time_is_late_is_skipped_not_untimed(tmp_path):
+    st = FileStore(tmp_path)
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z", queued="2026-10-04T09:20:00Z"))
+    m = gate(st)
+    assert not m.measured and m.detail == "1 run(s) queued after they finished, skipped"

@@ -284,6 +284,28 @@ def test_collect_refuses_forged_gate_timing(tmp_path):
     assert "claims kind 'gate'" in _refused(tmp_path, b, workflow_run(1, event="workflow_dispatch"))
 
 
+@pytest.mark.parametrize("queued,ok", [
+    ("2026-10-03T09:30:00Z", True),     # 24 h before the run was created
+    ("2026-10-04T10:00:00Z", True),     # at its finish
+    ("2026-10-03T09:29:59Z", False),    # earlier than that
+    ("1970-01-01T00:00:00Z", False),    # a runner with no clock
+    ("2026-10-04T10:00:01Z", False)])   # after it finished
+def test_collect_bounds_a_gate_runs_queue_time(tmp_path, queued, ok):
+    b = make("github/o/x/1/1/presubmit", kind="gate", repo="o/x", queued=queued)
+    run = {**workflow_run(1, event="merge_group", branch="gh-readonly-queue/main/pr-7-abc"),
+           "created_at": "2026-10-04T09:30:00Z"}
+    if ok:
+        assert _collect_zips(FileStore(tmp_path), "o/x", [(*zipped(b), 1)], [run])[::2] == (1, [])
+    else:
+        assert f"queued_at {queued} is not between 2026-10-03T09:30:00Z" in _refused(tmp_path, b, run)
+
+
+def test_collect_refuses_a_queue_time_after_the_finish_even_without_a_creation_time(tmp_path):
+    b = make("github/o/x/1/1/presubmit", kind="gate", repo="o/x", queued="2026-10-05T00:00:00Z")
+    run = workflow_run(1, event="merge_group", branch="gh-readonly-queue/main/pr-7-abc")
+    assert "is not between any time" in _refused(tmp_path, b, run)
+
+
 def test_collect_refuses_forged_red_postsubmits(tmp_path):
     b = make("github/o/x/1/1/presubmit", kind="postsubmit", fail=True, repo="o/x", change=7)
     assert "claims kind 'postsubmit'" in _refused(tmp_path / "pr", b,
