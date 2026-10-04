@@ -192,7 +192,8 @@ def collect(repo: str, store, token: str, get=http_get) -> tuple[int, int, list[
     new = old = 0
     errors = []
     for art in list_result_artifacts(repo, token, get):
-        if art["name"].startswith(ARTIFACT_PREFIX) and store.has(art["name"]):
+        if (store.has(art["name"]) if art["name"].startswith(ARTIFACT_PREFIX)
+                else store.seen_artifact(f"{art['name']}-{art.get('id', '')}")):
             old += 1
             continue
         try:
@@ -200,6 +201,8 @@ def collect(repo: str, store, token: str, get=http_get) -> tuple[int, int, list[
                 new += 1
             else:
                 old += 1
+            if art["name"].startswith(FAILURE_PREFIX):
+                store.mark_artifact(f"{art['name']}-{art.get('id', '')}")
         except Error as e:
             errors.append(f"{repo} artifact {art.get('name')}: {e}")
     return new, old, errors
@@ -228,42 +231,55 @@ def api(method: str, url: str, token: str, body: dict | None = None) -> tuple[in
         raise GitHubAPIError(f"{method} {url}: {e.reason}") from None
 
 
-def _find_issue(repo: str, fid: str, token: str, call) -> dict | None:
-    marker = f"<!-- qq-failure: {fid} -->"
+def _find_issues(repo: str, fid: str, token: str, call) -> list[dict]:
+    """Every issue (not PR) whose body starts with the record's marker, lowest number first."""
+    from qqresults import failures
+
+    marker = failures.marker(fid)
+    found = []
     for page in range(1, 51):
         status, issues = call("GET", f"{API}/repos/{repo}/issues?labels={FAILURE_LABEL}"
                               f"&state=all&per_page=100&page={page}", token)
         if status != 200:
             raise GitHubAPIError(f"{repo}: listing {FAILURE_LABEL} issues: HTTP {status}")
-        for issue in issues:
-            if marker in (issue.get("body") or ""):
-                return issue
+        found += [i for i in issues if "pull_request" not in i
+                  and (i.get("body") or "").startswith(marker)]
         if len(issues) < 100:
-            return None
-    return None
+            break
+    return sorted(found, key=lambda i: i["number"])
+
+
+def _patch(repo: str, issue: dict, want: dict, token: str, call) -> None:
+    if any(issue.get(k) != v for k, v in want.items()):
+        status, _ = call("PATCH", f"{API}/repos/{repo}/issues/{issue['number']}", token, want)
+        if status != 200:
+            raise GitHubAPIError(f"{repo}#{issue['number']}: updating the issue: HTTP {status}")
 
 
 def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
     """Create or update the one labelled issue that mirrors a failure record.
 
-    Returns (issue URL, created). A security-looking record is never mirrored: returns ("", False).
-    The issue is found by a marker in its body, so a second call never opens a second issue.
+    Returns (issue URL, created). The issue is found again by the marker its body starts with,
+    so a second call never opens a second issue; if two runners race and both open one, the
+    higher-numbered duplicate is closed. A security-looking record is never mirrored: it returns
+    ("", False), and an issue opened before the record looked that way is redacted and closed.
     """
     from qqresults import failures  # core module; imported here to keep backends import-light
 
     call = call or api
     f = state.current
-    if failures.looks_security_related(f):
+    existing = _find_issues(repo, f.id, token, call)
+    if state.security:
+        for issue in existing:
+            _patch(repo, issue, {"title": f"[qq failure] withheld ({f.id})",
+                                 "body": failures.marker(f.id) + "\n" + failures.WITHHELD_BODY,
+                                 "state": "closed"}, token, call)
         return "", False
     title, body = failures.issue_title(f), failures.issue_body(state)
-    issue = _find_issue(repo, f.id, token, call)
-    if issue:
-        want = {"title": title, "body": body, "state": "closed" if state.closed else "open"}
-        if any(issue.get(k) != v for k, v in want.items()):
-            status, _ = call("PATCH", f"{API}/repos/{repo}/issues/{issue['number']}", token, want)
-            if status != 200:
-                raise GitHubAPIError(f"{repo}#{issue['number']}: updating the issue: HTTP {status}")
-        return issue["html_url"], False
+    if existing:
+        _patch(repo, existing[0], {"title": title, "body": body,
+                                   "state": "closed" if state.closed else "open"}, token, call)
+        return existing[0]["html_url"], False
     labels = [FAILURE_LABEL, f"{FAILURE_LABEL}:{f.kind}"]
     for name in labels:
         status, _ = call("POST", f"{API}/repos/{repo}/labels", token,
@@ -276,4 +292,9 @@ def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
     if status != 201:
         raise GitHubAPIError(f"{repo}: opening the failure issue: HTTP {status} "
                              "(the token needs issues: write)")
+    # Another runner may have opened one at the same moment: keep the lowest number only.
+    now_there = _find_issues(repo, f.id, token, call)
+    if now_there and now_there[0]["number"] != created["number"]:
+        _patch(repo, created, {"state": "closed", "state_reason": "duplicate"}, token, call)
+        return now_there[0]["html_url"], False
     return created["html_url"], True

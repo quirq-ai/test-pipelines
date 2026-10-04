@@ -10,8 +10,8 @@
 #       signal: health
 #
 # The record id comes from kind, repo and subject, so reporting the same event twice opens one
-# record and one issue. Security-looking failures are recorded but never mirrored to a public
-# issue. Needs `issues: write` on the job's token. The record is kept as a workflow artifact that
+# record and one issue. Security-looking failures are never mirrored to a public issue and never
+# uploaded as a (public) artifact. Needs `issues: write` on the job's token. The record is kept as a workflow artifact that
 # the results store collects.
 name: qq failure record
 description: Open a quirq infra failure record and mirror it to one labelled issue.
@@ -85,7 +85,10 @@ runs:
         dir="$RUNNER_TEMP/qq-failures"   # shared by every call in the job, so a repeat finds the record
         echo "dir=$dir" >> "$GITHUB_OUTPUT"
         "$venv/bin/qqresults" failure open --dir "$dir" "${args[@]}"
+    # A security-looking record stays on the runner: this repo's artifacts and results branch
+    # are public. TODO(suraj): where such records are kept instead.
     - uses: actions/upload-artifact@v7
+      if: steps.open.outputs.security != 'true'
       with:
         name: ${{ steps.open.outputs.name }}-${{ github.run_id }}-${{ github.run_attempt }}
         path: ${{ steps.open.outputs.dir }}

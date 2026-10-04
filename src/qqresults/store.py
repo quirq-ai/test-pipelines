@@ -145,6 +145,14 @@ class FileStore:
     def import_failure(self, path: Path) -> bool:
         return failures.import_dir(path, self.failures_dir)
 
+    def seen_artifact(self, name: str) -> bool:
+        """Whether a failure artifact was already imported (artifacts are immutable once uploaded)."""
+        return (self.failures_dir / ".artifacts" / name).is_file()
+
+    def mark_artifact(self, name: str) -> None:
+        (self.failures_dir / ".artifacts").mkdir(parents=True, exist_ok=True)
+        (self.failures_dir / ".artifacts" / name).touch()
+
     def failures(self) -> list[failures.State]:
         if not self.failures_dir.is_dir():
             return []

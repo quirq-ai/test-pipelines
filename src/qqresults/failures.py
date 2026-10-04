@@ -36,7 +36,12 @@ LINK_FIELDS = Failure.LINKS + ("issue",)
 # a private repo, or a person).
 SECURITY_WORDS = re.compile(
     r"secur|vulnerab|\bcve-|exploit|overflow|use-after-free|out-of-bounds|injection|"
-    r"credential|secret|token|password|private key|sandbox escape|privilege", re.IGNORECASE)
+    r"credential|secret|token|password|private key|sandbox|privilege|privesc|"
+    r"\bxss\b|\brce\b|ssrf|csrf|bypass|unauthori|unauthenticated|\bauthn?\b|leak|"
+    r"sanitizer|\basan\b|\bmsan\b|\bubsan\b|heap|traversal|\bdos\b|redos|denial of service|"
+    r"deserializ|memory corruption|arbitrary code", re.IGNORECASE)
+# Fuzz findings are treated as security-looking by default (postmortem.toml fuzz-security-crash).
+SECURITY_KINDS = {FailureKind.FUZZ.value}
 
 
 class FailureError(Error):
@@ -61,8 +66,13 @@ def dirname(fid: str) -> str:
     return "qq-failure-" + re.sub(r"[^A-Za-z0-9._-]+", "_", fid)
 
 
-def looks_security_related(f: Failure) -> bool:
-    return f.security or bool(SECURITY_WORDS.search(" ".join((f.summary, f.signal, f.stage))))
+def looks_security_related(f: Failure, links: dict[str, str] | None = None) -> bool:
+    """True when the record or any link reads like a security issue. Errs towards True."""
+    if f.security or f.kind in SECURITY_KINDS:
+        return True
+    text = " ".join([v for v in f.to_dict().values() if isinstance(v, str)]
+                    + list((links or {}).values()))
+    return bool(SECURITY_WORDS.search(text))
 
 
 def new(kind: str, repo: str, subject: str, **fields) -> Failure:
@@ -89,6 +99,10 @@ class State:
     def current(self) -> Failure:
         return dataclasses.replace(self.record, **{k: v for k, v in self.links.items()
                                                    if k in Failure.LINKS})
+
+    @property
+    def security(self) -> bool:
+        return looks_security_related(self.record, self.links)
 
     @property
     def missing(self) -> list[str]:
@@ -176,16 +190,30 @@ def issue_body(state: State) -> str:
             ("Run", f.run_id), ("Operation", f.operation), ("Culprit", f.culprit),
             ("Fix", f.fix), ("Covering test", f.covering_test), ("Failure class", f.failure_class),
             ("Postmortem", f.postmortem)]
-    table = "\n".join(f"| {k} | {v.replace('|', '/') if v else '_not yet_'} |" for k, v in rows)
+    def cell(v: str) -> str:
+        return "`" + v.replace("`", "'").replace("|", "/").replace("\n", " ") + "`" if v else "_not yet_"
+    table = "\n".join(f"| {k} | {cell(v)} |" for k, v in rows)
     status = ("closed: culprit, fix and covering test are linked" if state.closed
               else "open until " + ", ".join(m.replace("_", " ") for m in state.missing)
               + " are linked")
-    return (f"<!-- qq-failure: {f.id} -->\n"
+    summary = f.summary.replace("`", "'")
+    return (f"{marker(f.id)}\n"
             f"Failure record `{f.id}` from quirq infra (test-pipelines, plan §5.10). "
             f"This issue mirrors the record; the record is the source of truth.\n\n"
-            f"{f.summary}\n\n| Field | Value |\n|---|---|\n{table}\n\nStatus: {status}.\n")
+            f"```text\n{summary}\n```\n\n| Field | Value |\n|---|---|\n{table}\n\n"
+            f"Status: {status}.\n")
+
+
+def marker(fid: str) -> str:
+    """The first line of the mirrored issue's body, by which the issue is found again."""
+    return f"<!-- qq-failure: {fid} -->"
+
+
+WITHHELD_BODY = ("The failure record mirrored here was later found to look security-related, so "
+                 "its details were removed from this public issue. TODO(suraj): where such "
+                 "records are tracked.\n")
 
 
 def issue_title(f: Failure) -> str:
-    what = f.summary.splitlines()[0][:80] if f.summary else f.subject[:40]
+    what = f.summary.splitlines()[0][:80] if f.summary.strip() else f.subject[:40]
     return f"[qq {f.kind}] {f.repo}: {what}"

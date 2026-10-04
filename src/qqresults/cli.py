@@ -157,7 +157,7 @@ def cmd_scorecard(args) -> int:
 def _mirror(state: failures.State, repo: str) -> failures.State:
     gh = backends.load("github")
     url, created = gh.mirror_issue(state, repo, os.environ.get("GITHUB_TOKEN", ""))
-    if not url:
+    if not url and state.security:
         print(f"issue: withheld, the record looks security-related (never mirrored publicly)")
         return state
     print(f"issue: {url} ({'opened' if created else 'up to date'})")
@@ -174,7 +174,8 @@ def _report(state: failures.State, created: bool | None, gh_output: str | None) 
     if gh_output:
         with open(gh_output, "a", encoding="utf-8") as out:
             out.write(f"id={f.id}\ndir={state.path}\nname={state.path.name}\n"
-                      f"issue={state.links.get('issue', '')}\ncreated={str(bool(created)).lower()}\n")
+                      f"issue={state.links.get('issue', '')}\ncreated={str(bool(created)).lower()}\n"
+                      f"security={str(state.security).lower()}\n")
 
 
 FAILURE_FIELDS = ("channel", "build_digest", "last_good", "first_bad", "stage", "signal",

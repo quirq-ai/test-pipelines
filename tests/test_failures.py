@@ -104,15 +104,18 @@ def test_links_close_the_record_and_the_issue(tmp_path):
         failures.add_link(state.path, "kind", "x")
 
 
-@pytest.mark.parametrize("extra", [{"security": True},
-                                   {"signal": "heap-buffer-overflow in parser"},
-                                   {"stage": "secret scan"}])
+@pytest.mark.parametrize("extra", [
+    {"security": True}, {"signal": "heap-buffer-overflow in parser"}, {"stage": "secret scan"},
+    {"summary": "XSS in login form"}, {"summary": "RCE via deserialization"},
+    {"summary": "SSRF to metadata"}, {"summary": "auth bypass"}, {"summary": "CSRF on settings"},
+    {"summary": "leaked API key"}, {"summary": "unauthenticated access"},
+    {"summary": "path traversal"}, {"summary": "ReDoS in parser"}])
 def test_security_looking_failures_are_never_mirrored(tmp_path, extra):
     gh = FakeGitHub()
     state, _ = held(tmp_path, **extra)
     assert state.record.security
     assert github.mirror_issue(state, "o/x", "tok", call=gh) == ("", False)
-    assert gh.calls == []
+    assert [m for m, _ in gh.calls] == ["GET"] and gh.issues == []
 
 
 def test_store_imports_the_first_record_and_every_link(tmp_path):
@@ -179,3 +182,60 @@ def test_cli_failure_open_link_list(tmp_path, capsys, monkeypatch):
     assert "closed  canary-rollback" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         cli.main(["failure", "open", "--dir", d, "--kind", "canary-held"])
+
+
+def test_subject_links_and_fuzz_kind_count_as_security(tmp_path):
+    assert failures.new("canary-held", "o/x", "CVE-2026-1").security
+    assert failures.new("fuzz", "o/x", "crash-1").security
+    state, _ = held(tmp_path)
+    assert not state.security
+    failures.add_link(state.path, "fix", "patch for CVE-2026-1")
+    assert failures.read(state.path).security
+
+
+def test_a_record_that_turns_security_redacts_its_public_issue(tmp_path):
+    gh = FakeGitHub()
+    state, _ = held(tmp_path)
+    github.mirror_issue(state, "o/x", "tok", call=gh)
+    failures.add_link(state.path, "failure_class", "credential leak in logs")
+    assert github.mirror_issue(failures.read(state.path), "o/x", "tok", call=gh) == ("", False)
+    issue = gh.issues[0]
+    assert issue["state"] == "closed" and "credential" not in issue["body"]
+    assert issue["body"].startswith(failures.marker(state.record.id))
+
+
+def test_racing_runners_keep_one_open_issue(tmp_path):
+    gh = FakeGitHub()
+    state, _ = held(tmp_path)
+
+    def racing(method, url, token, body=None):
+        if method == "POST" and url.endswith("/issues") and not gh.issues:
+            gh("POST", url, token, dict(body))      # another runner got there first
+        return gh(method, url, token, body)
+
+    url, made = github.mirror_issue(state, "o/x", "tok", call=racing)
+    assert url == "https://github.com/o/x/issues/1" and not made
+    assert [i["state"] for i in gh.issues] == ["open", "closed"]
+    assert gh.issues[1]["state_reason"] == "duplicate"
+
+
+def test_only_issues_whose_body_starts_with_the_marker_match(tmp_path):
+    gh = FakeGitHub()
+    state, _ = held(tmp_path)
+    marker = failures.marker(state.record.id)
+    gh.issues = [
+        {"number": 1, "labels": ["qq-failure"], "body": "quoting " + marker, "html_url": "u1",
+         "state": "open"},
+        {"number": 2, "labels": ["qq-failure"], "body": marker, "html_url": "u2", "state": "open",
+         "pull_request": {}},
+    ]
+    url, made = github.mirror_issue(state, "o/x", "tok", call=gh)
+    assert made and url == "https://github.com/o/x/issues/3"
+
+
+def test_summary_cannot_inject_a_marker_or_close_its_fence(tmp_path):
+    other = failures.marker("canary-held-0000")
+    state, _ = held(tmp_path, summary=f"{other} @someone ``` done")
+    body = failures.issue_body(state)
+    assert body.startswith(failures.marker(state.record.id))
+    assert "```text\n" + other + " @someone ''' done\n```" in body

@@ -28,6 +28,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   held-canary:
+    # A fork's pull_request token cannot write issues; the demo runs for this repo's own branches.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
