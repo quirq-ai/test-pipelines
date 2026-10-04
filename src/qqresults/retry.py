@@ -117,7 +117,7 @@ def _passed(test_id: str, results: list[Result]) -> bool:
 
 
 def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
-           bases: list[bundle.Bundle], base_error: str = "") -> Verdict:
+           bases: list[bundle.Bundle], base_error: str = "", not_retried: str = "") -> Verdict:
     first = verdict.compute(run, results)
     if not results or not run.results_found:
         return first
@@ -126,7 +126,9 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
         t = case.test_id
         passed_on = next((i for i, b in enumerate(retries, 1) if _passed(t, b.results)), None)
         per_base = [[r for r in b.results if r.test_id == t] for b in bases]
-        if passed_on:
+        if not_retried:
+            tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, f"not retried: {not_retried}"))
+        elif passed_on:
             tests.append(CaseVerdict(t, VerdictStatus.FLAKY.value, f"passed on retry {passed_on}"))
         elif any(rs and any(r.expected for r in rs) for rs in per_base):
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value,
@@ -149,6 +151,8 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
     reason = f"{unexpected} unexpected test(s)" if unexpected else ""
     if base_error:
         reason = f"{reason}; base comparison failed: {base_error}".lstrip("; ")
+    if not_retried:
+        reason = f"{reason}; not retried: {not_retried}".lstrip("; ")
     return Verdict(run_id=run.id, passed=unexpected == 0, counts=dict(sorted(counts.items())),
                    tests=tests, reason=reason,
                    inputs=[b.run.id for b in retries + bases])
@@ -170,9 +174,9 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
     if not failing:
         return Rechecked(decide(run, results, [], []), [], [])
     if len(failing) > policy.max_failures_to_retry:   # a broken change: fail fast
-        return Rechecked(decide(run, results, [], [],
-                                f"{len(failing)} failures, over max_failures_to_retry "
-                                f"({policy.max_failures_to_retry}); not retried"), [], [])
+        return Rechecked(decide(run, results, [], [], not_retried=(
+            f"{len(failing)} failures, over max_failures_to_retry ({policy.max_failures_to_retry})")),
+            [], [])
     remaining = list(failing)
     for n in range(1, policy.retry_failed + 1):
         child = child_run(run, "retry", n)

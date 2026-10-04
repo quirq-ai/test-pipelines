@@ -97,7 +97,7 @@ runs:
         # Run from this action's own source (no dependencies): nothing is fetched from PyPI, and
         # sys.path is set inside the process so the tests the sink reruns do not inherit it.
         qqresults() {
-          python3 -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from qqresults.cli import main; sys.exit(main(sys.argv[1:]))' \
+          python3 -P -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from qqresults.cli import main; sys.exit(main(sys.argv[1:]))' \
             "$GITHUB_ACTION_PATH/../src" "$@"
         }
         args=()
