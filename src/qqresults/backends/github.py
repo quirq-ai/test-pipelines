@@ -111,6 +111,11 @@ class GitHubAPIError(Error):
     pass
 
 
+class NeedsDeletion(Error):
+    """A public issue holds a record that now looks security-related. Editing it does not
+    remove the text (edit history, timeline, notification emails), so a person must delete it."""
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -262,7 +267,9 @@ def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
     Returns (issue URL, created). The issue is found again by the marker its body starts with,
     so a second call never opens a second issue; if two runners race and both open one, the
     higher-numbered duplicate is closed. A security-looking record is never mirrored: it returns
-    ("", False), and an issue opened before the record looked that way is redacted and closed.
+    ("", False). An issue opened before the record looked that way has its title and body
+    replaced and is closed, then NeedsDeletion is raised: the old text stays in its edit history
+    and in emails already sent, so only deleting the issue (a repo admin) removes it.
     """
     from qqresults import failures  # core module; imported here to keep backends import-light
 
@@ -274,6 +281,11 @@ def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
             _patch(repo, issue, {"title": f"[qq failure] withheld ({f.id})",
                                  "body": failures.marker(f.id) + "\n" + failures.WITHHELD_BODY,
                                  "state": "closed"}, token, call)
+        if existing:
+            urls = ", ".join(i["html_url"] for i in existing)
+            raise NeedsDeletion(f"{f.id} now looks security-related but was mirrored to {urls}; "
+                                "its text is hidden and closed but stays in the edit history. "
+                                "A repo admin must delete the issue.")
         return "", False
     title, body = failures.issue_title(f), failures.issue_body(state)
     if existing:

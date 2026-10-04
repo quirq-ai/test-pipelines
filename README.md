@@ -142,7 +142,11 @@ qqresults failure link <id> --dir <store>/failures --culprit <change> --fix <cha
 A record closes only when culprit, fix and covering test are linked (infra-config
 `postmortem.toml` `record_needs`), and the scorecard reports the share that are. Security-looking
 records (flagged, or matching words such as "overflow" or "credential") are kept but never
-mirrored to a public issue. TODO(suraj): where those go instead. The `failure-demo` workflow
+mirrored to a public issue, and their failure artifact is not uploaded. If a record only looks
+that way after its issue was opened, the issue's text is hidden and it is closed, and the step
+fails asking a repo admin to delete it: editing an issue does not remove the old text from its
+history or from emails already sent. The record itself may already be in a public artifact by
+then. TODO(suraj): where those go instead. The `failure-demo` workflow
 proves the done-when against the real API with a planted held canary.
 
 ## v0 status

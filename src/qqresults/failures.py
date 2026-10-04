@@ -39,7 +39,10 @@ SECURITY_WORDS = re.compile(
     r"credential|secret|token|password|private key|sandbox|privilege|privesc|"
     r"\bxss\b|\brce\b|ssrf|csrf|bypass|unauthori|unauthenticated|\bauthn?\b|leak|"
     r"sanitizer|\basan\b|\bmsan\b|\bubsan\b|heap|traversal|\bdos\b|redos|denial of service|"
-    r"deserializ|memory corruption|arbitrary code", re.IGNORECASE)
+    r"deserializ|memory corruption|arbitrary code|\bsqli\b|api[ _-]?key|ssh[ _-]?key|\bauthz\b|"
+    r"passwd|attacker|\bpii\b|\bghsa-|double free|certificate|open redirect|malicious|"
+    r"access control|sensitive data", re.IGNORECASE)
+# Errs towards withholding: "memory leak" or "tokenizer" match too, and only cost a public issue.
 # Fuzz findings are treated as security-looking by default (postmortem.toml fuzz-security-crash).
 SECURITY_KINDS = {FailureKind.FUZZ.value}
 
@@ -210,8 +213,8 @@ def marker(fid: str) -> str:
 
 
 WITHHELD_BODY = ("The failure record mirrored here was later found to look security-related, so "
-                 "its details were removed from this public issue. TODO(suraj): where such "
-                 "records are tracked.\n")
+                 "its details were hidden and this issue is waiting to be deleted by a repo "
+                 "admin. TODO(suraj): where such records are tracked.\n")
 
 
 def issue_title(f: Failure) -> str:

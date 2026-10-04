@@ -193,12 +193,13 @@ def test_subject_links_and_fuzz_kind_count_as_security(tmp_path):
     assert failures.read(state.path).security
 
 
-def test_a_record_that_turns_security_redacts_its_public_issue(tmp_path):
+def test_a_record_that_turns_security_hides_its_issue_and_asks_for_deletion(tmp_path):
     gh = FakeGitHub()
     state, _ = held(tmp_path)
     github.mirror_issue(state, "o/x", "tok", call=gh)
     failures.add_link(state.path, "failure_class", "credential leak in logs")
-    assert github.mirror_issue(failures.read(state.path), "o/x", "tok", call=gh) == ("", False)
+    with pytest.raises(github.NeedsDeletion, match="must delete"):   # editing is not redacting
+        github.mirror_issue(failures.read(state.path), "o/x", "tok", call=gh)
     issue = gh.issues[0]
     assert issue["state"] == "closed" and "credential" not in issue["body"]
     assert issue["body"].startswith(failures.marker(state.record.id))
@@ -239,3 +240,14 @@ def test_summary_cannot_inject_a_marker_or_close_its_fence(tmp_path):
     body = failures.issue_body(state)
     assert body.startswith(failures.marker(state.record.id))
     assert "```text\n" + other + " @someone ''' done\n```" in body
+
+
+@pytest.mark.parametrize("text", ["SQLi in search", "api key exposed", "ssh key committed",
+                                  "authz check skipped", "passwd in logs", "attacker-controlled",
+                                  "PII in crash dump", "GHSA-xxxx", "double free",
+                                  "TLS certificate validation off", "open redirect",
+                                  "malicious package", "broken access control",
+                                  "sensitive data in logs"])
+def test_common_security_phrasing_is_withheld(text):
+    f = failures.new("canary-held", "o/x", "s", summary=text)
+    assert failures.looks_security_related(f, {})
