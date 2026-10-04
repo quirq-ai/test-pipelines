@@ -58,12 +58,13 @@ LINK_FIELDS = VALUE_LINKS + MARKS          # every field a link file may have
 #
 # Memory-safety findings (use-after-free, double free, heap/stack buffer overflow, out-of-bounds
 # read or write, sanitizer and KASAN reports) match alone. A bare crash signal or bound error
-# (CRASH_WORDS: segfault, SIGSEGV, SIGABRT, SIGBUS, overflow, null dereference, out-of-bounds
-# index) is an ordinary crash unless the same field also names untrusted input (UNTRUSTED_INPUT:
-# malformed, crafted, attacker, untrusted, remote input, fuzzing) or an attack surface
-# (ATTACK_SURFACE: tls, a certificate, a decoder or parser, a codec, a packet, an image, a font,
-# a protocol, an allocation size), so "SIGSEGV in tls handshake" is withheld and "segfault in
-# worker" is not.
+# (CRASH_WORDS: segfault, SIGSEGV, SIGABRT, SIGBUS, integer or stack overflow, null dereference,
+# out-of-bounds index) is an ordinary crash unless the record's free text anywhere (subject,
+# summary, labels, link values) also names untrusted input (UNTRUSTED_INPUT: malformed, crafted,
+# attacker, untrusted, remote input, fuzzing) or an attack surface (ATTACK_SURFACE: tls, a
+# certificate, a decoder or parser, a codec, a packet, image decoding, a font, a protocol, an
+# allocation size), so "SIGSEGV in tls handshake" is withheld and "segfault in worker" is not.
+# "parse" also matches inside test names (test_parse_args): that fails closed, on purpose.
 _SECRETS = r"(?:credential|token|secret|pass\s*word|passwd|api\s*key|ssh\s*key|private\s*key|key|pii|data)s?"
 _EXPOSED_THINGS = (r"(?:env(?:ironment)?(?:\s*var\w*)?|keys?|secrets?|endpoints?|credentials?|"
                    r"tokens?)\b")
@@ -114,21 +115,34 @@ _PHRASES = (
     r"origin|jwt)s?\s*(?:verification|validation|check)s?\s*(?:is\s*|was\s*|are\s*|were\s*)?"
     r"(?:skipped|disabled|bypass)",
     r"(?:skip\w*|disabl\w*|no|without)\s*(?:tls|ssl|cert\w*|hostname)\s*verif",
+    r"stack\s*use\s*after\s*(?:return|scope)", r"type\s*confusion", r"dangling\s*pointer",
+    r"arbitrary\s*file\s*(?:read|writ)",
+    r"(?:pickle|yaml|marshal)\s*loads?\s*(?:of\s*)?(?:\w+\s*){0,2}?untrusted",
+    r"untrusted\s*(?:\w+\s*){0,2}?(?:pickle|yaml|marshal)\s*load",
+    r"self\s*signed\s*cert\w*\s*(?:is\s*|was\s*|were\s*)?accepted",
+    r"hostname\s*(?:mismatch|verification|check)\s*(?:is\s*|was\s*)?(?:ignored|skipped|disabled)",
+    r"integer\s*over\s*flow\s*in\s*(?:the\s*)?(?:length|size|bounds)\s*check",
+    r"session\s*(?:token|cookie|id)?\s*(?:is\s*|was\s*)?(?:still\s*)?(?:reused|valid|usable|accepted)"
+    r"\s*after\s*(?:log\s*out|sign\s*out)",
+    r"race\s*condition\s*in\s*(?:the\s*)?(?:auth\w*|login|session|permission|access\s*check)",
     r"(?:signature|sig|auth\w*|login|sign\s*in|token|cert\w*|password|session|csrf|origin|"
     r"permission)s?\s*(?:is\s*|was\s*|are\s*)?(?:not|never|no\s*longer|un)\s*(?:required|checked|"
     r"enforced|verified|validated)",
 )
 SECURITY_WORDS = re.compile("|".join(_PHRASES))
-# Ordinary crash signals that count only next to UNTRUSTED_INPUT or ATTACK_SURFACE (see above).
-CRASH_WORDS = re.compile(r"segv|segfault|sigabrt|sigbus|out\s*of\s*bounds|\boob\b|over\s*flow|"
-                         r"null\s*(?:pointer|ptr)\s*deref")
+# Ordinary crash signals that count only with UNTRUSTED_INPUT or ATTACK_SURFACE (see above).
+CRASH_WORDS = re.compile(r"segv|segfault|sigabrt|sigbus|out\s*of\s*bounds|\boob\b|"
+                         r"(?:integer|int|stack)\s*over\s*flow|null\s*(?:pointer\s*|ptr\s*)?deref")
+# A label (stage, signal, channel) that is itself a crash word is withheld, so a bare "segfault"
+# never shows next to a "decoder" label.
+LABEL_CRASH_WORDS = re.compile(rf"{CRASH_WORDS.pattern}|over\s*flow")
 UNTRUSTED_INPUT = re.compile(
     r"malformed|crafted|attacker|untrusted|remote\s*(?:input|request|peer|attacker)|"
     r"from\s*the\s*network|\bfuzz(?:er|ers|ing|ed)?\b")
 ATTACK_SURFACE = re.compile(
     r"\b(?:tls|ssl|handshake|libssl|openssl|boringssl|x509|certs?|certificates?|decod\w*|"
-    r"pars(?:e|er|ers|ing)|codecs?|deserializ\w*|packets?|libxml\w*|images?|fonts?|media|"
-    r"protocols?|alloc\w*)\b")
+    r"pars(?:e|er|ers|ing)|codecs?|deserializ\w*|packets?|libxml\w*|"
+    r"image\s*(?:decod\w*|pars\w*|load\w*)|fonts?|media|protocols?|alloc(?:ation)?\s*size)\b")
 
 
 def security_text(text: str) -> str:
@@ -142,12 +156,13 @@ def security_text(text: str) -> str:
 
 
 def reads_as_security(text: str) -> bool:
-    """True when text matches SECURITY_WORDS, or one field of it (fields are joined by " | ")
-    pairs a crash word with untrusted input or an attack surface."""
+    """True when text matches SECURITY_WORDS, or has a crash word and, anywhere in it, untrusted
+    input or an attack surface. Pass all of a record's free text at once (looks_security_related
+    does), so a crash word in one field and an attack surface in another still count."""
     text = security_text(text)
-    return bool(SECURITY_WORDS.search(text) or any(
-        CRASH_WORDS.search(part) and (UNTRUSTED_INPUT.search(part) or ATTACK_SURFACE.search(part))
-        for part in text.split("|")))
+    return bool(SECURITY_WORDS.search(text) or (
+        CRASH_WORDS.search(text)
+        and (UNTRUSTED_INPUT.search(text) or ATTACK_SURFACE.search(text))))
 
 
 _HEX = re.compile(r"\b(?:sha(?:1|256|512):)?[0-9a-f]{7,}\b", re.IGNORECASE)
@@ -374,7 +389,8 @@ def public_value(v: str, repo: str, field: str = "") -> str:
     if not v:
         return v
     if field in LABEL_FIELDS:
-        ok = _LABEL.fullmatch(v) and "test" not in v and not reads_as_security(v)
+        ok = (_LABEL.fullmatch(v) and "test" not in v and not reads_as_security(v)
+              and not LABEL_CRASH_WORDS.search(security_text(v)))
         return v if ok else WITHHELD
     if field == "repo":   # org-chosen: a plain owner/name shows as it is
         return v if _REPO.fullmatch(v) else WITHHELD

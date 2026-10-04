@@ -760,3 +760,49 @@ def test_cli_link_classifies_without_the_own_repo(tmp_path):
     assert cli.main(["failure", "link", f.id, "--dir", str(tmp_path),
                      "--culprit", "https://github.com/acme/secret-leak/pull/5"]) == 0
     assert failures.read(state.path).security
+
+
+@pytest.mark.parametrize("fields", [
+    {"stage": "decoder", "signal": "segfault"},
+    {"summary": "SIGSEGV | tls handshake"},
+    {"summary": "signal=SIGSEGV | component=decoder"},
+    {"subject": "tests/tls/test_handshake.py::test_client_hello", "summary": "SIGSEGV"},
+    {"subject": "fuzz_x509_parse", "summary": "segfault"},
+    {"summary": "segfault in worker", "links": {"culprit": "crafted input"}}])
+def test_a_crash_word_counts_with_an_attack_surface_anywhere_in_the_record(fields):
+    fields = dict(fields)
+    subject, links = fields.pop("subject", "c0ffee0"), fields.pop("links", {})
+    f = failures.new("canary-held", "o/x", subject, **fields)
+    assert failures.looks_security_related(f, links)
+
+
+@pytest.mark.parametrize("fields", [
+    {"summary": "segfault in worker"}, {"summary": "SIGABRT in test runner"},
+    {"stage": "worker", "signal": "health", "summary": "segfault in worker"},
+    {"summary": "build overflowed disk | parser tests pass"},
+    {"summary": "image pull failed | segfault in worker"}])
+def test_a_crash_word_without_an_attack_surface_stays_public(fields):
+    assert not failures.new("canary-held", "o/x", "c0ffee0", **fields).security
+
+
+@pytest.mark.parametrize("label", ["segfault", "sigsegv", "sigabrt", "sigbus", "overflow",
+                                   "stack-overflow", "oob", "null-deref"])
+def test_a_crash_word_label_is_withheld(label):
+    assert failures.public_value(label, "o/x", "signal") == failures.WITHHELD
+    pub = failures.public_view(failures.new("canary-held", "o/x", "c0ffee0", stage="decoder",
+                                            signal=label))
+    assert pub.signal == failures.WITHHELD
+
+
+@pytest.mark.parametrize("text", [
+    "null deref in tls parser", "null pointer deref in decoder", "stack-use-after-return",
+    "stack use after scope", "type confusion in JIT", "dangling pointer in cache",
+    "arbitrary file read via upload", "arbitrary file write", "pickle.loads of untrusted data",
+    "yaml load of untrusted input", "marshal loads untrusted", "untrusted pickle load",
+    "untrusted yaml load in importer", "self-signed certificate accepted",
+    "self signed cert accepted", "hostname mismatch ignored", "hostname verification skipped",
+    "hostname verification disabled", "integer overflow in length check",
+    "session token reused after logout", "session still valid after logout",
+    "race condition in auth", "race condition in the authorization middleware"])
+def test_round_five_security_phrases_are_caught(text):
+    assert failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
