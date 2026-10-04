@@ -154,6 +154,11 @@ class OrphanLinks(GitHubAPIError):
     uploaded. It is refused for good (and marked as read), not retried at every collect."""
 
 
+class _LinksWaiting(GitHubAPIError):
+    """A link bundle whose record is not stored yet, read before the whole listing was: collect
+    tries it again after the listing, since the record may come later in it."""
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -248,6 +253,7 @@ class Origin:
     on_default: bool      # head_branch is the default branch and head_sha is in its history
     pull_requests: tuple[int, ...] = ()   # the PRs GitHub links to the run (same-repo PRs only)
     created_at: str = ""  # when GitHub created the run (RFC 3339 UTC); "" when it did not say
+    updated_at: str = ""  # when GitHub last updated the run (RFC 3339 UTC); "" when it did not say
 
     def kinds(self) -> set[str]:
         """The run kinds a bundle from this run may claim."""
@@ -331,7 +337,8 @@ def _origin(repo: str, art: dict, trust: Trust, token: str, get, runs: dict,
                              f"of {_short(sha)} on {_short(branch)})")
     return Origin(repo=repo, run_id=run_id, attempts=attempts, event=event, path=path,
                   head_branch=branch, head_sha=sha, on_default=on_default, pull_requests=numbers,
-                  created_at=_rfc3339_utc(str(run.get("created_at") or "")))
+                  created_at=_rfc3339_utc(str(run.get("created_at") or "")),
+                  updated_at=_rfc3339_utc(str(run.get("updated_at") or "")))
 
 
 def _check_bundle(origin: Origin, trust: Trust, b: bundle.Bundle) -> None:
@@ -422,7 +429,32 @@ def _check_failure(origin: Origin, path: Path, now: dt.datetime) -> None:
         raise GitHubAPIError(f"failure {_short(f.id)}: the id does not match its kind, repo and "
                              "subject")
     origin.attempt_of(f"failure {f.id}: run", f.run_id)
+    _check_opened(origin, f.id, f.opened_at, now)
     _check_links(f.id, path, f.opened_at, now)
+
+
+def _check_opened(origin: Origin, fid: str, opened_at: object, now: dt.datetime) -> None:
+    """A record is opened by the run that uploads it, so its opening lies between MAX_QUEUE_WAIT
+    before GitHub created that run and CLOCK_SKEW after the run's last update or now, whichever
+    is later (as _check_queued bounds a queue time). Otherwise a record dated 1970 (a runner's
+    bad clock, or a forged time) would fall outside every scorecard window. Without the creation
+    time there is no lower bound, so the record is refused rather than trusted."""
+    def at(text: str) -> dt.datetime:
+        return dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+    if not origin.created_at:
+        raise GitHubAPIError(f"failure {fid}: workflow run {origin.run_id} has no creation time "
+                             "to check its opening time against")
+    earliest = at(origin.created_at) - MAX_QUEUE_WAIT
+    updated = at(origin.updated_at) if origin.updated_at else now
+    latest = max(now, updated) + CLOCK_SKEW
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    if not (isinstance(opened_at, str) and is_time(opened_at)
+            and earliest <= at(opened_at) <= latest):
+        raise GitHubAPIError(f"failure {fid}: opened at {_short(opened_at)}, not between "
+                             f"{earliest.strftime(fmt)} (24 h before workflow run "
+                             f"{origin.run_id} was created) and {latest.strftime(fmt)}; check the "
+                             "runner's clock")
 
 
 def _check_link_bundle(origin: Origin, path: Path):
@@ -496,7 +528,9 @@ def _uploaded_before(art: dict, when: dt.datetime) -> bool:
 
 
 def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: Trust,
-                     now: dt.datetime) -> bool:
+                     now: dt.datetime, final: bool = True) -> bool:
+    """Import one artifact. With final False, a link bundle whose record is not stored raises
+    _LinksWaiting, so the caller can try it again once every other artifact is in."""
     url = art.get("archive_download_url")
     if not isinstance(url, str) or not url:
         raise GitHubAPIError("the artifact has no archive_download_url")
@@ -524,6 +558,8 @@ def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: T
                 target = _check_link_bundle(origin, d)
                 record = store.stored_failure(target.id) or in_artifact.get(target.id)
                 if record is None:
+                    if not final:
+                        raise _LinksWaiting(f"links for {target.id}: the record is not stored")
                     if _uploaded_before(art, now - LINK_BUNDLE_WAIT):
                         raise OrphanLinks(f"links for {target.id}: the record is still not "
                                           f"stored {LINK_BUNDLE_WAIT.days} days after upload; "
@@ -575,27 +611,40 @@ def collect(repo: str, store, token: str, get=http_get, trust: Trust = Trust(),
             history[(repo, sha)] = _get_json(url, token, get).get("status") in ("identical", "behind")
         return history[(repo, sha)]
 
-    for art in list_result_artifacts(repo, token, get):
-        if (store.has(art["name"]) if art["name"].startswith(ARTIFACT_PREFIX)
-                else store.seen_artifact(f"{art['name']}-{art.get('id', '')}")):
-            old += 1
-            continue
+    def take(art: dict, final: bool) -> None:
+        nonlocal new, old
         try:
             size = _int(art.get("size_in_bytes"))
             if not 0 <= size <= MAX_ARTIFACT_BYTES:
                 raise GitHubAPIError(f"size {_short(art.get('size_in_bytes'))} is not at most "
                                      f"{MAX_ARTIFACT_BYTES} bytes")
             origin = _origin(repo, art, trust, token, get, runs, default_branch, in_default)
-            if _import_artifact(art, store, token, get, origin, trust, now):
+            if _import_artifact(art, store, token, get, origin, trust, now, final):
                 new += 1
             else:
                 old += 1
             if art["name"].startswith(FAILURE_PREFIX):
                 store.mark_artifact(f"{art['name']}-{art.get('id', '')}")
+        except _LinksWaiting:
+            waiting.append(art)
         except Error as e:
             errors.append(f"{repo} artifact {art.get('name')}: {e}")
             if isinstance(e, OrphanLinks):
                 store.mark_artifact(f"{art['name']}-{art.get('id', '')}")
+
+    waiting: list[dict] = []
+    for art in list_result_artifacts(repo, token, get):
+        if (store.has(art["name"]) if art["name"].startswith(ARTIFACT_PREFIX)
+                else store.seen_artifact(f"{art['name']}-{art.get('id', '')}")):
+            old += 1
+            continue
+        take(art, final=False)
+    # A link bundle is decided only after the whole listing: its record may be in a later
+    # (newer) artifact, as when the record's upload was retried after the links', and is stored
+    # by now. Only then is a bundle still without its record retried later or, past
+    # LINK_BUNDLE_WAIT, refused for good.
+    for art in waiting:
+        take(art, final=True)
     return new, old, errors
 
 

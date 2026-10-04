@@ -161,6 +161,8 @@ def cmd_query(args) -> int:
             print(json.dumps({"run": run.to_dict(), "result": r.to_dict()}, sort_keys=True)
                   if args.json
                   else f"{run.finished_at}  {r.status:<6} {run.kind:<10} {run.commit[:12]}  {run.id}")
+    for message in st.skipped.values():
+        print(f"qqresults: warning: {message}", file=sys.stderr)
     return 0
 
 

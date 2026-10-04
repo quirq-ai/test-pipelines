@@ -146,7 +146,7 @@ def test_collect_imports_failure_artifacts(tmp_path):
     name = f"{state.path.name}-991-1"
     run = {"id": 991, "event": "schedule", "path": ".github/workflows/qq-canary.yml",
            "run_attempt": 1, "head_branch": "main", "head_sha": "c1",
-           "head_repository": {"full_name": repo}}
+           "head_repository": {"full_name": repo}, "created_at": failures.now()}
 
     def get(url, token):
         if "/actions/artifacts" in url:
@@ -521,7 +521,7 @@ def _collect(st, artifacts):
     workflow run 1 of o/x (a scheduled run on main)."""
     run = {"id": 1, "event": "schedule", "path": ".github/workflows/qq-canary.yml",
            "run_attempt": 1, "head_branch": "main", "head_sha": "c1",
-           "head_repository": {"full_name": "o/x"}}
+           "head_repository": {"full_name": "o/x"}, "created_at": failures.now()}
 
     def get(url, token):
         if "/actions/artifacts" in url:
