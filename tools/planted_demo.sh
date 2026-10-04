@@ -15,7 +15,9 @@ make_repo() {  # make_repo DIR CHANGE_FILE CHANGE_TEXT
   rm -rf "$1"; mkdir -p "$1/tests"; cd "$1"
   git init -q -b main; git config user.email demo@example.com; git config user.name demo
   printf 'def add(a, b):\n    return a + b\n' > calc.py
-  printf 'import calc\n\ndef test_add():\n    assert calc.add(2, 2) == 4\n\ndef test_planted():\n    assert False, "planted: broken on base too"\n' > tests/test_demo.py
+  # test_planted raises a specific exception class: an AssertionError (a bare `assert`) carries
+  # no kind (AUDIT M1), so only a failure that says what failed can be exonerated.
+  printf 'import calc\n\ndef test_add():\n    assert calc.add(2, 2) == 4\n\ndef test_planted():\n    raise LookupError("planted: broken on base too")\n' > tests/test_demo.py
   git add -A; git commit -q -m base
   base=$(git rev-parse HEAD)
   printf '%s\n' "$3" >> "$2"

@@ -33,23 +33,23 @@ differently, however little each says (a `TypeError` with the change is not an `
 base), and one type shared by every failure is the kind if it carries one. Only when a type is
 missing, or every failure has the same type and it carries no kind, do the messages decide,
 for every result alike: the kind is the first word of the message's first line, after removing
-ANSI escape codes and a leading `E` marker, and only if it looks like an exception class, an
-identifier or namespaced identifier (`a.b.C`, `a::C`) whose last part is CamelCase and ends in
-`Error`, `Exception`, `Failure`, `Fault` or `Panic` after more letters, with an optional
-trailing colon (such as `FileNotFoundError:`). A failure with no class-like kind never exonerates: an empty message
+ANSI escape codes and a leading `E` marker. Types and message words go through one allowlist
+(junit.informative_type): a kind is an exception class, an identifier or namespaced identifier
+(`a.b.C`, `a::C`) whose last part is CamelCase and ends in `Error`, `Exception`, `Failure`,
+`Fault` or `Panic` after more letters, with an optional trailing colon (such as
+`FileNotFoundError:`). Anything else carries no kind and never exonerates: an empty message
 (some runners write none), a file path, a test name, prose such as `expected` or `Test method X
-threw exception:`, a quoted word, or `assert`. Some words carry no kind even when class-like,
-compared in any case, with any trailing punctuation and without their namespace: generic words
-such as `Failed` or `Error`, and the root classes `Exception` and `Throwable` (runners that
-write the same message for every failure). Types carry no kind when they have no letters, are
-one of those generic words, are a runner category that some runners write for every failure
-whatever went wrong (`assert`, written for an assertion and for an unrelated panic alike,
-`timeout`, `panicked`, `traceback`, `thrown:`, `abort`, `signal` and the like; the full list is
-junit.GENERIC_KINDS), or contain whitespace (a category such as `test failure` or `test
-timeout`, or several types joined as `A / B`). A <failure> that reports a timeout, an abort or
+threw exception:`, a quoted word, a type with whitespace (`test failure`, `A / B`), or a runner
+category that some runners write for every failure whatever went wrong (`assert`, `timeout`,
+`panicked`, `testCodeFailure`, `hookFailed`). Some class names carry no kind either, compared in
+any case, with any trailing punctuation and without their namespace: generic ones such as the
+root `BaseException` and `Throwable` (junit.GENERIC_KINDS), and the assertion classes
+(`AssertionError`, `AssertionFailedError`, `ComparisonFailure`, `ExpectationFailedException`,
+`MultipleFailuresError`, and any whose last part contains `assert`), which runners raise for
+every failed check. A <failure> that reports a timeout, an abort or
 a signal is a CRASH, not a FAIL (see junit.py), so it never exonerates. This is a heuristic: it
 tells a missing file from a regression that raises something else, not two different failures
-of one kind (two `AssertionError`s). The first run at each base keeps its id
+of one kind (two `KeyError`s). The first run at each base keeps its id
 (`<run>/base`, `<run>/base2`); the extra runs are `<run>/base-run2`, `<run>/base2-run2` and so on.
 
 The rerun command comes from the caller (the adapter or builder), so this module never names a
@@ -196,26 +196,11 @@ def _kind(r: Result, by_type: bool) -> str:
     return words[0] if words else ""
 
 
-# The first word of a message counts as a kind only when it looks like an exception class: an
-# identifier, or a namespaced one (`a.b.C`, `a::C`), whose last part is CamelCase and ends in one
-# of these with something before it (`ValueError`, not `Error`, `Terror` or `parse_error`), with
-# an optional trailing colon. Anything else (a file path, a test name, prose, a quoted word)
-# carries no kind, so the failure never exonerates.
-_CLASS_SUFFIXES = ("Error", "Exception", "Failure", "Fault", "Panic")
-_CLASS_LIKE = re.compile(r"\A(?:[^\W\d]\w*(?:\.|::))*[A-Z][A-Za-z0-9]*:?\Z")
-
-
 def _informative(kind: str) -> bool:
-    """A type that carries a kind (see junit.informative_type)."""
+    """A type, or a message's first word, that carries a kind (see junit.informative_type): an
+    exception class that is neither generic nor an assertion class. Anything else (a file path,
+    a test name, prose, a quoted word, a runner category) carries no kind and never exonerates."""
     return junit.informative_type(kind)
-
-
-def _class_like(word: str) -> bool:
-    """A message's first word that carries a kind: class-like (_CLASS_LIKE) and not generic."""
-    last = re.split(r"\.|::", word.rstrip(":"))[-1]
-    return (bool(_CLASS_LIKE.match(word))
-            and any(last.endswith(x) and len(last) > len(x) for x in _CLASS_SUFFIXES)
-            and junit.informative_type(word))
 
 
 def _kinds(kinds: set[str]) -> str:
@@ -257,7 +242,7 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
         kind_on_change = {_kind(r, by_type) for r in failing}
         kind_on_base = {_kind(r, by_type) for r in failing_on_base}
         kinds = kind_on_change | kind_on_base
-        no_kind = (not all(map(_class_like, kinds)) if not by_type
+        no_kind = (not all(map(_informative, kinds)) if not by_type
                    else len(kinds) == 1 and not all(map(_informative, kinds)))
         if not_retried:
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, f"not retried: {not_retried}"))

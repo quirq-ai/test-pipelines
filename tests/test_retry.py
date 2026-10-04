@@ -481,15 +481,15 @@ def test_without_retries_base_runs_once(tmp_path, state):
 def test_any_base_run_that_disagrees_blocks():
     run = Run(id="r", repo="o/x", kind="presubmit", commit="c")
     fail = [Result(run_id="r", test_id="t::a", status="FAIL", expected=False,
-                   message="AssertionError: planted")]
+                   message="KeyError: planted")]
 
-    def child(role, suffix, status, message="AssertionError: planted"):
+    def child(role, suffix, status, message="KeyError: planted"):
         c = retry.child_run(run, role, commit="b" * 40 if role == "base" else "")
         c = Run.from_dict({**c.to_dict(), "id": f"{c.id}{suffix}"})
         rs = [Result(run_id=c.id, test_id="t::a", status=status, expected=False, message=message)]
         return bundle.Bundle(c, rs, retry.verdict.compute(c, rs))
 
-    def base(suffix, status, message="AssertionError: planted"):
+    def base(suffix, status, message="KeyError: planted"):
         return child("base", suffix, status, message)
 
     retries = [child("retry", "1", "FAIL")]
@@ -507,11 +507,11 @@ def test_any_base_run_that_disagrees_blocks():
                                               base("-run2", "FAIL", "FileNotFoundError: gen/x")])
     assert not other.passed and other.tests[0].reason == (
         "no signal: fails differently without the change "
-        "(AssertionError:/FileNotFoundError: vs AssertionError:)")
+        "(FileNotFoundError:/KeyError: vs KeyError:)")
     bare = retry.decide(run, fail, retries, [base("", "FAIL", ""), base("-run2", "FAIL", " \n")])
-    assert not bare.passed and bare.tests[0].reason.endswith("((no message) vs AssertionError:)")
+    assert not bare.passed and bare.tests[0].reason.endswith("((no message) vs KeyError:)")
     # only the first word of the first line counts
-    alike = retry.decide(run, fail, retries, [base("", "FAIL", "  AssertionError: other text\nE  x"),
+    alike = retry.decide(run, fail, retries, [base("", "FAIL", "  KeyError: other text\nE  x"),
                                               base("-run2", "FAIL")])
     assert alike.passed and alike.tests[0].status == "EXONERATED"
     missing = retry.decide(run, fail, retries,
@@ -580,8 +580,8 @@ def test_an_uninformative_kind_never_exonerates(change, base, reason):
 
 
 @pytest.mark.parametrize("change, base", [
-    ("\x1b[31m AssertionError: planted\x1b[0m", "\x1b[1;31mAssertionError: planted"),
-    ("E   AssertionError: planted", "E   AssertionError: planted\nE   assert False"),
+    ("\x1b[31m KeyError: planted\x1b[0m", "\x1b[1;31mKeyError: planted"),
+    ("E   KeyError: planted", "E   KeyError: planted\nE   assert False"),
 ], ids=["ansi", "pytest-E"])
 def test_the_same_kind_behind_markup_still_exonerates(change, base):
     v = _decide_kinds(change, base)
@@ -597,12 +597,11 @@ def test_the_failure_type_is_the_kind_when_every_failure_has_one():
         "no signal: fails differently without the change "
         "(java.io.FileNotFoundException vs java.lang.IllegalStateException)")
     # Generic messages that carry the same type are one kind.
-    same = _decide_kinds("Failed", "Failed", change_type="AssertionError",
-                         base_type="AssertionError")
+    same = _decide_kinds("Failed", "Failed", change_type="KeyError", base_type="KeyError")
     assert same.passed and same.tests[0].status == "EXONERATED"
     # A generic type is no kind either: the messages decide (AUDIT-R5 N1), and a generic message
     # is no kind.
-    generic = _decide_kinds("AssertionError: x", "AssertionError: x", change_type="failure",
+    generic = _decide_kinds("KeyError: x", "KeyError: x", change_type="failure",
                             base_type="failure")
     assert generic.passed and generic.tests[0].status == "EXONERATED"
     generic = _decide_kinds("Failed", "Failed", change_type="failure", base_type="failure")
@@ -617,8 +616,7 @@ def test_the_failure_type_is_the_kind_when_every_failure_has_one():
         broad = _decide_kinds("Error", "Error", change_type=root, base_type=root)
         assert not broad.passed and broad.tests[0].reason.startswith(NO_KIND)
     # A type on one side only: the messages decide, for every result alike.
-    one_sided = _decide_kinds("AssertionError: x", "AssertionError: y",
-                              change_type="AssertionError")
+    one_sided = _decide_kinds("KeyError: x", "KeyError: y", change_type="KeyError")
     assert one_sided.passed and one_sided.tests[0].status == "EXONERATED"
 
 
@@ -681,9 +679,9 @@ def test_a_runner_category_is_no_kind(change, base, change_type, base_type):
     ("", "", "test failure", "test abort"),
     ("", "", "ASSERT", "Assert:"),
     # an informative type on one side, an uninformative one on the other
-    ("AssertionError: x", "AssertionError: y", "AssertionError", "assert"),
-    ("ValueError: x", "AssertionError: y", "AssertionError", "assert"),
-    ("", "", "AssertionError", "IOError"),
+    ("KeyError: x", "KeyError: y", "KeyError", "assert"),
+    ("ValueError: x", "KeyError: y", "KeyError", "assert"),
+    ("", "", "KeyError", "IOError"),
 ], ids=["TypeError-vs-Error", "TypeError-vs-Error-prefixed", "libtest-timeout-vs-assert",
         "nextest-failure-vs-abort", "case-differs", "mixed-same-message",
         "mixed-different-message", "types-different"])
@@ -709,10 +707,10 @@ def test_one_fixed_type_and_a_shared_message_prefix_never_exonerate():
     ("FileNotFoundError: gen/x", "FileNotFoundError: gen/x", "assert", "assert", "EXONERATED"),
     ("ValueError: bad", "FileNotFoundError: gen/x", "test failure", "test failure", "UNEXPECTED"),
     # A type missing on one side: the messages decide, for every result alike.
-    ("AssertionError: x", "AssertionError: y", "AssertionError", "", "EXONERATED"),
-    ("ValueError: x", "AssertionError: y", "AssertionError", "", "UNEXPECTED"),
+    ("KeyError: x", "KeyError: y", "KeyError", "", "EXONERATED"),
+    ("ValueError: x", "KeyError: y", "KeyError", "", "UNEXPECTED"),
     # One informative type everywhere decides.
-    ("", "", "AssertionError", "AssertionError", "EXONERATED"),
+    ("", "", "KeyError", "KeyError", "EXONERATED"),
 ], ids=["assert-type-same-message", "category-type-different-message",
         "missing-same-message", "missing-different-message", "types-same"])
 def test_an_uninformative_type_falls_back_to_the_messages(change, base, change_type, base_type,
@@ -729,6 +727,11 @@ def test_an_uninformative_type_falls_back_to_the_messages(change, base, change_t
     # review of #28: only a CamelCase class with something before the suffix
     "assertionerror:", "Terror", "parse_error:", "crate::parse_error:", "test_parse_error",
     "Fault:",
+    # AUDIT M1: assertion classes are raised for every failed check, and node's fixed types
+    "AssertionError:", "ComparisonFailure:", "org.junit.ComparisonFailure:",
+    "org.opentest4j.AssertionFailedError:", "PHPUnit\\Framework\\ExpectationFailedException",
+    "ExpectationFailedException:", "org.opentest4j.MultipleFailuresError:", "SoftAssertError:",
+    "AssertionFailure:", "testCodeFailure", "testTimeoutFailure", "hookFailed",
 ])
 def test_a_message_word_that_is_not_class_like_is_no_kind(word):
     v = _decide_kinds(f"{word} with the change", f"{word} on base")
@@ -736,10 +739,35 @@ def test_a_message_word_that_is_not_class_like_is_no_kind(word):
 
 
 @pytest.mark.parametrize("word", [
-    "AssertionError:", "FileNotFoundError", "java.io.IOException:", "System.IO.IOException:",
-    "std::num::ParseIntError:", "ComparisonFailure:", "SegmentationFault", "BoxPanic:",
+    "FileNotFoundError", "java.io.IOException:", "System.IO.IOException:",
+    "std::num::ParseIntError:", "SegmentationFault", "BoxPanic:",
     "pkg.sub.MyError",
 ])
 def test_a_class_like_message_word_is_a_kind(word):
     v = _decide_kinds(f"{word} with the change", f"{word} on base")
     assert v.passed and v.tests[0].status == "EXONERATED"
+
+
+# AUDIT M1: types go through the same class-name allowlist as message words, and assertion
+# classes carry no kind as a type too.
+@pytest.mark.parametrize("kind", [
+    "AssertionError", "builtins.AssertionError", "org.opentest4j.AssertionFailedError",
+    "junit.framework.ComparisonFailure", "PHPUnit.Framework.ExpectationFailedException",
+    "org.opentest4j.MultipleFailuresError", "SoftAssertionError", "testCodeFailure",
+    "hookFailed", "Timeout", "x", "expected", "assert", "test failure",
+])
+def test_a_type_that_is_not_an_informative_class_is_no_kind(kind):
+    v = _decide_kinds("x", "x", change_type=kind, base_type=kind)
+    assert not v.passed and v.tests[0].reason.startswith(NO_KIND)
+
+
+def test_an_assertion_class_type_with_a_shared_assertion_message_never_exonerates():
+    # The audit's repro: pytest's bare `assert` on both sides, unrelated causes.
+    v = _decide_kinds("AssertionError: assert 2 == 4", "AssertionError: assert None == 4",
+                      change_type="AssertionError", base_type="AssertionError")
+    assert not v.passed and v.tests[0].reason.startswith(NO_KIND)
+
+
+def test_different_assertion_class_types_still_fail_differently():
+    v = _decide_kinds("x", "x", change_type="AssertionError", base_type="KeyError")
+    assert not v.passed and v.tests[0].reason.startswith("no signal: fails differently")

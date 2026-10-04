@@ -23,7 +23,7 @@ out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(os.environ["QQ_JUNIT_DIR"
 out.parent.mkdir(parents=True, exist_ok=True)
 body = "".join(
     f"<testcase classname={quoteattr(t.split('::')[0])} name={quoteattr(t.split('::')[1])}>"
-    + {"fail": '<failure message="AssertionError: planted"/>', "crash": '<error message="crashed"/>'}.get(o, "")
+    + {"fail": '<failure message="LookupError: planted"/>', "crash": '<error message="crashed"/>'}.get(o, "")
     + "</testcase>" for t, o in cases)
 out.write_text(f'<testsuite name="fake">{body}</testsuite>')
 sys.exit(1 if any(o in ("fail", "crash") for _, o in cases) else 0)
