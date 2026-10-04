@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import datetime as dt
 import json
 import os
@@ -61,9 +62,9 @@ def cmd_sink(args) -> int:
     run = _run(args)
     pol = policy.from_infra_config(Path(args.infra_config)) if args.infra_config else policy.Policy()
     if args.retries is not None:
-        pol = policy.Policy(retry_failed=args.retries, compare_with_base=pol.compare_with_base)
+        pol = dataclasses.replace(pol, retry_failed=args.retries)
     if args.no_base:
-        pol = policy.Policy(retry_failed=pol.retry_failed, compare_with_base=False)
+        pol = dataclasses.replace(pol, compare_with_base=False)
     path, b = sink.sink(run, args.junit, Path(args.root).resolve(), Path(args.out),
                         rerun_cmd=args.rerun or "", policy=pol, base_commit=args.base or "",
                         setup=args.setup or "")

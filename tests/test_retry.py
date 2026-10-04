@@ -131,6 +131,9 @@ def test_policy_from_infra_config(tmp_path):
     (root / "config" / "flakes.toml").write_text(
         "[verdict]\nretry_failed = 3\ncompare_with_base = false\nexonerate_known_flakes = true\n")
     assert policy.from_infra_config(root) == Policy(retry_failed=3, compare_with_base=False)
+    (root / "config" / "flakes.toml").write_text(
+        "[verdict]\nretry_failed = 1\ncompare_with_base = true\nmax_failures_to_retry = 5\n")
+    assert policy.from_infra_config(root).max_failures_to_retry == 5
     with pytest.raises(policy.PolicyError, match="not an infra-config checkout"):
         policy.from_infra_config(tmp_path)
 
@@ -180,6 +183,22 @@ def test_a_failed_restore_fails_the_step(tmp_path, state):
         retry.recheck(run, sink.junit.parse_file(repo / "results/junit.xml", run.id),
                       CMD, repo, Policy(), base, setup='[ "$QQ_SIDE" = base ]')
     assert len(git(repo, "worktree", "list").splitlines()) == 1   # the base worktree is gone
+
+
+@pytest.mark.parametrize("n", [-1, 4])
+def test_retries_are_bounded(n):
+    from qqresults.policy import PolicyError
+    with pytest.raises(PolicyError, match="retry_failed"):
+        Policy(retry_failed=n)
+
+
+def test_too_many_failures_are_not_retried(tmp_path):
+    run = Run(id="r", repo="o/x", kind="presubmit", commit="c")
+    results = [Result(run_id="r", test_id=f"t::{i}", status="FAIL", expected=False) for i in range(3)]
+    checked = retry.recheck(run, results, "exit 1", tmp_path, Policy(max_failures_to_retry=2))
+    assert not checked.verdict.passed and not checked.retries and "max_failures_to_retry" in checked.verdict.reason
+    assert "base comparison" not in checked.verdict.reason
+    assert all(c.reason.startswith("not retried: 3 failures") for c in checked.verdict.tests)
 
 
 def _queue_run(repo, tmp_path, target):
