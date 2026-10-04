@@ -297,6 +297,14 @@ def _patch(repo: str, issue: dict, want: dict, token: str, call) -> None:
             raise GitHubAPIError(f"{repo}#{issue['number']}: updating the issue: HTTP {status}")
 
 
+def _withdrawn(issue: dict) -> bool:
+    """Whether mirror_issue withdrew this issue (its record looked security-related)."""
+    from qqresults import failures
+
+    return (str(issue.get("title") or "").startswith(failures.WITHHELD_TITLE)
+            or failures.WITHHELD_BODY in str(issue.get("body") or ""))
+
+
 def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
     """Create or update the one labelled issue that mirrors a failure record.
 
@@ -306,15 +314,19 @@ def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
     ("", False). An issue opened before the record looked that way has its title and body
     replaced and is closed, then NeedsDeletion is raised: the old text stays in its edit history
     and in emails already sent, so only deleting the issue (a repo admin) removes it.
+
+    An issue already withdrawn that way is itself a security mark: a later report that does not
+    look security-related (a fresh runner that never saw the mark) takes the same path, so the
+    issue is never patched back or reopened. The caller should then mark the record security.
     """
     from qqresults import failures  # core module; imported here to keep backends import-light
 
     call = call or api
     f = state.current
     existing = _find_issues(repo, f.id, token, call)
-    if state.security:
+    if state.security or any(_withdrawn(i) for i in existing):
         for issue in existing:
-            _patch(repo, issue, {"title": f"[qq failure] withheld ({f.id})",
+            _patch(repo, issue, {"title": f"{failures.WITHHELD_TITLE} ({f.id})",
                                  "body": failures.marker(f.id) + "\n" + failures.WITHHELD_BODY,
                                  "state": "closed"}, token, call)
         if existing:

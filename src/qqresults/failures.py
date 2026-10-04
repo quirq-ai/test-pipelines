@@ -42,20 +42,46 @@ LINK_FIELDS = VALUE_LINKS + MARKS          # every field a link file may have
 
 # Words that make a failure look like a security issue. Such records are kept, but never mirrored
 # to a public issue. TODO(suraj): where security-looking failures go instead (a private advisory,
-# a private repo, or a person).
-SECURITY_WORDS = re.compile(
-    r"secur|vulnerab|\bcve-|exploit|overflow|use-after-free|out-of-bounds|injection|"
-    r"credential|secret|token|password|private key|sandbox|privilege|privesc|"
-    r"\bxss\b|\brce\b|ssrf|csrf|bypass|unauthori|unauthenticated|\bauthn?\b|leak|"
-    r"sanitizer|\basan\b|\bmsan\b|\bubsan\b|heap|traversal|\bdos\b|redos|denial of service|"
-    r"deserializ|memory corruption|arbitrary code|\bsqli\b|api[ _-]?key|ssh[ _-]?key|\bauthz\b|"
-    r"passwd|attacker|\bpii\b|\bghsa-|double free|certificate|open redirect|malicious|"
-    r"access control|sensitive data|segv|segfault|sigabrt|sigbus|stack smash|\buaf\b|"
-    r"use after free|\boob\b|out of bounds|over-?read|\bxxe\b|prototype pollution|\bjwt|"
-    r"\bcors\b|toctou|crash|panic|authentication|authorization|\bidor\b|\bssti\b|\bcwe-|"
-    r"spoof|impersonat|smuggl|without login|reachable without", re.IGNORECASE)
-# Errs towards withholding: "memory leak" or "tokenizer" match too, and only cost a public issue.
-# Fuzz findings are treated as security-looking by default (postmortem.toml fuzz-security-crash).
+# a private repo, or a person). They are matched against normalised text (security_text): camelCase
+# split, `_ - . / : # @` turned into spaces, lowercased, so "test_jwt_not_checked",
+# "stack-smashing" and "openRedirect" match like the plain phrases. Between the words of a phrase
+# any run of spaces (or none) matches.
+_PHRASES = (
+    r"secur", r"vulnerab", r"\bcve\b", r"exploit", r"over\s*flow", r"use\s*after\s*free",
+    r"out\s*of\s*bounds", r"injection", r"credential", r"secret", r"token", r"pass\s*word",
+    r"private\s*key", r"sandbox", r"privilege", r"privesc", r"\bxss\b", r"\brce\b", r"ssrf",
+    r"csrf", r"bypass", r"unauthori", r"unauthenticated", r"\bauth[nz]?\b", r"leak",
+    r"sanitizer", r"\b[amt]san\b", r"\bubsan\b", r"heap", r"traversal", r"\bdos\b", r"redos",
+    r"denial\s*of\s*service", r"deserializ", r"memory\s*corruption", r"arbitrary\s*code",
+    r"\bsqli\b", r"sql\s*inject", r"api\s*key", r"ssh\s*key", r"passwd", r"attacker", r"\bpii\b",
+    r"\bghsa\b", r"double\s*free", r"certificate", r"open\s*redirect", r"malicious",
+    r"access\s*control", r"sensitive\s*data", r"segv", r"segfault", r"sigabrt", r"sigbus",
+    r"stack\s*smash", r"\buaf\b", r"\boob\b", r"over\s*read", r"\bxxe\b",
+    r"prototype\s*pollution", r"\bjwt", r"\bcors\b", r"toctou", r"crash", r"panic",
+    r"authentication", r"authorization", r"\bidor\b", r"\bssti\b", r"\bcwe\b", r"spoof",
+    r"impersonat", r"smuggl", r"without\s*(?:login|auth|password|a\s*session)",
+    r"reachable\s*without", r"\badmin", r"anonymous", r"open\s*to\s*(?:every|any|all\b|the\s*public)",
+    r"(?:login|sign\s*in|auth\w*)\s*(?:is\s*)?not\s*(?:required|checked|enforced)",
+    r"\bnot\s*(?:required|checked|enforced|verified|validated)\b", r"world\s*(?:read|writ)",
+    r"\bexpos", r"\bpublicly\b", r"\bunsafe\b", r"\bescalat",
+)
+SECURITY_WORDS = re.compile("|".join(_PHRASES))
+
+
+def security_text(text: str) -> str:
+    """text normalised for SECURITY_WORDS: separators to spaces and lowercased, once as it is and
+    once with camelCase split ("openRedirect"; "ReDoS" and "SQLi" match the first way)."""
+    split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ", text)
+    return " | ".join(re.sub(r"[\s_\-./:#@]+", " ", t).lower() for t in (text, split))
+
+
+def reads_as_security(text: str) -> bool:
+    return bool(SECURITY_WORDS.search(security_text(text)))
+
+
+# Errs towards withholding: "memory leak", "tokenizer" or an "admin" page match too, and only cost
+# a public issue. Fuzz findings are treated as security-looking by default (postmortem.toml
+# fuzz-security-crash).
 SECURITY_KINDS = {FailureKind.FUZZ.value}
 
 
@@ -87,7 +113,7 @@ def looks_security_related(f: Failure, links: dict[str, str] | None = None) -> b
         return True
     text = " ".join([v for v in f.to_dict().values() if isinstance(v, str)]
                     + list((links or {}).values()))
-    return bool(SECURITY_WORDS.search(text))
+    return reads_as_security(text)
 
 
 def new(kind: str, repo: str, subject: str, **fields) -> Failure:
@@ -189,7 +215,9 @@ def read(path: Path) -> State:
 
 
 def import_dir(src: Path, parent: Path) -> bool:
-    """Copy a failure bundle into the store: the record if new, and any links not yet there.
+    """Add a failure bundle's public bundle (public_bundle) to the store: the record if new, and
+    any links not yet there. The store is public, so only filtered values are ever written to it,
+    whatever the bundle holds (an older action uploaded the full record).
 
     The first record with an id wins; a later one (the same event reported again) adds nothing.
     Returns True if anything was added.
@@ -198,18 +226,20 @@ def import_dir(src: Path, parent: Path) -> bool:
     dest = parent / dirname(state.record.id)
     added = False
     parent.mkdir(parents=True, exist_ok=True)
-    if not (dest / RECORD).is_file():
-        with tempfile.TemporaryDirectory(dir=parent) as tmp:
+    with tempfile.TemporaryDirectory(dir=parent) as tmp:
+        pub = Path(tmp) / "public"
+        public_bundle(src, pub)
+        if not (dest / RECORD).is_file():
             staged = Path(tmp) / dest.name
-            staged.mkdir()
-            shutil.copyfile(src / RECORD, staged / RECORD)
+            (staged / LINKS).mkdir(parents=True)
+            shutil.copyfile(pub / RECORD, staged / RECORD)
             shutil.move(staged, dest)   # a rename: the record appears whole
-        added = True
-    (dest / LINKS).mkdir(exist_ok=True)
-    for link in sorted((src / LINKS).glob("*.json")) if (src / LINKS).is_dir() else []:
-        if not (dest / LINKS / link.name).exists():
-            shutil.copyfile(link, dest / LINKS / link.name)
             added = True
+        (dest / LINKS).mkdir(exist_ok=True)
+        for link in sorted((pub / LINKS).glob("*.json")):
+            if not (dest / LINKS / link.name).exists():
+                shutil.copyfile(link, dest / LINKS / link.name)
+                added = True
     return added
 
 
@@ -221,20 +251,24 @@ def import_dir(src: Path, parent: Path) -> bool:
 #   - https://github.com/owner/repo/(pull|issues)/<n>, .../commit/<hex>, .../actions/runs/<n>
 #     (optionally /job/<n> or /attempts/<n>); no other URL;
 #   - the action's run id, github/owner/repo/<run>/<attempt>/<job>.
-# The owner must be the record's own owner (an org's repo names are made on purpose, not prose).
+# The owner must be the record's own owner (an org's repo names are made on purpose, not prose),
+# and the name slots (owner, repo, job) must not read as security (reads_as_security).
 _OWNER = r"[A-Za-z0-9][A-Za-z0-9-]{0,38}"
 _NAME_RE = r"[A-Za-z0-9._-]{1,100}"
 _COMMIT = r"[0-9a-f]{7,40}"
 _VALUE = re.compile(
     rf"{_COMMIT}|[0-9a-f]{{64}}|sha1:[0-9a-f]{{40}}|sha256:(?:[0-9a-f]{{16}}|[0-9a-f]{{64}})|"
     rf"sha512:[0-9a-f]{{128}}|"
-    rf"(?P<o1>{_OWNER})/{_NAME_RE}(?:@{_COMMIT}|#[0-9]{{1,10}})|"
-    rf"https://github\.com/(?P<o2>{_OWNER})/{_NAME_RE}/(?:(?:pull|issues)/[0-9]{{1,10}}|"
+    rf"(?P<o1>{_OWNER})/(?P<r1>{_NAME_RE})(?:@{_COMMIT}|#[0-9]{{1,10}})|"
+    rf"https://github\.com/(?P<o2>{_OWNER})/(?P<r2>{_NAME_RE})/(?:(?:pull|issues)/[0-9]{{1,10}}|"
     rf"commit/{_COMMIT}|actions/runs/[0-9]{{1,20}}(?:/(?:job|attempts)/[0-9]{{1,20}})?)|"
-    rf"github/(?P<o3>{_OWNER})/{_NAME_RE}/[0-9]{{1,20}}/[0-9]{{1,5}}/[A-Za-z0-9_.-]{{1,100}}")
+    rf"github/(?P<o3>{_OWNER})/(?P<r3>{_NAME_RE})/[0-9]{{1,20}}/[0-9]{{1,5}}/"
+    rf"(?P<j3>[A-Za-z0-9_.-]{{1,100}})")
 _REPO = re.compile(rf"{_OWNER}/{_NAME_RE}")
-# Stage, signal and channel are short names ("probe", "health", "stable"): no spaces.
-_LABEL = re.compile(r"[A-Za-z0-9_.-]{1,40}")
+# Stage, signal and channel show only as a short label: lowercase, at most three words joined by
+# `-` or `.`, at most 32 characters, no `_`, `/` or `::` (test ids), not containing "test", and not
+# reading as security. So "probe", "health", "stable" and "http-5xx" show; a test name does not.
+_LABEL = re.compile(r"(?=.{1,32}$)[a-z0-9]+(?:[.-][a-z0-9]+){0,2}")
 LABEL_FIELDS = ("stage", "signal", "channel")
 VALUE_FIELDS = ("build_digest", "last_good", "first_bad", "run_id") + Failure.LINKS
 WITHHELD = "withheld"
@@ -245,22 +279,26 @@ def public_value(v: str, repo: str, field: str = "") -> str:
     if not v:
         return v
     if field in LABEL_FIELDS:
-        return v if _LABEL.fullmatch(v) else WITHHELD
+        ok = _LABEL.fullmatch(v) and "test" not in v and not reads_as_security(v)
+        return v if ok else WITHHELD
     if field == "repo":
-        return v if _REPO.fullmatch(v) else WITHHELD
+        return v if _REPO.fullmatch(v) and not reads_as_security(v) else WITHHELD
     m = _VALUE.fullmatch(v)
     if not m:
         return WITHHELD
-    owner = next((o for o in m.group("o1", "o2", "o3") if o), None)
-    if owner is not None and not (_REPO.fullmatch(repo)
-                                  and owner.lower() == repo.split("/")[0].lower()):
-        return WITHHELD
+    slots = [g for g in m.group("o1", "r1", "o2", "r2", "o3", "r3", "j3") if g]
+    if slots:
+        owner = slots[0]
+        if not (_REPO.fullmatch(repo) and owner.lower() == repo.split("/")[0].lower()):
+            return WITHHELD
+        if reads_as_security(" ".join(slots)):
+            return WITHHELD
     return v
 
 
 def public_view(f: Failure, public_summary: bool = False) -> Failure:
     """The failure as it may be shown publicly: every free-text field is withheld unless it is a
-    short name (stage, signal, channel) or a commit, digest, own-org reference or GitHub URL; a
+    short label (stage, signal, channel) or a commit, digest, own-org reference or GitHub URL; a
     free-text subject is replaced by its digest, and the summary is dropped unless the caller
     opted in. Kind, id and opened_at are not free text (an enum, a hash, a time)."""
     subject = f.subject if public_value(f.subject, f.repo) == f.subject else (
@@ -271,39 +309,56 @@ def public_view(f: Failure, public_summary: bool = False) -> Failure:
         **{k: public_value(getattr(f, k), f.repo, k) for k in LABEL_FIELDS + VALUE_FIELDS})
 
 
-def _public_link(link: dict, repo: str) -> dict:
-    field = link["field"]
-    value = "true" if field in MARKS else public_value(link["value"], repo, field)
-    return {**link, "value": value}
+_TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 
 
-def public_copy(state: State, parent: Path) -> Path:
-    """Write what of a record may be uploaded publicly, as a bundle under parent.
+def _write_link(dest: Path, field: str, value: str, at: str) -> None:
+    """Write a link file named from its own (public) body, as add_link names them."""
+    body = canonical_json({"field": field, "value": value, "at": at})
+    digest = hashlib.sha256(body.encode()).hexdigest()[:8]
+    (dest / LINKS / f"{at.replace(':', '')}-{field}-{digest}.json").write_text(
+        body + "\n", encoding="utf-8")
 
-    Rewritten on every call (it is derived, not a record). A record that is not security-related
-    gets its public view, with its links passed through the same filter. A security record gets a
-    marks-only bundle instead: its id, kind, structured subject and run, and the security mark,
-    so the store learns the mark (and stops mirroring it) without learning anything else.
+
+def public_bundle(src: Path, dest: Path) -> None:
+    """Write what of the record at src may be public as a bundle at dest (an empty directory).
+
+    A record that is not security-related gets its public view, with its links passed through the
+    same filter and renamed from their public bodies. A security record gets a marks-only bundle:
+    its id, kind, structured subject and run, and one security mark, so whoever reads the bundle
+    learns the mark (and stops mirroring) and nothing else.
     """
-    dest = parent / state.path.name
-    shutil.rmtree(dest, ignore_errors=True)
-    (dest / LINKS).mkdir(parents=True)
+    state = read(src)
+    repo = state.record.repo
+    (dest / LINKS).mkdir(parents=True, exist_ok=True)
     if state.security:
-        mark(state.path, "security")   # a link file, so the store gets it like any other link
-        state = read(state.path)
         pub = public_view(state.record)
         record = Failure(id=pub.id, kind=pub.kind, repo=pub.repo, subject=pub.subject,
                          opened_at=pub.opened_at, run_id=pub.run_id, security=True)
-        keep: tuple[str, ...] = ("security",)
+        at = state.record.opened_at if _TIME.fullmatch(state.record.opened_at) else now()
+        _write_link(dest, "security", "true", at)
     else:
         record = public_view(state.record, state.public_summary)
-        keep = LINK_FIELDS
+        for p in sorted((src / LINKS).glob("*.json")) if (src / LINKS).is_dir() else []:
+            link = json.loads(p.read_text(encoding="utf-8"))
+            field, at = link.get("field"), link.get("at")
+            if field not in LINK_FIELDS or not isinstance(at, str) or not _TIME.fullmatch(at):
+                continue   # not a link this version writes; nothing of it goes public
+            value = "true" if field in MARKS else public_value(str(link.get("value")), repo, field)
+            if value:
+                _write_link(dest, field, value, at)
     (dest / RECORD).write_text(record.to_json() + "\n", encoding="utf-8")
-    for p in sorted((state.path / LINKS).glob("*.json")):
-        link = json.loads(p.read_text(encoding="utf-8"))
-        if link["field"] in keep:
-            (dest / LINKS / p.name).write_text(
-                canonical_json(_public_link(link, state.record.repo)) + "\n", encoding="utf-8")
+
+
+def public_copy(state: State, parent: Path) -> Path:
+    """Write the record's public bundle (public_bundle) under parent, to upload.
+
+    Rewritten on every call (it is derived, not a record).
+    """
+    dest = parent / state.path.name
+    shutil.rmtree(dest, ignore_errors=True)
+    dest.mkdir(parents=True)
+    public_bundle(state.path, dest)
     return dest
 
 
@@ -336,6 +391,7 @@ def marker(fid: str) -> str:
     return f"<!-- qq-failure: {fid} -->"
 
 
+WITHHELD_TITLE = "[qq failure] withheld"
 WITHHELD_BODY = ("The failure record mirrored here was later found to look security-related, so "
                  "its details were hidden and this issue is waiting to be deleted by a repo "
                  "admin. TODO(suraj): where such records are tracked.\n")

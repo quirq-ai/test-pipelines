@@ -170,7 +170,13 @@ def cmd_scorecard(args) -> int:
 
 def _mirror(state: failures.State, repo: str) -> failures.State:
     gh = backends.load("github")
-    url, created = gh.mirror_issue(state, repo, os.environ.get("GITHUB_TOKEN", ""))
+    try:
+        url, created = gh.mirror_issue(state, repo, os.environ.get("GITHUB_TOKEN", ""))
+    except gh.NeedsDeletion:
+        # The issue was (or already had been) withdrawn: the record is security from now on,
+        # even when this report alone did not look that way, so only its mark is uploaded.
+        failures.mark(state.path, "security")
+        raise
     if not url and state.security:
         print(f"issue: withheld, the record looks security-related (never mirrored publicly)")
         return state
@@ -181,19 +187,19 @@ def _mirror(state: failures.State, repo: str) -> failures.State:
 
 
 def _report(state: failures.State, created: bool | None, args) -> None:
+    state = failures.read(state.path)   # with any mark the mirror added
     f = state.current
     upload = ""
     if args.public_copy:
         # A security record is uploaded only as its id and security mark (replacing any public
         # copy made before it looked that way), so the store learns the mark and never mirrors it.
         upload = str(failures.public_copy(state, Path(args.public_copy)))
-        state = failures.read(state.path)
     verb = "" if created is None else ("opened " if created else "already open: ")
     print(f"{verb}{f.id} ({f.kind}, {f.repo}) at {state.path}")
     print("closed" if state.closed else "open; missing " + ", ".join(state.missing))
     if args.github_output:
         with open(args.github_output, "a", encoding="utf-8") as out:
-            out.write(f"id={f.id}\ndir={state.path}\nname={state.path.name}\n"
+            out.write(f"id={f.id}\nname={state.path.name}\n"
                       f"issue={state.links.get('issue', '')}\ncreated={str(bool(created)).lower()}\n"
                       f"security={str(state.security).lower()}\nupload={upload}\n")
 
@@ -209,8 +215,14 @@ def cmd_failure(args) -> int:
         f = failures.new(args.kind, args.repo, args.subject, security=args.security, **fields)
         state, created = failures.open_record(f, parent)
         if args.public_summary:
-            failures.mark(state.path, "public_summary")
-            state = failures.read(state.path)
+            # The record is write-once: on a repeat report, publish its summary only if this call
+            # would have written the same one (the call that wrote it may not have opted in).
+            if created or state.record.summary == (args.summary or ""):
+                failures.mark(state.path, "public_summary")
+                state = failures.read(state.path)
+            else:
+                print("summary: kept private; the record's summary was written by another report "
+                      "(use failure link --public-summary to publish it)")
         try:
             if args.mirror:
                 state = _mirror(state, args.mirror)
@@ -225,7 +237,7 @@ def cmd_failure(args) -> int:
                 continue
             # --dir is usually a store's failures/, which is public: only what the public filter
             # allows is written there. Security-looking text still marks the record security.
-            if failures.SECURITY_WORDS.search(value):
+            if failures.reads_as_security(value):
                 failures.mark(path, "security")
             shown = failures.public_value(value, repo, field)
             if shown != value:

@@ -155,42 +155,61 @@ qqresults failure link <id> --dir <store>/failures --culprit <owner/repo@sha> --
   --covering-test <commit or URL> --mirror quirq-ai/xo-space   # updates the issue; closes it when complete
 ```
 
-The store is the public results branch, so `failure link` writes only what may be public (below)
-into it; any other value is stored as `withheld` (and still marks the record security if it reads
-that way). Keep the detail where it belongs (the PR, the postmortem) and link to it.
+The store is the public results branch. Only `collect` and `failure link` write there, and both
+write only what may be public (below): `collect` imports each artifact's public bundle, whatever
+the artifact holds, and `failure link` stores any other value as `withheld` (it still marks the
+record security if the value reads that way). Never run `failure open --dir` on a store path; it
+writes the full record. Keep the detail where it belongs (the PR, the postmortem) and link to it.
 
 A record closes only when culprit, fix and covering test are linked (infra-config
-`postmortem.toml` `record_needs`), and the scorecard reports the share that are.
+`postmortem.toml` `record_needs`), and the scorecard reports the share that are. A link stored
+as `withheld` counts as linked, so a record can close on values nobody can read publicly.
+TODO(expert): whether withheld links should count towards closing (audit S4).
 
-Free text is never public without the opt-in. The issue title and body, and the failure artifact
-(which the results store collects onto the public results branch), carry only:
+Free text is never public without the opt-in. The issue title and body, the failure artifact and
+the store carry only:
 
 - kind, id and opening time, and repo when it is a plain `owner/name`;
-- stage, signal and channel when each is a short name without spaces (`[A-Za-z0-9_.-]{1,40}`,
-  so `probe`, `health`, `stable` show);
+- stage, signal and channel when each is a short label: lowercase, at most three words joined by
+  `-` or `.`, at most 32 characters, no `_`, `/` or `::`, not containing `test`, and not reading
+  as security (so `probe`, `health`, `stable` and `http-5xx` show; a test id does not);
 - the subject, build digest, last good, first bad, run and every link (culprit, fix, covering
   test, operation, failure class, postmortem, issue) only when it is a commit (7 to 40 hex), a
   digest (`sha1:`, `sha256:` or `sha512:` with its full hex length), `owner/repo@<commit>` or
   `owner/repo#<number>`, a `https://github.com/owner/repo/` pull, issue, commit or Actions run
-  URL, or the action's run id; references and URLs only when the owner is the record's own.
+  URL, or the action's run id; references and URLs only when the owner is the record's own and
+  the owner, repo and job names do not read as security.
 
 Anything else, including any other URL, shows as `withheld` (a subject is replaced by its digest
-instead). The summary stays in the local record unless you pass `public-summary: "true"` to the
-action (or `--public-summary` to `qqresults failure open`/`link`); the artifact is a public copy
-written by `--public-copy`, never the record itself.
+instead). That fails closed on purpose: natural values such as a covering test id
+(`tests/test_x.py::test_y`), an operation key or a failure class always show as `withheld`. The
+summary stays in the local record unless you pass `public-summary: "true"` to the action (or
+`--public-summary` to `qqresults failure open`/`link`). Since the record is write-once, a repeat
+report publishes the summary only if it carries the same summary as the report that wrote it;
+`failure link --public-summary` publishes whatever the record holds. The artifact is a public
+copy written by `--public-copy`, never the record itself.
 
 The security classifier errs towards withholding: records flagged `security`, of kind `fuzz`, or
-matching words such as "overflow", "credential", "segfault", "crash" or "without login" are kept
-but never mirrored to a public issue, even with the opt-in. Their artifact holds only the record
-id, kind, subject (or its digest), run and a `security` mark, so the store learns the mark and
+matching words such as "overflow", "credential", "segfault", "crash", "admin" or "without login"
+are kept but never mirrored to a public issue, even with the opt-in. Words are matched after
+splitting camelCase and turning `_`, `-`, `.`, `/`, `:`, `#` and `@` into spaces, so
+`test_jwt_not_checked` and `open-redirect` count. A security record's artifact holds only its id,
+kind, subject (or its digest), run and a `security` mark, so the store learns the mark and
 `failure link --mirror` on the store record never republishes it. Reporting an existing record
 again with `security: "true"` or security-looking text marks it security too. If a record only
 looks that way after its issue was opened, the issue's text is hidden and it is closed, and the
 step fails asking a repo admin to delete it: editing an issue does not remove the old text from
-its history or from emails already sent. The record's earlier public copy may already be in an
-artifact by then; this job's artifact is replaced by the marks-only one. TODO(suraj): where
-security records go instead. The `failure-demo` workflow proves the done-when against the real
-API with a planted held canary.
+its history or from emails already sent. A withdrawn issue counts as a security mark itself: a
+later report (a re-run on a fresh runner) never patches or reopens it, and its record turns
+security. The record's earlier public copy may already be in an artifact by then; this job's
+artifact is replaced by the marks-only one. TODO(suraj): where security records go instead.
+
+Limit: when the first report is security-related, no issue is opened, so nothing remembers that
+on GitHub. A later report from a fresh runner that does not look security-related (and does not
+pass `security: "true"`) opens a public issue. The store learns the mark only once `collect` has
+run, and the action does not read the store. TODO(expert): a durable mark the action can check
+before opening an issue. The `failure-demo` workflow proves the done-when against the real API
+with a planted held canary.
 
 ## v0 status
 

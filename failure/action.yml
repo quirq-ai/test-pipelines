@@ -70,10 +70,11 @@ runs:
         set -euo pipefail
         python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || {
           echo "::error::qq failure record needs Python 3.11 or newer as python3"; exit 1; }
-        venv="$RUNNER_TEMP/qqresults-venv"
-        [ -x "$venv/bin/qqresults" ] || {
-          python3 -m venv "$venv"
-          "$venv/bin/python" -m pip install --quiet --disable-pip-version-check "$GITHUB_ACTION_PATH/.."
+        # Run from this action's own source (no dependencies), as the sink does: nothing is
+        # fetched from PyPI.
+        qqresults() {
+          python3 -P -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from qqresults.cli import main; sys.exit(main(sys.argv[1:]))' \
+            "$GITHUB_ACTION_PATH/../src" "$@"
         }
         args=(--kind "$QQ_KIND" --repo "$GITHUB_REPOSITORY" --subject "$QQ_SUBJECT"
               --run-id "github/$GITHUB_REPOSITORY/$GITHUB_RUN_ID/${GITHUB_RUN_ATTEMPT:-1}/$GITHUB_JOB"
@@ -88,20 +89,18 @@ runs:
         [ "$QQ_SECURITY" != "true" ] || args+=(--security)
         [ "$QQ_PUBLIC_SUMMARY" != "true" ] || args+=(--public-summary)
         dir="$RUNNER_TEMP/qq-failures"   # shared by every call in the job, so a repeat finds the record
-        echo "dir=$dir" >> "$GITHUB_OUTPUT"
         # One artifact name per job (a matrix leg is a job too), so another job's upload of the
         # same record never overwrites this job's security mark; repeats in this job overwrite.
         job_file="$RUNNER_TEMP/qq-failures-job"
         [ -s "$job_file" ] || python3 -c 'import secrets; print(secrets.token_hex(4))' > "$job_file"
         echo "job=$(cat "$job_file")" >> "$GITHUB_OUTPUT"
-        "$venv/bin/qqresults" failure open --dir "$dir" --public-copy "$RUNNER_TEMP/qq-failures-public" \
-          "${args[@]}"
+        qqresults failure open --dir "$dir" --public-copy "$RUNNER_TEMP/qq-failures-public" "${args[@]}"
     # This repo's artifacts and results branch are public, so the record itself never leaves the
     # runner. The upload is its public copy (structured fields only), or for a security-looking
     # record only its id and security mark, so the store learns the mark and never mirrors it.
     # TODO(suraj): where security records are kept instead. It runs even when the open step
     # failed after writing the upload (withdrawing an issue asks for its deletion and fails).
-    - uses: actions/upload-artifact@v7
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
       if: ${{ !cancelled() && steps.open.outputs.upload != '' }}
       with:
         name: ${{ steps.open.outputs.name }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ steps.open.outputs.job }}

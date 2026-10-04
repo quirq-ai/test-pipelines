@@ -125,12 +125,12 @@ def test_store_imports_the_first_record_and_every_link(tmp_path):
     st = FileStore(tmp_path / "store")
     a, _ = held(tmp_path / "run1")
     b, _ = held(tmp_path / "run2")                   # same event, reported by a second run
-    failures.add_link(b.path, "culprit", "c1")
+    failures.add_link(b.path, "culprit", "c0ffee1")
     assert st.import_failure(a.path) is True
     assert st.import_failure(b.path) is True         # adds the link only
     assert st.import_failure(b.path) is False
     (only,) = st.failures()
-    assert only.record.opened_at == a.record.opened_at and only.links == {"culprit": "c1"}
+    assert only.record.opened_at == a.record.opened_at and only.links == {"culprit": "c0ffee1"}
     assert st.failure(a.record.id).record.id == a.record.id
 
 
@@ -406,6 +406,8 @@ def _collect(st, artifacts):
             return json.dumps(run).encode()
         if url == f"{github.API}/repos/o/x":
             return json.dumps({"default_branch": "main"}).encode()
+        if "/compare/" in url and "main...c1?" in url:     # the run's head is on main
+            return json.dumps({"status": "identical"}).encode()
         return artifacts[url]
     return github.collect("o/x", st, "", get=get)
 
@@ -463,7 +465,7 @@ def test_cli_link_stores_only_public_values(tmp_path, capsys):
     state, _ = held(tmp_path)
     d = str(tmp_path)
     assert cli.main(["failure", "link", state.record.id, "--dir", d, "--culprit", "c0ffee0",
-                     "--covering-test", PROSE]) == 0
+                     "--covering-test", "regression check for the handler"]) == 0
     st = failures.read(state.path)
     assert st.links == {"culprit": "c0ffee0", "covering_test": "withheld"} and not st.security
     assert "stored as 'withheld'" in capsys.readouterr().out
@@ -471,3 +473,104 @@ def test_cli_link_stores_only_public_values(tmp_path, capsys):
                      "--fix", "patch for CVE-2026-1"]) == 0
     st = failures.read(state.path)
     assert st.security and "CVE" not in json.dumps(st.links)
+
+
+@pytest.mark.parametrize("signal", [
+    "test_jwt_signature_not_checked", "test_cors_any_origin", "test_xxe_importer",
+    "test_uaf_renderer", "test_oob_read", "test_sqli_search", "stack-smashing-detected",
+    "prototype-pollution", "admin-page-reachable-without-login", "denial-of-service",
+    "private-key-in-logs", "open-redirect", "double-free-in-decoder", "openRedirectOnLogin",
+    "JwtNotChecked"])
+def test_snake_and_kebab_case_security_names_are_withheld(signal):
+    f = failures.new("canary-held", "quirq-ai/innernet", "sha256:" + "a" * 64, signal=signal)
+    assert f.security
+    assert failures.public_value(signal, "quirq-ai/innernet", "signal") == failures.WITHHELD
+    assert signal not in failures.issue_title(failures.State(f, {}, Path(".")))
+
+
+@pytest.mark.parametrize("value", [
+    "quirq-ai/admin_panel_open_to_everyone#1",
+    "https://github.com/quirq-ai/login-not-required-on-admin/pull/1",
+    "github/quirq-ai/x/1/1/admin_page_open_to_anyone"])
+def test_name_slots_of_references_are_checked_for_security(tmp_path, value):
+    assert failures.public_value(value, "quirq-ai/innernet") == failures.WITHHELD
+    assert failures.reads_as_security(value)
+    f = failures.new("canary-held", "quirq-ai/innernet", "sha256:" + "a" * 64, run_id=value)
+    assert f.security and value not in failures.issue_body(failures.State(f, {}, tmp_path))
+
+
+@pytest.mark.parametrize("label,shown", [
+    ("probe", True), ("health", True), ("http-5xx", True), ("p99.latency", True),
+    ("test_probe", False), ("tests.test_health::test_probe", False), ("health_check", False),
+    ("smoke-test", False), ("Health", False), ("one-two-three-four", False),
+    ("a" * 33, False)])
+def test_labels_are_a_small_fixed_shape(label, shown):
+    assert (failures.public_value(label, "o/x", "signal") == label) is shown
+
+
+def test_a_withdrawn_issue_is_never_reopened_by_a_later_report(tmp_path, monkeypatch):
+    # first report public, then withdrawn as security, then a fresh runner (a re-run attempt,
+    # new RUNNER_TEMP) reports it again without anything security-looking
+    gh = FakeGitHub()
+    state, _ = held(tmp_path / "run1")
+    github.mirror_issue(state, "o/x", "tok", call=gh)
+    state, _ = held(tmp_path / "run1", security=True)
+    with pytest.raises(github.NeedsDeletion):
+        github.mirror_issue(state, "o/x", "tok", call=gh)
+    withdrawn = dict(gh.issues[0])
+    fresh, _ = held(tmp_path / "run2")
+    assert not fresh.security
+    with pytest.raises(github.NeedsDeletion):
+        github.mirror_issue(fresh, "o/x", "tok", call=gh)
+    assert gh.issues[0] == withdrawn and len(gh.issues) == 1     # not patched, not reopened
+    # through the CLI, the fresh runner's record turns security and uploads only its mark
+    monkeypatch.setattr(github, "api", gh)
+    out, pub = tmp_path / "out", tmp_path / "pub"
+    assert cli.main(["failure", "open", "--dir", str(tmp_path / "run3"), "--kind", "canary-held",
+                     "--repo", "quirq-ai/xo-space", "--subject", "sha256:abc", "--stage", "probe",
+                     "--mirror", "o/x", "--public-copy", str(pub),
+                     "--github-output", str(out)]) == 1
+    outputs = dict(l.split("=", 1) for l in out.read_text().splitlines())
+    assert outputs["security"] == "true" and "dir" not in outputs
+    marks = failures.read(Path(outputs["upload"]))
+    assert marks.record.security and set(marks.links) == {"security"}
+    assert "probe" not in (Path(outputs["upload"]) / "failure.json").read_text()
+    assert gh.issues[0] == withdrawn
+
+
+def test_the_store_only_ever_holds_public_values(tmp_path):
+    # an older action uploaded the full record; import keeps only its public bundle
+    st = FileStore(tmp_path / "store")
+    state, _ = held(tmp_path / "f")
+    failures.add_link(state.path, "covering_test", "regression check for the handler")
+    failures.add_link(state.path, "culprit", "c0ffee0")
+    assert st.import_failure(state.path)
+    stored = st.failure(state.record.id)
+    text = "".join(p.read_text() for p in stored.path.rglob("*.json"))
+    assert "Canary held" not in text and "regression check" not in text and "c0ffee0" in text
+    assert stored.links == {"covering_test": "withheld", "culprit": "c0ffee0"}
+    private = {p.name for p in (state.path / "links").glob("*.json")}
+    public = {p.name for p in (stored.path / "links").glob("*.json")}
+    assert len(public) == 2 and len(private & public) == 1   # renamed from the public body
+    assert not st.import_failure(state.path)                  # the same bundle adds nothing
+    copy = failures.public_copy(state, tmp_path / "pub")
+    assert {p.name for p in (copy / "links").glob("*.json")} == public
+    assert st.import_failure(held(tmp_path / "h", security=True)[0].path)   # adds the mark
+    assert st.failure(state.record.id).security
+    sec, _ = failures.open_record(failures.new("canary-held", "o/x", "c0ffee2", stage="probe",
+                                               security=True), tmp_path / "g")
+    st.import_failure(sec.path)
+    assert st.failure(sec.record.id).security
+    assert "probe" not in (st.failure(sec.record.id).path / "failure.json").read_text()
+
+
+def test_a_repeat_report_cannot_publish_another_reports_summary(tmp_path, monkeypatch):
+    gh = FakeGitHub()
+    monkeypatch.setattr(github, "api", gh)
+    base = ["failure", "open", "--dir", str(tmp_path), "--kind", "canary-held", "--repo", "o/x",
+            "--subject", "sha256:9", "--mirror", "o/x"]
+    assert cli.main(base + ["--summary", "first report text"]) == 0
+    assert cli.main(base + ["--summary", "second report text", "--public-summary"]) == 0
+    assert "report text" not in gh.issues[0]["body"]
+    assert cli.main(base + ["--summary", "first report text", "--public-summary"]) == 0
+    assert "first report text" in gh.issues[0]["body"]
