@@ -82,7 +82,7 @@ listed as not measured, with the item that will measure it; nothing unmeasured s
 
 | Item | What | PR | State |
 |---|---|---|---|
-| V0-TST-01 | Result schema and JUnit sink | #2 | in review |
+| V0-TST-01 | Result schema and JUnit sink | #2 | merged |
 | V0-TST-02 | Results store v0 and scorecard v0 | #3 | in review |
 | V0-TST-03 | Verdict: retry, then compare with base | | not started |
 | V0-TST-04 | Failure records with issue mirror | | not started |
