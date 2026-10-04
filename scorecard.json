@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-04T12:58:36Z",
+  "generated_at": "2026-10-04T13:00:31Z",
   "not_measured": [
     {
       "detail": "",
@@ -99,15 +99,6 @@
       "unit": "",
       "value": null,
       "waiting_on": "V0-REL-03 and health signals"
-    },
-    {
-      "detail": "",
-      "extra": {},
-      "name": "Failures fully recorded",
-      "target": "100%",
-      "unit": "",
-      "value": null,
-      "waiting_on": "V0-TST-04 failure records"
     },
     {
       "detail": "",
@@ -228,6 +219,15 @@
         "unit": "runs",
         "value": 1,
         "waiting_on": ""
+      },
+      {
+        "detail": "",
+        "extra": {},
+        "name": "Failures fully recorded",
+        "target": "100%",
+        "unit": "%",
+        "value": null,
+        "waiting_on": "failure records in the window (none opened)"
       }
     ],
     "quirq-ai/test-pipelines": [
@@ -241,7 +241,7 @@
         "waiting_on": "V0-GAT-04 records queue-entry time on gate runs"
       },
       {
-        "detail": "2 post-submit commits",
+        "detail": "3 post-submit commits",
         "extra": {},
         "name": "Main-red time",
         "target": "under 60 min/week",
@@ -250,7 +250,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 12 runs passed only on retry",
+        "detail": "0 of 15 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -268,7 +268,7 @@
         "waiting_on": "gate runs in the store"
       },
       {
-        "detail": "2 of 2 postsubmit runs passed",
+        "detail": "3 of 3 postsubmit runs passed",
         "extra": {},
         "name": "Post-submit runs passed",
         "target": "measured",
@@ -277,7 +277,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "10 of 10 presubmit runs passed",
+        "detail": "12 of 12 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
@@ -286,12 +286,21 @@
         "waiting_on": ""
       },
       {
-        "detail": "of 12 stored runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 15 stored runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
         "unit": "runs",
         "value": 0,
+        "waiting_on": ""
+      },
+      {
+        "detail": "0 of 1 records link culprit, fix and covering test",
+        "extra": {},
+        "name": "Failures fully recorded",
+        "target": "100%",
+        "unit": "%",
+        "value": 0.0,
         "waiting_on": ""
       }
     ],
@@ -358,9 +367,18 @@
         "unit": "runs",
         "value": 0,
         "waiting_on": ""
+      },
+      {
+        "detail": "",
+        "extra": {},
+        "name": "Failures fully recorded",
+        "target": "100%",
+        "unit": "%",
+        "value": null,
+        "waiting_on": "failure records in the window (none opened)"
       }
     ]
   },
-  "since": "2026-09-27T12:58:36Z",
-  "until": "2026-10-04T12:58:36Z"
+  "since": "2026-09-27T13:00:31Z",
+  "until": "2026-10-04T13:00:31Z"
 }

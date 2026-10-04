@@ -1,6 +1,6 @@
 # quirq infra scorecard v0
 
-Window 2026-09-27T12:58:36Z to 2026-10-04T12:58:36Z, generated 2026-10-04T12:58:36Z from the results store.
+Window 2026-09-27T13:00:31Z to 2026-10-04T13:00:31Z, generated 2026-10-04T13:00:31Z from the results store.
 
 ## quirq-ai/innernet
 
@@ -13,18 +13,20 @@ Window 2026-09-27T12:58:36Z to 2026-10-04T12:58:36Z, generated 2026-10-04T12:58:
 | Post-submit runs passed | not measured | measured | waiting on postsubmit runs in the store |
 | Presubmit runs passed | not measured | measured | waiting on presubmit runs in the store |
 | Runs with no test results | 1 runs | 0 | of 1 stored runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Failures fully recorded | not measured | 100% | waiting on failure records in the window (none opened) |
 
 ## quirq-ai/test-pipelines
 
 | Metric | Value | Target | Detail |
 |---|---|---|---|
 | Gate time-to-green | not measured | P1: p50 under 15 min, p90 under 30 min | waiting on V0-GAT-04 records queue-entry time on gate runs |
-| Main-red time | 0 min/week | under 60 min/week | 2 post-submit commits |
-| Flake rate | 0 % | under 1% | 0 of 12 runs passed only on retry |
+| Main-red time | 0 min/week | under 60 min/week | 3 post-submit commits |
+| Flake rate | 0 % | under 1% | 0 of 15 runs passed only on retry |
 | Gate runs passed | not measured | measured | waiting on gate runs in the store |
-| Post-submit runs passed | 100 % | measured | 2 of 2 postsubmit runs passed |
-| Presubmit runs passed | 100 % | measured | 10 of 10 presubmit runs passed |
-| Runs with no test results | 0 runs | 0 | of 12 stored runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Post-submit runs passed | 100 % | measured | 3 of 3 postsubmit runs passed |
+| Presubmit runs passed | 100 % | measured | 12 of 12 presubmit runs passed |
+| Runs with no test results | 0 runs | 0 | of 15 stored runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Failures fully recorded | 0 % | 100% | 0 of 1 records link culprit, fix and covering test |
 
 ## quirq-ai/xo-space
 
@@ -37,6 +39,7 @@ Window 2026-09-27T12:58:36Z to 2026-10-04T12:58:36Z, generated 2026-10-04T12:58:
 | Post-submit runs passed | not measured | measured | waiting on postsubmit runs in the store |
 | Presubmit runs passed | 100 % | measured | 1 of 1 presubmit runs passed |
 | Runs with no test results | 0 runs | 0 | of 1 stored runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Failures fully recorded | not measured | 100% | waiting on failure records in the window (none opened) |
 
 ## Not measured yet
 
@@ -53,7 +56,6 @@ Window 2026-09-27T12:58:36Z to 2026-10-04T12:58:36Z, generated 2026-10-04T12:58:
 | Rollback time | under 10 min | release rollback drill |
 | Unattended canary days | 14 in a row by P5 | V0-REL-03 daily canary |
 | Canary hold or rollback time | under 15 min | V0-REL-03 and health signals |
-| Failures fully recorded | 100% | V0-TST-04 failure records |
 | Postmortem action items closed | at least 90% | postmortem tracking (v1) |
 | Open recurring failure classes | 0 | v1 failure classes |
 | Fuzz finding turnaround | under 24 h | v1 fuzzers |
