@@ -1,0 +1,96 @@
+# Open a failure record (V0-TST-04, plan §5.10) and mirror it to one labelled GitHub issue.
+# For the canary pipeline (held canary, rollback) and the gardener (auto-revert):
+#
+#   - uses: quirq-ai/test-pipelines/failure@<commit>
+#     with:
+#       kind: canary-held
+#       subject: ${{ steps.build.outputs.digest }}   # what failed; the same subject is the same record
+#       summary: "Canary held: /health probe failed"
+#       stage: probe
+#       signal: health
+#
+# The record id comes from kind, repo and subject, so reporting the same event twice opens one
+# record and one issue. Security-looking failures are never mirrored to a public issue and never
+# uploaded as a (public) artifact. Needs `issues: write` on the job's token. The record is kept as a workflow artifact that
+# the results store collects.
+name: qq failure record
+description: Open a quirq infra failure record and mirror it to one labelled issue.
+inputs:
+  kind:
+    description: canary-held, canary-rollback, auto-revert, red-run or fuzz.
+    required: true
+  subject:
+    description: What failed (build digest, commit or run id). Same subject, same record.
+    required: true
+  summary: {description: One line on what happened., required: false, default: ""}
+  channel: {description: Release channel., required: false, default: ""}
+  build-digest: {description: The build's digest., required: false, default: ""}
+  last-good: {description: Last good commit or build., required: false, default: ""}
+  first-bad: {description: First bad commit or build., required: false, default: ""}
+  stage: {description: The pipeline stage that failed., required: false, default: ""}
+  signal: {description: The health signal or test that fired., required: false, default: ""}
+  operation: {description: Key of the operation that held or rolled it back., required: false, default: ""}
+  security: {description: Set to "true" to never mirror it publicly., required: false, default: "false"}
+  issue-repo:
+    description: Where the issue goes (default this repository).
+    required: false
+    default: ${{ github.repository }}
+  token:
+    description: Token with issues write on issue-repo.
+    required: false
+    default: ${{ github.token }}
+outputs:
+  id: {description: The record id., value: "${{ steps.open.outputs.id }}"}
+  issue: {description: The issue URL (empty when withheld)., value: "${{ steps.open.outputs.issue }}"}
+  created: {description: '"true" if this call opened the record.', value: "${{ steps.open.outputs.created }}"}
+runs:
+  using: composite
+  steps:
+    - id: open
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        QQ_KIND: ${{ inputs.kind }}
+        QQ_SUBJECT: ${{ inputs.subject }}
+        QQ_SUMMARY: ${{ inputs.summary }}
+        QQ_CHANNEL: ${{ inputs.channel }}
+        QQ_BUILD_DIGEST: ${{ inputs.build-digest }}
+        QQ_LAST_GOOD: ${{ inputs.last-good }}
+        QQ_FIRST_BAD: ${{ inputs.first-bad }}
+        QQ_STAGE: ${{ inputs.stage }}
+        QQ_SIGNAL: ${{ inputs.signal }}
+        QQ_OPERATION: ${{ inputs.operation }}
+        QQ_SECURITY: ${{ inputs.security }}
+        QQ_ISSUE_REPO: ${{ inputs.issue-repo }}
+      run: |
+        set -euo pipefail
+        python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || {
+          echo "::error::qq failure record needs Python 3.11 or newer as python3"; exit 1; }
+        venv="$RUNNER_TEMP/qqresults-venv"
+        [ -x "$venv/bin/qqresults" ] || {
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --quiet --disable-pip-version-check "$GITHUB_ACTION_PATH/.."
+        }
+        args=(--kind "$QQ_KIND" --repo "$GITHUB_REPOSITORY" --subject "$QQ_SUBJECT"
+              --run-id "github/$GITHUB_REPOSITORY/$GITHUB_RUN_ID/${GITHUB_RUN_ATTEMPT:-1}/$GITHUB_JOB"
+              --mirror "$QQ_ISSUE_REPO")
+        for pair in summary:QQ_SUMMARY channel:QQ_CHANNEL build-digest:QQ_BUILD_DIGEST \
+                    last-good:QQ_LAST_GOOD first-bad:QQ_FIRST_BAD stage:QQ_STAGE \
+                    signal:QQ_SIGNAL operation:QQ_OPERATION; do
+          var="${pair#*:}"
+          value="${!var}"
+          [ -z "$value" ] || args+=("--${pair%%:*}" "$value")
+        done
+        [ "$QQ_SECURITY" != "true" ] || args+=(--security)
+        dir="$RUNNER_TEMP/qq-failures"   # shared by every call in the job, so a repeat finds the record
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+        "$venv/bin/qqresults" failure open --dir "$dir" "${args[@]}"
+    # A security-looking record stays on the runner: this repo's artifacts and results branch
+    # are public. TODO(suraj): where such records are kept instead.
+    - uses: actions/upload-artifact@v7
+      if: steps.open.outputs.security != 'true'
+      with:
+        name: ${{ steps.open.outputs.name }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ steps.open.outputs.dir }}
+        overwrite: true
+        if-no-files-found: error
