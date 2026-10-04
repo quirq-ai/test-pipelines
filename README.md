@@ -23,11 +23,41 @@ infra-config's `flakes.toml`.
 Plan and every v0 item: [quirq-ai/infra-config](https://github.com/quirq-ai/infra-config),
 `docs/plan.md` and `docs/v0.md`.
 
+## Storing a job's results (V0-TST-01)
+
+Add the sink after the test steps of any builder, pinned by commit:
+
+```yaml
+- uses: quirq-ai/test-pipelines/sink@<commit>
+  if: always()
+  with:
+    junit: .qq/out/junit/*.xml     # one glob per line
+```
+
+It normalizes every JUnit report into `Result` records, computes the run's `Verdict`, and keeps the
+bundle (`run.json`, `results.jsonl`, `verdict.json`) as a workflow artifact named
+`qq-results-<run id>`. The run kind comes from the event: `merge_group` is `gate`,
+`pull_request` is `presubmit`, a push to the default branch is `postsubmit`. A job with no reports
+still stores a run, marked as having no results and failing, because a missing signal is not a
+pass. Failing tests never fail the sink step; a report that is not JUnit XML does.
+
+The same thing from a shell:
+
+```sh
+qqresults sink --backend local --repo quirq-ai/xo-space --commit HEAD --junit '.qq/out/junit/*.xml' --out .qq/results
+qqresults show .qq/results/qq-results-...
+```
+
+Records live in `src/qqresults/model.py` (schema `quirq-results/1`): `Change`, `Run`, `Result`
+(write-once, normalized plus the raw `<testcase>`), `Verdict`, and `Failure` (plan §5.10). Test
+ids are `<classname>::<name>`, which keeps pytest, vitest, jest-junit and gotestsum ids stable
+across runs. Everything that knows GitHub is in `backends/github.py`.
+
 ## v0 status
 
 | Item | What | PR | State |
 |---|---|---|---|
-| V0-TST-01 | Result schema and JUnit sink | | not started |
+| V0-TST-01 | Result schema and JUnit sink | #2 | in review |
 | V0-TST-02 | Results store v0 and scorecard v0 | | not started |
 | V0-TST-03 | Verdict: retry, then compare with base | | not started |
 | V0-TST-04 | Failure records with issue mirror | | not started |

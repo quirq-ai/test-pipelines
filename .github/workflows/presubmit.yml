@@ -18,4 +18,14 @@ jobs:
         with:
           python-version: "3.14"
       - run: python -m pip install --quiet -e ".[test]"
-      - run: python -m pytest -q -p no:cacheprovider
+      - run: python -m pytest -q -p no:cacheprovider --junitxml=.qq/out/junit/tests.xml
+      # V0-TST-01 done-when: every gate run's test results are stored. This repo's own runs go
+      # through the same sink the generated builders use, kept as a workflow artifact per run.
+      - id: sink
+        uses: ./sink
+        if: always()
+        with:
+          junit: .qq/out/junit/*.xml
+      - name: the stored bundle reads back
+        if: always() && steps.sink.outputs.bundle != ''
+        run: qqresults show "${{ steps.sink.outputs.bundle }}"

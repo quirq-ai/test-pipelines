@@ -1,0 +1,1 @@
+<testsuite name="typecheck"><testcase name="tsc --noEmit" time="3.5"/></testsuite>
