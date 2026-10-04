@@ -1,6 +1,6 @@
 # quirq infra scorecard v0
 
-Window 2026-09-27T16:49:47Z to 2026-10-04T16:49:47Z, generated 2026-10-04T16:49:47Z from the results store.
+Window 2026-09-27T16:57:51Z to 2026-10-04T16:57:51Z, generated 2026-10-04T16:57:51Z from the results store.
 
 ## quirq-ai/innernet
 
@@ -20,12 +20,12 @@ Window 2026-09-27T16:49:47Z to 2026-10-04T16:49:47Z, generated 2026-10-04T16:49:
 | Metric | Value | Target | Detail |
 |---|---|---|---|
 | Gate time-to-green | not measured | P1: p50 under 15 min, p90 under 30 min | waiting on V0-GAT-04 records queue-entry time on gate runs |
-| Main-red time | 0 min/week | under 60 min/week | 14 post-submit commits |
-| Flake rate | 0 % | under 1% | 0 of 61 runs passed only on retry |
+| Main-red time | 0 min/week | under 60 min/week | 15 post-submit commits |
+| Flake rate | 0 % | under 1% | 0 of 65 runs passed only on retry |
 | Gate runs passed | not measured | measured | waiting on gate runs in the store |
-| Post-submit runs passed | 100 % | measured | 14 of 14 postsubmit runs passed |
-| Presubmit runs passed | 100 % | measured | 47 of 47 presubmit runs passed |
-| Runs with no test results | 0 runs | 0 | of 61 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Post-submit runs passed | 100 % | measured | 15 of 15 postsubmit runs passed |
+| Presubmit runs passed | 100 % | measured | 50 of 50 presubmit runs passed |
+| Runs with no test results | 0 runs | 0 | of 65 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
 | Failures fully recorded | 0 % | 100% | 0 of 1 records link culprit, fix and covering test |
 
 ## quirq-ai/xo-space
@@ -48,17 +48,17 @@ Window 2026-09-27T16:49:47Z to 2026-10-04T16:49:47Z, generated 2026-10-04T16:49:
 | Repos behind the gate | 100% by end of P1 | V0-ORG-03 merge queue and V0-ONB-01/02 manifests |
 | Landed on a green merge result | 100% (enforced) | V0-ORG-03 merge queue: gate runs on merge-group SHAs |
 | Time to revert a culprit | mean under 30 min | V0-GAR-03 auto-revert |
-| Expired quarantines | 0 | v1 quarantine with expiry |
-| Cache hit rate | at least 90% (P3+) | V0-RBE-01 executor reporting reused actions |
-| Reproducibility | 100% of deterministic targets | remote-build digest comparison |
-| Pinned and mirrored deps | 100% | quirq-ai/sync |
+| Expired quarantines | 0 | V1-TST-01 flake quarantine with expiry |
+| Cache hit rate | at least 90% (P3+) | V0-RBE-02 action cache with hit counters (V1-RBE-01 shared cache) |
+| Reproducibility | 100% of deterministic targets | V1-TCH-01 reproducibility check |
+| Pinned and mirrored deps | 100% | V0-SYN-03 pin check and V1-SYN-01 mirroring policy |
 | Release cadence | canary daily | V0-REL-03 daily canary |
-| Rollback time | under 10 min | release rollback drill |
+| Rollback time | under 10 min | V0-REL-02 channel rollback and its drill |
 | Unattended canary days | 14 in a row by P5 | V0-REL-03 daily canary |
-| Canary hold or rollback time | under 15 min | V0-REL-03 and health signals |
-| Postmortem action items closed | at least 90% | postmortem tracking (v1) |
-| Open recurring failure classes | 0 | v1 failure classes |
-| Fuzz finding turnaround | under 24 h | v1 fuzzers |
-| Intervention rate | falling every month | GitHub PR data (scorecard v1) |
-| Revert precision | at least 90% | V0-GAR-03 auto-revert |
+| Canary hold or rollback time | under 15 min | V0-REL-03 daily canary and V1-REL-01 soak with health signals |
+| Postmortem action items closed | at least 90% | TODO(suraj): no item yet |
+| Open recurring failure classes | 0 | V1-TST-04 failure classes and recurrence |
+| Fuzz finding turnaround | under 24 h | V1-REC-03 and V1-REC-04 fuzzing |
+| Intervention rate | falling every month | TODO(suraj): no item yet |
+| Revert precision | at least 90% | V1-GAR-02 revert precision tracking |
 | CI cost per landed change | measured against the V0-ORG-04 ceiling | V0-ORG-04 compute ceiling and billing data |

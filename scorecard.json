@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-04T16:49:47Z",
+  "generated_at": "2026-10-04T16:57:51Z",
   "not_measured": [
     {
       "detail": "",
@@ -35,7 +35,7 @@
       "target": "0",
       "unit": "",
       "value": null,
-      "waiting_on": "v1 quarantine with expiry"
+      "waiting_on": "V1-TST-01 flake quarantine with expiry"
     },
     {
       "detail": "",
@@ -44,7 +44,7 @@
       "target": "at least 90% (P3+)",
       "unit": "",
       "value": null,
-      "waiting_on": "V0-RBE-01 executor reporting reused actions"
+      "waiting_on": "V0-RBE-02 action cache with hit counters (V1-RBE-01 shared cache)"
     },
     {
       "detail": "",
@@ -53,7 +53,7 @@
       "target": "100% of deterministic targets",
       "unit": "",
       "value": null,
-      "waiting_on": "remote-build digest comparison"
+      "waiting_on": "V1-TCH-01 reproducibility check"
     },
     {
       "detail": "",
@@ -62,7 +62,7 @@
       "target": "100%",
       "unit": "",
       "value": null,
-      "waiting_on": "quirq-ai/sync"
+      "waiting_on": "V0-SYN-03 pin check and V1-SYN-01 mirroring policy"
     },
     {
       "detail": "",
@@ -80,7 +80,7 @@
       "target": "under 10 min",
       "unit": "",
       "value": null,
-      "waiting_on": "release rollback drill"
+      "waiting_on": "V0-REL-02 channel rollback and its drill"
     },
     {
       "detail": "",
@@ -98,7 +98,7 @@
       "target": "under 15 min",
       "unit": "",
       "value": null,
-      "waiting_on": "V0-REL-03 and health signals"
+      "waiting_on": "V0-REL-03 daily canary and V1-REL-01 soak with health signals"
     },
     {
       "detail": "",
@@ -107,7 +107,7 @@
       "target": "at least 90%",
       "unit": "",
       "value": null,
-      "waiting_on": "postmortem tracking (v1)"
+      "waiting_on": "TODO(suraj): no item yet"
     },
     {
       "detail": "",
@@ -116,7 +116,7 @@
       "target": "0",
       "unit": "",
       "value": null,
-      "waiting_on": "v1 failure classes"
+      "waiting_on": "V1-TST-04 failure classes and recurrence"
     },
     {
       "detail": "",
@@ -125,7 +125,7 @@
       "target": "under 24 h",
       "unit": "",
       "value": null,
-      "waiting_on": "v1 fuzzers"
+      "waiting_on": "V1-REC-03 and V1-REC-04 fuzzing"
     },
     {
       "detail": "",
@@ -134,7 +134,7 @@
       "target": "falling every month",
       "unit": "",
       "value": null,
-      "waiting_on": "GitHub PR data (scorecard v1)"
+      "waiting_on": "TODO(suraj): no item yet"
     },
     {
       "detail": "",
@@ -143,7 +143,7 @@
       "target": "at least 90%",
       "unit": "",
       "value": null,
-      "waiting_on": "V0-GAR-03 auto-revert"
+      "waiting_on": "V1-GAR-02 revert precision tracking"
     },
     {
       "detail": "",
@@ -241,7 +241,7 @@
         "waiting_on": "V0-GAT-04 records queue-entry time on gate runs"
       },
       {
-        "detail": "14 post-submit commits",
+        "detail": "15 post-submit commits",
         "extra": {},
         "name": "Main-red time",
         "target": "under 60 min/week",
@@ -250,7 +250,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 61 runs passed only on retry",
+        "detail": "0 of 65 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -268,7 +268,7 @@
         "waiting_on": "gate runs in the store"
       },
       {
-        "detail": "14 of 14 postsubmit runs passed",
+        "detail": "15 of 15 postsubmit runs passed",
         "extra": {},
         "name": "Post-submit runs passed",
         "target": "measured",
@@ -277,7 +277,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "47 of 47 presubmit runs passed",
+        "detail": "50 of 50 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
@@ -286,7 +286,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "of 61 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 65 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -379,7 +379,7 @@
       }
     ]
   },
-  "since": "2026-09-27T16:49:47Z",
+  "since": "2026-09-27T16:57:51Z",
   "skipped": 0,
-  "until": "2026-10-04T16:49:47Z"
+  "until": "2026-10-04T16:57:51Z"
 }
