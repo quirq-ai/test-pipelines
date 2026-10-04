@@ -1,0 +1,1 @@
+{"duration_s":null,"expected":true,"file":"","message":"","metrics":{},"raw":"<testcase classname=\"qq\" name=\"test (node-app)\" />","run_id":"github/quirq-ai/innernet/37232790675/1/innernet-presubmit","schema":"quirq-results/1","source":"results/qq/node-app.xml","status":"PASS","test_id":"qq::test (node-app)"}
