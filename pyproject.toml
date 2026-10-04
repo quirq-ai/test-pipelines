@@ -8,6 +8,8 @@ version = "0.1.0"
 description = "Test results, verdicts and failure records for quirq infra (qq)."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = []
 
 [project.optional-dependencies]
