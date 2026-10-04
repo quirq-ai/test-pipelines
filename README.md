@@ -185,8 +185,17 @@ exonerated; if `setup` fails to restore the change, the step fails. The base is 
 commit without this change: for a pull request or a merge-queue entry, the tested merge commit's
 first parent; for a push, the commit before it. When the target branch's commit (base_sha)
 differs, the test must also fail there: a failure is exonerated only if it fails at every base.
-So neither a fix queued ahead nor a rebase queue (whose first parent is the PR's own earlier
-commit) can exonerate a regression. The rerun command comes from the builder, so the core never names a runner;
+That stops a fix queued ahead from exonerating a regression in a merge-commit queue, and a
+rebase queue's PR whose earlier commit broke the test while main passes. It does not cover a
+rebase queue where an entry ahead fixes the test and the PR's own earlier commit breaks it
+again: both bases fail, and the real base (the entries ahead without any of the PR's commits)
+is not derivable from the event. So a merge-queue entry is compared with base only when its
+tested commit is a merge (a merge-commit queue) or has one parent that is base_sha (a squash,
+or a one-commit rebase, with nothing queued ahead). Any other queue entry, one parent that is
+not base_sha, which includes a squash queue with entries ahead, is not compared, and its
+still-failing tests stay UNEXPECTED ("rebase-method queue: base not derivable"). An explicit
+`base` skips this check. TODO(expert): derive the base from the PR's commits once the org's
+merge queue and merge method are decided (ORG-03). The rerun command comes from the builder, so the core never names a runner;
 `$QQ_RETRY_TESTS` lists the failed test ids for a command that can select them. CI proves the
 done-when with `tools/planted_demo.sh`: the planted failure is exonerated, and changes that break
 a test or the code under it still block. "Through the gate" waits for the merge queue (V0-ORG-03).

@@ -208,16 +208,26 @@ def _queue_run(repo, tmp_path, target):
                           "change": Change(repo="o/x", number=2, base_sha=target).to_dict()})
 
 
+def queue_merge(repo, ahead, cases):
+    """Check out what a merge-commit queue tests: merge(ahead, a PR commit) holding `cases`."""
+    (repo / "cases.txt").write_text(cases)
+    git(repo, "add", "-A")
+    tree = git(repo, "write-tree")
+    pr = git(repo, "commit-tree", tree, "-p", ahead, "-m", "the PR")
+    git(repo, "reset", "-q", "--hard", git(repo, "commit-tree", tree, "-p", ahead, "-p", pr,
+                                           "-m", "merge queue entry"))
+
+
 def test_a_fix_queued_ahead_cannot_exonerate_a_change_that_breaks_the_test_again(tmp_path, state):
     # Main is red on t::add; fix A is queued ahead; entry B breaks t::add again. The queue tests
     # merge(A, B); its base_sha is main, where t::add also fails, and its first parent is A.
     repo, main = repo_with(tmp_path, "t::add fail\n", "t::add pass\n")    # HEAD is fix A
-    (repo / "cases.txt").write_text("t::add fail\n")
-    git(repo, "commit", "-q", "-am", "entry B")
+    queue_merge(repo, git(repo, "rev-parse", "HEAD"), "t::add fail\n")
     run = _queue_run(repo, tmp_path, main)
     assert retry.candidate_bases(run) == [f"{run.commit}^1", main]
     path, b = sink.sink(run, ["results/*.xml"], repo, tmp_path / "out", rerun_cmd=CMD)
     assert statuses(b) == {"t::add": "UNEXPECTED"} and not b.verdict.passed
+    assert "passes without it" in b.verdict.tests[0].reason
 
 
 def test_a_rebase_queue_cannot_exonerate_a_pr_whose_earlier_commit_broke_the_test(tmp_path, state):
@@ -230,6 +240,7 @@ def test_a_rebase_queue_cannot_exonerate_a_pr_whose_earlier_commit_broke_the_tes
     path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
                         tmp_path / "out", rerun_cmd=CMD)
     assert statuses(b) == {"t::add": "UNEXPECTED"}
+    assert retry.REBASE_QUEUE in b.verdict.tests[0].reason   # AUDIT-R4: refused before any base
 
 
 def test_a_failure_at_every_base_is_still_exonerated(tmp_path, state):
@@ -241,10 +252,8 @@ def test_a_failure_at_every_base_is_still_exonerated(tmp_path, state):
 
 
 def test_two_distinct_bases_both_run(tmp_path, state):
-    repo, main = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")    # HEAD is c1
-    (repo / "other.txt").write_text("x")
-    git(repo, "add", "-A")
-    git(repo, "commit", "-q", "-m", "c2")
+    repo, main = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")    # HEAD is A, ahead
+    queue_merge(repo, git(repo, "rev-parse", "HEAD"), "t::add fail\n")
     path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
                         tmp_path / "out", rerun_cmd=CMD)
     assert statuses(b) == {"t::add": "EXONERATED"}
@@ -255,10 +264,83 @@ def test_two_distinct_bases_both_run(tmp_path, state):
 
 def test_a_second_base_that_cannot_be_checked_out_never_exonerates(tmp_path, state):
     repo, _ = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")
+    queue_merge(repo, git(repo, "rev-parse", "HEAD"), "t::add fail\n")
     path, b = sink.sink(_queue_run(repo, tmp_path, "0" * 40), ["results/*.xml"], repo,
                         tmp_path / "out", rerun_cmd=CMD)
     assert statuses(b) == {"t::add": "UNEXPECTED"} and "base comparison failed" in b.verdict.reason
     assert (tmp_path / "out" / "qq-results-local_o_x_r1_base").is_dir()   # the first base is kept
+
+
+# --- a rebase-method queue never exonerates (AUDIT-R4) ----------------------------------------
+
+def test_a_rebase_queue_cannot_exonerate_when_a_fix_ahead_is_undone_by_the_prs_earlier_commit(
+        tmp_path, state):
+    # The auditor's case: main is red on t::add; fix A is queued ahead; the PR's c1 breaks t::add
+    # again and c2 is unrelated. A rebase queue tests c2: its first parent c1 fails and so does
+    # main (base_sha), so comparing with both would exonerate. The tree to compare with is A.
+    repo, main = repo_with(tmp_path, "t::add fail\n", "t::add pass\n")    # HEAD is fix A
+    (repo / "cases.txt").write_text("t::add fail\n")
+    git(repo, "commit", "-q", "-am", "c1")
+    (repo / "other.txt").write_text("x")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "c2")
+    path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
+                        tmp_path / "out", rerun_cmd=CMD)
+    assert statuses(b) == {"t::add": "UNEXPECTED"} and not b.verdict.passed
+    assert b.verdict.tests[0].reason == f"still fails on retry; not compared with base: {retry.REBASE_QUEUE}"
+    assert b.verdict.reason.endswith(f"not compared with base: {retry.REBASE_QUEUE}")
+    assert b.verdict.inputs == ["local/o/x/r1/retry1"]                  # no base was run
+
+
+def test_a_squash_queue_with_entries_ahead_looks_like_a_rebase_queue(tmp_path, state):
+    # One parent (the entry ahead) that is not base_sha: the same shape as a rebase queue's
+    # one-commit PR, and nothing in the commit tells them apart, so it is not compared either.
+    repo, main = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")    # HEAD is entry A
+    (repo / "other.txt").write_text("x")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "squashed PR")
+    path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
+                        tmp_path / "out", rerun_cmd=CMD)
+    assert statuses(b) == {"t::add": "UNEXPECTED"} and retry.REBASE_QUEUE in b.verdict.reason
+
+
+def test_a_queue_entry_without_base_sha_is_not_compared(tmp_path, state):
+    repo, _ = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")
+    path, b = sink.sink(_queue_run(repo, tmp_path, ""), ["results/*.xml"], repo,
+                        tmp_path / "out", rerun_cmd=CMD)
+    assert statuses(b) == {"t::add": "UNEXPECTED"} and retry.REBASE_QUEUE in b.verdict.reason
+
+
+def test_an_explicit_base_skips_the_queue_check(tmp_path, state):
+    repo, main = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")
+    (repo / "other.txt").write_text("x")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "c2")
+    path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
+                        tmp_path / "out", rerun_cmd=CMD, base_commit=main)
+    assert statuses(b) == {"t::add": "EXONERATED"}
+
+
+def test_a_merge_commit_queue_in_a_shallow_checkout_fetches_the_parents(tmp_path, state):
+    origin, main = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")
+    queue_merge(origin, git(origin, "rev-parse", "HEAD"), "t::add fail\n")
+    repo = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{origin}", str(repo)],
+                   check=True)
+    path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
+                        tmp_path / "out", rerun_cmd=CMD)
+    assert statuses(b) == {"t::add": "EXONERATED"}
+    assert [i.rsplit("/", 1)[1] for i in b.verdict.inputs] == [
+        "retry1", "base", "base-run2", "base2", "base2-run2"]
+
+
+def test_a_tested_commit_whose_parents_cannot_be_read_never_exonerates(tmp_path, state):
+    repo, main = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")
+    run = _queue_run(repo, tmp_path, main)
+    run = Run.from_dict({**run.to_dict(), "commit": "0" * 40})
+    path, b = sink.sink(run, ["results/*.xml"], repo, tmp_path / "out", rerun_cmd=CMD)
+    assert statuses(b) == {"t::add": "UNEXPECTED"}
+    assert "cannot read the tested commit's parents" in b.verdict.reason
 
 
 # --- the base side runs as often as the change side (AUDIT-S1) --------------------------------

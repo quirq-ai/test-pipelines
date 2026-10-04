@@ -51,11 +51,24 @@ fail there too: a failure is exonerated only if it fails at every base. That kee
 closed: an entry queued ahead that fixes the test (base_sha fails, the first parent passes), and a
 rebase queue testing a PR's last commit (the first parent is the PR's own earlier commit, which
 fails; base_sha passes).
-One case stays open: in a rebase queue where an entry ahead fixes the test and the PR's own
-earlier commit breaks it again, both bases fail, so the failure is exonerated. Neither base is
-"the entries ahead without this PR"; that tree is the queue commit minus all of the PR's commits.
+One case is not closed by that: in a rebase queue where an entry ahead fixes the test and the
+PR's own earlier commit breaks it again, both bases fail. Neither base is "the entries ahead
+without this PR"; that tree is the queue commit minus all of the PR's commits. So a gate run
+(a merge-queue entry) is compared with base only when its tested commit shows the queue cannot
+be rebasing a multi-commit PR:
+
+    two or more parents (a merge-commit queue)    compared; the first parent is the entries ahead
+    one parent, which is base_sha (squash or      compared; the parent is the entries ahead (none)
+      rebase of one commit, nothing queued ahead)
+    one parent that is not base_sha, or no        not compared: still-failing tests stay
+      base_sha (rebase queue; also a squash         UNEXPECTED ("rebase-method queue: base not
+      queue with entries ahead, which looks         derivable")
+      the same)
+
+An explicit base (the caller's `base`) is taken as given and skips this check.
 TODO(expert): derive that base (the PR's commit count, from the queue branch's pr-<n> ref) once
-the org's merge queue and its merge method are decided (ORG-03).
+the org's merge queue and its merge method are decided (ORG-03). The count alone is not enough:
+a squash queue adds one commit whatever the PR holds, and the payload does not name the method.
 """
 from __future__ import annotations
 
@@ -68,10 +81,12 @@ from pathlib import Path
 
 from qqresults import bundle, junit, verdict
 from qqresults.errors import Error
-from qqresults.model import CaseVerdict, Result, Run, Status, Verdict, VerdictStatus
+from qqresults.model import CaseVerdict, Result, Run, RunKind, Status, Verdict, VerdictStatus
 from qqresults.policy import Policy
 
 Runner = Callable[[str, Path, dict[str, str]], int | None]   # None counts as 0
+
+REBASE_QUEUE = "rebase-method queue: base not derivable (TODO(expert), ORG-03)"
 
 
 class RetryError(Error):
@@ -132,7 +147,8 @@ def _passed(test_id: str, results: list[Result]) -> bool:
 
 
 def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
-           bases: list[bundle.Bundle], base_error: str = "", not_retried: str = "") -> Verdict:
+           bases: list[bundle.Bundle], base_error: str = "", not_retried: str = "",
+           not_compared: str = "") -> Verdict:
     first = verdict.compute(run, results)
     if not results or not run.results_found:
         return first
@@ -173,7 +189,9 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value,
                                      "no result without the change (a new test, or no signal)"))
         else:
-            why = f"could not run without the change: {base_error}" if base_error else "not compared with base"
+            why = (f"could not run without the change: {base_error}" if base_error else
+                   f"not compared with base: {not_compared}" if not_compared else
+                   "not compared with base")
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, f"still fails on retry; {why}"))
     counts = dict(first.counts)
     counts.pop(VerdictStatus.UNEXPECTED.value, None)
@@ -185,6 +203,8 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
         reason = f"{reason}; base comparison failed: {base_error}".lstrip("; ")
     if not_retried:
         reason = f"{reason}; not retried: {not_retried}".lstrip("; ")
+    if not_compared:
+        reason = f"{reason}; not compared with base: {not_compared}".lstrip("; ")
     return Verdict(run_id=run.id, passed=unexpected == 0, counts=dict(sorted(counts.items())),
                    tests=tests, reason=reason,
                    inputs=[b.run.id for b in retries + bases])
@@ -219,8 +239,14 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
         if not remaining:
             break
     bases: list[bundle.Bundle] = []
-    base_error = ""
-    if remaining and policy.compare_with_base:
+    base_error = not_compared = ""
+    if remaining and policy.compare_with_base and not base_commit and run.kind == RunKind.GATE.value:
+        try:
+            if not queue_base_derivable(run, cwd):
+                not_compared = REBASE_QUEUE
+        except RetryError as e:              # cannot tell: never exonerate without knowing
+            base_error = f"cannot read the tested commit's parents: {e}"
+    if remaining and policy.compare_with_base and not (base_error or not_compared):
         commits = [base_commit] if base_commit else candidate_bases(run)
         if not commits:
             base_error = "no base commit known"
@@ -233,7 +259,23 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
             except RetryError as e:   # keep the run and its retries; never exonerate without data
                 base_error = str(e)
                 break
-    return Rechecked(decide(run, results, retries, bases, base_error), retries, bases)
+    return Rechecked(decide(run, results, retries, bases, base_error, not_compared=not_compared),
+                     retries, bases)
+
+
+def queue_base_derivable(run: Run, cwd: Path) -> bool:
+    """Whether a merge-queue entry's first parent is the entries ahead without it: the tested
+    commit is a merge (a merge-commit queue), or its one parent is base_sha (nothing queued
+    ahead, one commit added). Anything else may be a rebase queue (see the module docstring)."""
+    try:
+        git(cwd, "cat-file", "-e", f"{run.commit}^1^{{commit}}")
+    except RetryError:   # a shallow checkout: fetch the commit with its parents
+        git(cwd, "fetch", "--quiet", "--depth", "2", "origin", run.commit)
+    parents = git(cwd, "rev-list", "--parents", "-n", "1", run.commit).split()[1:]
+    if not parents:
+        raise RetryError(f"{run.commit[:12]} has no parents")
+    target = run.change.base_sha if run.change else ""
+    return len(parents) > 1 or (bool(target) and parents[0] == (_resolve(cwd, target) or target))
 
 
 def candidate_bases(run: Run) -> list[str]:
