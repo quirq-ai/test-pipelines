@@ -1,7 +1,9 @@
 """qqresults: test results, verdicts and failure records for quirq infra (qq).
 
     qqresults sink --junit GLOB [--junit GLOB ...] --out DIR [--backend github|local] [--kind K]
-        Normalize this job's JUnit reports into one write-once run bundle under DIR.
+                   [--rerun CMD [--base SHA] [--infra-config PATH]] [--fail-on-verdict]
+        Normalize this job's JUnit reports into one write-once run bundle under DIR; with
+        --rerun, retry failed tests and compare them with base first (V0-TST-03).
     qqresults show BUNDLE_DIR [--json]
         Print a bundle's verdict.
     qqresults import --store DIR BUNDLE_DIR...
@@ -22,7 +24,7 @@ import os
 import sys
 from pathlib import Path
 
-from qqresults import __version__, backends, bundle, scorecard, sink, store
+from qqresults import __version__, backends, bundle, policy, scorecard, sink, store
 from qqresults.errors import Error
 from qqresults.model import RunKind
 
@@ -39,14 +41,22 @@ def _run(args):
 
 def cmd_sink(args) -> int:
     run = _run(args)
-    path, b = sink.sink(run, args.junit, Path(args.root).resolve(), Path(args.out))
+    pol = policy.from_infra_config(Path(args.infra_config)) if args.infra_config else policy.Policy()
+    if args.retries is not None:
+        pol = policy.Policy(retry_failed=args.retries, compare_with_base=pol.compare_with_base)
+    if args.no_base:
+        pol = policy.Policy(retry_failed=pol.retry_failed, compare_with_base=False)
+    path, b = sink.sink(run, args.junit, Path(args.root).resolve(), Path(args.out),
+                        rerun_cmd=args.rerun or "", policy=pol, base_commit=args.base or "")
     v = b.verdict
     print(f"run {run.id} ({run.kind}): {len(b.results)} result(s) -> {path}")
     print(f"verdict: {'PASS' if v.passed else 'FAIL'} {v.counts} {v.reason}".rstrip())
+    for t in v.tests:
+        print(f"  {t.status:<10} {t.test_id}  {t.reason}".rstrip())
     if args.github_output:
         with open(args.github_output, "a", encoding="utf-8") as f:
             f.write(f"bundle={path}\nname={path.name}\npassed={str(v.passed).lower()}\n")
-    return 0
+    return 1 if args.fail_on_verdict and not v.passed else 0
 
 
 def cmd_show(args) -> int:
@@ -154,6 +164,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--name", default="", help="tells apart several sinks in one job")
     s.add_argument("--repo", help="local backend: owner/name")
     s.add_argument("--commit", help="local backend: the commit tested")
+    s.add_argument("--rerun", metavar="CMD",
+                   help="retry failed tests with this shell command, then compare with base "
+                        "(it writes JUnit to $QQ_JUNIT_DIR; $QQ_RETRY_TESTS lists the failed ids)")
+    s.add_argument("--base", help="the base commit for --rerun (default: the run's base)")
+    s.add_argument("--infra-config", metavar="PATH",
+                   help="read retry policy from this infra-config checkout's flakes.toml")
+    s.add_argument("--retries", type=int, help="override flakes.toml retry_failed")
+    s.add_argument("--no-base", action="store_true", help="do not compare with base")
+    s.add_argument("--fail-on-verdict", action="store_true",
+                   help="exit 1 when the verdict fails (use when the sink decides the check)")
     s.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"),
                    help=argparse.SUPPRESS)
     s.set_defaults(func=cmd_sink)

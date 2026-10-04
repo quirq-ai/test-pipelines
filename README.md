@@ -36,7 +36,7 @@ Add the sink after the test steps of any builder, pinned by commit:
 ```
 
 It normalizes every JUnit report into `Result` records, computes the run's `Verdict`, and keeps the
-bundle (`run.json`, `results.jsonl`, `verdict.json`) as a workflow artifact named
+bundle (`run.json`, `results.jsonl`, `verdict.json`, in a directory) as a workflow artifact named
 `qq-results-<run id>`. The run kind comes from the event: `merge_group` is `gate`,
 `pull_request` is `presubmit`, a push to the default branch is `postsubmit`. A job with no reports
 still stores a run, marked as having no results and failing, because a missing signal is not a
@@ -81,13 +81,38 @@ broke before its tests) is red only when the job itself failed, and a cancelled 
 superseded by a newer push, is not counted. The sink records the job's status for this. Every other plan §8 metric is
 listed as not measured, with the item that will measure it; nothing unmeasured shows as zero.
 
+## Retry, then compare with base (V0-TST-03)
+
+Give the sink a rerun command and let its verdict decide the check:
+
+```yaml
+- run: python -m pytest --junitxml=results/junit.xml   # the adapter's own test command
+  continue-on-error: true
+- uses: quirq-ai/test-pipelines/sink@<commit>
+  if: always()
+  with:
+    junit: results/*.xml
+    rerun: python -m pytest --junitxml="$QQ_JUNIT_DIR/rerun.xml"
+    infra-config: .qq/infra-config    # retry_failed and compare_with_base from flakes.toml
+    fail-on-verdict: "true"
+```
+
+Failed tests are rerun with the change (`retry_failed` times, default 1). Those that still fail
+are rerun at the base commit, in a git worktree. A test that passes on a retry is FLAKY, one
+that also fails on base is EXONERATED, and only a failure that passes without the change (or
+that has no base result, such as a new test) is UNEXPECTED and fails the change. The retry and
+base runs are stored too, linked to the run by `parent` and listed in the verdict's `inputs`.
+The rerun command comes from the builder, so the core never names a runner;
+`$QQ_RETRY_TESTS` lists the failed test ids for a command that can select them. CI proves the
+done-when with `tools/planted_demo.sh`. "Through the gate" waits for the merge queue (V0-ORG-03).
+
 ## v0 status
 
 | Item | What | PR | State |
 |---|---|---|---|
 | V0-TST-01 | Result schema and JUnit sink | #2 | merged |
-| V0-TST-02 | Results store v0 and scorecard v0 | #3 | in review |
-| V0-TST-03 | Verdict: retry, then compare with base | | not started |
+| V0-TST-02 | Results store v0 and scorecard v0 | #3 | merged |
+| V0-TST-03 | Verdict: retry, then compare with base | #4 | in review |
 | V0-TST-04 | Failure records with issue mirror | | not started |
 
 ## Working here

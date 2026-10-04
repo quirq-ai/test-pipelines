@@ -6,10 +6,14 @@
 #     with:
 #       junit: results/*.xml
 #
-# It writes one run bundle (run, results, verdict) and keeps it as a workflow artifact named
-# after the run, which the results store imports (V0-TST-02). It never fails the job for failing
-# tests; it fails only when a report is not JUnit XML. A job with no reports still stores a run,
-# marked as having no results, because a missing signal is not a pass.
+# It writes the run's bundle (run, results, verdict) and keeps it as a workflow artifact named
+# after the run, which the results store imports (V0-TST-02). A job with no reports still stores
+# a run, marked as having no results, because a missing signal is not a pass.
+#
+# By default it never fails the job for failing tests, only when a report is not JUnit XML.
+# With `rerun` (V0-TST-03) it retries failed tests and compares them with base, storing those
+# runs too; with `fail-on-verdict: "true"` the final verdict decides the job, so the test step
+# itself should use `continue-on-error: true`.
 name: qq result sink
 description: Store this job's JUnit test results as a quirq infra results bundle.
 inputs:
@@ -26,13 +30,32 @@ inputs:
     description: Override the run kind (presubmit, gate, postsubmit, canary, other).
     required: false
     default: ""
+  rerun:
+    description: >-
+      A shell command that reruns tests, writing JUnit XML to $QQ_JUNIT_DIR ($QQ_RETRY_TESTS
+      lists the failed test ids). Failed tests are retried, then compared with base; only
+      failures that pass without the change fail the verdict.
+    required: false
+    default: ""
+  base:
+    description: The base commit for rerun (default the run's base, from the event).
+    required: false
+    default: ""
+  infra-config:
+    description: Path of an infra-config checkout whose flakes.toml sets the retry policy.
+    required: false
+    default: ""
+  fail-on-verdict:
+    description: Set to "true" to fail when the verdict fails, so the sink decides the check.
+    required: false
+    default: "false"
   retention-days:
     description: How long GitHub keeps the bundle artifact. TODO(expert) long-term storage.
     required: false
     default: "90"
 outputs:
   bundle:
-    description: Path of the bundle directory.
+    description: Path of the run's bundle directory.
     value: ${{ steps.sink.outputs.bundle }}
   passed:
     description: "\"true\" when the run's verdict passed."
@@ -47,13 +70,18 @@ runs:
         QQ_NAME: ${{ inputs.name }}
         QQ_KIND: ${{ inputs.kind }}
         QQ_JOB_STATUS: ${{ job.status }}
+        QQ_RERUN: ${{ inputs.rerun }}
+        QQ_BASE: ${{ inputs.base }}
+        QQ_INFRA_CONFIG: ${{ inputs.infra-config }}
       run: |
         set -euo pipefail
         python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || {
           echo "::error::qq result sink needs Python 3.11 or newer as python3 (actions/setup-python)"; exit 1; }
         venv="$RUNNER_TEMP/qqresults-venv"
-        python3 -m venv "$venv"
-        "$venv/bin/python" -m pip install --quiet --disable-pip-version-check "$GITHUB_ACTION_PATH/.."
+        [ -x "$venv/bin/qqresults" ] || {
+          python3 -m venv "$venv"
+          "$venv/bin/python" -m pip install --quiet --disable-pip-version-check "$GITHUB_ACTION_PATH/.."
+        }
         args=()
         while IFS= read -r glob; do
           [ -n "$glob" ] && args+=(--junit "$glob")
@@ -61,10 +89,22 @@ runs:
         [ ${#args[@]} -gt 0 ] || { echo "::error::qq result sink: the junit input is empty"; exit 1; }
         [ -z "$QQ_NAME" ] || args+=(--name "$QQ_NAME")
         [ -z "$QQ_KIND" ] || args+=(--kind "$QQ_KIND")
-        "$venv/bin/qqresults" sink "${args[@]}" --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/qq-results"
+        [ -z "$QQ_RERUN" ] || args+=(--rerun "$QQ_RERUN")
+        [ -z "$QQ_BASE" ] || args+=(--base "$QQ_BASE")
+        [ -z "$QQ_INFRA_CONFIG" ] || args+=(--infra-config "$QQ_INFRA_CONFIG")
+        out=$(mktemp -d "$RUNNER_TEMP/qq-results.XXXXXX")
+        echo "out=$out" >> "$GITHUB_OUTPUT"
+        "$venv/bin/qqresults" sink "${args[@]}" --root "$GITHUB_WORKSPACE" --out "$out"
     - uses: actions/upload-artifact@v7
+      if: always() && steps.sink.outputs.name != ''
       with:
         name: ${{ steps.sink.outputs.name }}
-        path: ${{ steps.sink.outputs.bundle }}
+        path: ${{ steps.sink.outputs.out }}
         retention-days: ${{ inputs.retention-days }}
         if-no-files-found: error
+    - name: verdict
+      if: inputs.fail-on-verdict == 'true' && steps.sink.outputs.passed != 'true'
+      shell: bash
+      run: |
+        echo "::error::the test verdict failed after retries and the base comparison; see the sink step"
+        exit 1
