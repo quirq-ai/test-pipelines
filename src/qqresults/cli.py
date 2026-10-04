@@ -47,7 +47,8 @@ def cmd_sink(args) -> int:
     if args.no_base:
         pol = policy.Policy(retry_failed=pol.retry_failed, compare_with_base=False)
     path, b = sink.sink(run, args.junit, Path(args.root).resolve(), Path(args.out),
-                        rerun_cmd=args.rerun or "", policy=pol, base_commit=args.base or "")
+                        rerun_cmd=args.rerun or "", policy=pol, base_commit=args.base or "",
+                        setup=args.setup or "")
     v = b.verdict
     print(f"run {run.id} ({run.kind}): {len(b.results)} result(s) -> {path}")
     print(f"verdict: {'PASS' if v.passed else 'FAIL'} {v.counts} {v.reason}".rstrip())
@@ -168,6 +169,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="retry failed tests with this shell command, then compare with base "
                         "(it writes JUnit to $QQ_JUNIT_DIR; $QQ_RETRY_TESTS lists the failed ids)")
     s.add_argument("--base", help="the base commit for --rerun (default: the run's base)")
+    s.add_argument("--setup", metavar="CMD",
+                   help="prepares a checkout for --rerun: runs in the base worktree before its "
+                        "tests and in the change's checkout after ($QQ_SIDE says which)")
     s.add_argument("--infra-config", metavar="PATH",
                    help="read retry policy from this infra-config checkout's flakes.toml")
     s.add_argument("--retries", type=int, help="override flakes.toml retry_failed")

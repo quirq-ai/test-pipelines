@@ -133,3 +133,31 @@ def test_policy_from_infra_config(tmp_path):
     assert policy.from_infra_config(root) == Policy(retry_failed=3, compare_with_base=False)
     with pytest.raises(policy.PolicyError, match="not an infra-config checkout"):
         policy.from_infra_config(tmp_path)
+
+
+def test_a_base_that_cannot_be_checked_out_keeps_the_runs_and_blocks(tmp_path, state):
+    repo, _ = repo_with(tmp_path, "t::p fail\n", "t::p fail\n")
+    path, b = sink_it(repo, tmp_path, "0" * 40)          # an unreachable base
+    assert not b.verdict.passed and "base comparison failed" in b.verdict.reason
+    assert "could not run without the change" in b.verdict.tests[0].reason
+    assert (tmp_path / "out" / "qq-results-local_o_x_r1_retry1").is_dir()   # retries still stored
+
+
+def test_setup_runs_on_the_base_side_then_restores_the_change(tmp_path, state):
+    repo, base = repo_with(tmp_path, "t::p fail\n", "t::p fail\n")
+    log = tmp_path / "setup.log"
+    run = first_run(repo, tmp_path)
+    checked = retry.recheck(run, sink.junit.parse_file(repo / "results/junit.xml", run.id),
+                            CMD, repo, Policy(), base,
+                            setup=f'echo "$QQ_SIDE $(basename "$PWD")" >> "{log}"')
+    assert log.read_text().splitlines() == ["base base", "change repo"]
+    assert checked.verdict.passed
+
+
+def test_a_skip_on_retry_is_not_a_pass(tmp_path):
+    run = Run(id="r", repo="o/x", kind="presubmit", commit="c")
+    results = [Result(run_id="r", test_id="t::a", status="FAIL", expected=False)]
+    skip_xml = '<testsuite name="s"><testcase classname="t" name="a"><skipped/></testcase></testsuite>'
+    cmd = f"printf '%s' '{skip_xml}' > \"$QQ_JUNIT_DIR/r.xml\""
+    checked = retry.recheck(run, results, cmd, tmp_path, Policy(compare_with_base=False))
+    assert not checked.verdict.passed and checked.verdict.tests[0].status == "UNEXPECTED"

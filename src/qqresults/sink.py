@@ -29,7 +29,8 @@ def find_reports(patterns: list[str], root: Path) -> list[Path]:
 
 
 def sink(run: Run, patterns: list[str], root: Path, out: Path, rerun_cmd: str = "",
-         policy: Policy = Policy(), base_commit: str = "") -> tuple[Path, bundle.Bundle]:
+         policy: Policy = Policy(), base_commit: str = "",
+         setup: str = "") -> tuple[Path, bundle.Bundle]:
     """Write the run's bundle under out. With rerun_cmd, failed tests are first retried and
     compared with base (retry.py), and those runs are written next to it."""
     reports = find_reports(patterns, root)
@@ -40,7 +41,7 @@ def sink(run: Run, patterns: list[str], root: Path, out: Path, rerun_cmd: str = 
     if not reports:
         run = Run.from_dict({**run.to_dict(), "results_found": False})
     if rerun_cmd:
-        checked = retry.recheck(run, results, rerun_cmd, root, policy, base_commit)
+        checked = retry.recheck(run, results, rerun_cmd, root, policy, base_commit, setup=setup)
         for extra in checked.retries + ([checked.base] if checked.base else []):
             bundle.write(extra, out)
         v = checked.verdict

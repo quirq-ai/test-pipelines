@@ -16,9 +16,18 @@ test runner. It runs through the shell with:
                      tests should run only those, and one that cannot reruns everything
                      (results for other tests are ignored)
 
+    QQ_SIDE          "change" or "base"
+
 Its exit code is ignored: failing tests are what is being measured. The base side runs in a git
-worktree of the base commit, inside the same job and environment.
+worktree of the base commit, inside the same job and environment, so the command must test the
+code in its working directory ($PWD). Anything installed into the environment (an editable
+install, a build output outside the tree) would otherwise make the base side test the change's
+code and wrongly exonerate it. For that, give a setup command: it runs in the base worktree
+before the base tests, and again in the change's checkout afterwards to restore it.
 TODO(expert): run the base side hermetically once remote-build provides executors (V0-RBE-01).
+
+In the merge queue the base is the target branch, not the queue entry ahead of the change, so a
+failure from an earlier queued change counts against this one. That errs towards blocking.
 """
 from __future__ import annotations
 
@@ -52,14 +61,15 @@ def git(cwd: Path, *args: str) -> str:
     return p.stdout.strip()
 
 
-def run_tests(cmd: str, cwd: Path, tests: list[str], run: Run, runner: Runner = shell) -> list[Result]:
+def run_tests(cmd: str, cwd: Path, tests: list[str], run: Run, runner: Runner = shell,
+              side: str = "change") -> list[Result]:
     """Run cmd once in cwd and return its results for `tests`."""
     with tempfile.TemporaryDirectory(prefix="qq-retry-") as tmp:
         out = Path(tmp) / "junit"
         out.mkdir()
         listing = Path(tmp) / "tests.txt"
         listing.write_text("".join(t + "\n" for t in tests), encoding="utf-8")
-        runner(cmd, cwd, {"QQ_JUNIT_DIR": str(out), "QQ_RETRY_TESTS": str(listing)})
+        runner(cmd, cwd, {"QQ_JUNIT_DIR": str(out), "QQ_RETRY_TESTS": str(listing), "QQ_SIDE": side})
         wanted = set(tests)
         results = []
         for path in sorted(out.rglob("*.xml")):
@@ -75,16 +85,22 @@ def child_run(parent: Run, role: str, n: int = 0, commit: str = "") -> Run:
                           "results_found": True})
 
 
+def _passed(test_id: str, results: list[Result]) -> bool:
+    """The test has results here and all of them are expected (a skip alone is not a pass)."""
+    rs = [r for r in results if r.test_id == test_id]
+    return bool(rs) and verdict.test_status(rs) is VerdictStatus.EXPECTED and any(
+        r.status == "PASS" for r in rs)
+
+
 def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
-           base: bundle.Bundle | None) -> Verdict:
+           base: bundle.Bundle | None, base_error: str = "") -> Verdict:
     first = verdict.compute(run, results)
     if not results or not run.results_found:
         return first
     tests = []
     for case in first.tests:
         t = case.test_id
-        passed_on = next((i for i, b in enumerate(retries, 1)
-                          if any(r.test_id == t and r.expected for r in b.results)), None)
+        passed_on = next((i for i, b in enumerate(retries, 1) if _passed(t, b.results)), None)
         base_rs = [r for r in base.results if r.test_id == t] if base else []
         if passed_on:
             tests.append(CaseVerdict(t, VerdictStatus.FLAKY.value, f"passed on retry {passed_on}"))
@@ -98,15 +114,18 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value,
                                      "no result without the change (a new test, or no signal)"))
         else:
-            tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value,
-                                     "still fails on retry; not compared with base"))
+            why = f"could not run without the change: {base_error}" if base_error else "not compared with base"
+            tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, f"still fails on retry; {why}"))
     counts = dict(first.counts)
     counts.pop(VerdictStatus.UNEXPECTED.value, None)
     for c in tests:
         counts[c.status] = counts.get(c.status, 0) + 1
     unexpected = counts.get(VerdictStatus.UNEXPECTED.value, 0)
+    reason = f"{unexpected} unexpected test(s)" if unexpected else ""
+    if base_error:
+        reason = f"{reason}; base comparison failed: {base_error}".lstrip("; ")
     return Verdict(run_id=run.id, passed=unexpected == 0, counts=dict(sorted(counts.items())),
-                   tests=tests, reason=f"{unexpected} unexpected test(s)" if unexpected else "",
+                   tests=tests, reason=reason,
                    inputs=[b.run.id for b in retries] + ([base.run.id] if base else []))
 
 
@@ -118,7 +137,7 @@ class Rechecked:
 
 
 def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy,
-            base_commit: str = "", runner: Runner = shell) -> Rechecked:
+            base_commit: str = "", runner: Runner = shell, setup: str = "") -> Rechecked:
     """Retry the failed tests, then compare the still-failing ones with base."""
     retries: list[bundle.Bundle] = []
     failing = [c.test_id for c in verdict.compute(run, results).tests
@@ -128,21 +147,28 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
     remaining = list(failing)
     for n in range(1, policy.retry_failed + 1):
         child = child_run(run, "retry", n)
-        rs = run_tests(cmd, cwd, remaining, child, runner)
+        rs = run_tests(cmd, cwd, remaining, child, runner, side="change")
         child = Run.from_dict({**child.to_dict(), "results_found": bool(rs)})
         retries.append(bundle.Bundle(child, rs, verdict.compute(child, rs)))
-        remaining = [t for t in remaining if not any(r.test_id == t and r.expected for r in rs)]
+        remaining = [t for t in remaining if not _passed(t, rs)]
         if not remaining:
             break
     base = None
+    base_error = ""
     base_commit = base_commit or run.base_commit
-    if remaining and policy.compare_with_base and base_commit:
-        base = run_on_base(run, remaining, cmd, cwd, base_commit, runner)
-    return Rechecked(decide(run, results, retries, base), retries, base)
+    if remaining and policy.compare_with_base:
+        if not base_commit:
+            base_error = "no base commit known"
+        else:
+            try:
+                base = run_on_base(run, remaining, cmd, cwd, base_commit, runner, setup)
+            except RetryError as e:   # keep the run and its retries; never exonerate without data
+                base_error = str(e)
+    return Rechecked(decide(run, results, retries, base, base_error), retries, base)
 
 
 def run_on_base(run: Run, tests: list[str], cmd: str, cwd: Path, base_commit: str,
-                runner: Runner = shell) -> bundle.Bundle:
+                runner: Runner = shell, setup: str = "") -> bundle.Bundle:
     try:
         git(cwd, "cat-file", "-e", f"{base_commit}^{{commit}}")
     except RetryError:
@@ -152,8 +178,14 @@ def run_on_base(run: Run, tests: list[str], cmd: str, cwd: Path, base_commit: st
         tree = Path(tmp) / "base"
         git(cwd, "worktree", "add", "--quiet", "--detach", str(tree), child.commit)
         try:
-            rs = run_tests(cmd, tree, tests, child, runner)
+            if setup:
+                runner(setup, tree, {"QQ_SIDE": "base"})
+            rs = run_tests(cmd, tree, tests, child, runner, side="base")
         finally:
-            git(cwd, "worktree", "remove", "--force", str(tree))
+            if setup:   # put the change's environment back for the steps after this one
+                runner(setup, cwd, {"QQ_SIDE": "change"})
+            subprocess.run(["git", "-C", str(cwd), "worktree", "remove", "--force", str(tree)],
+                           capture_output=True)
+            subprocess.run(["git", "-C", str(cwd), "worktree", "prune"], capture_output=True)
     child = Run.from_dict({**child.to_dict(), "results_found": bool(rs)})
     return bundle.Bundle(child, rs, verdict.compute(child, rs))

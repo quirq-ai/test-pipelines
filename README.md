@@ -93,6 +93,7 @@ Give the sink a rerun command and let its verdict decide the check:
   with:
     junit: results/*.xml
     rerun: python -m pytest --junitxml="$QQ_JUNIT_DIR/rerun.xml"
+    setup: python -m pip install -e .     # only if tests import installed code (see below)
     infra-config: .qq/infra-config    # retry_failed and compare_with_base from flakes.toml
     fail-on-verdict: "true"
 ```
@@ -102,9 +103,16 @@ are rerun at the base commit, in a git worktree. A test that passes on a retry i
 that also fails on base is EXONERATED, and only a failure that passes without the change (or
 that has no base result, such as a new test) is UNEXPECTED and fails the change. The retry and
 base runs are stored too, linked to the run by `parent` and listed in the verdict's `inputs`.
-The rerun command comes from the builder, so the core never names a runner;
+The base side runs in the same job, so the rerun command must test the code in its working
+directory. If the tests import installed code (an editable install, a build outside the tree),
+pass `setup`: it runs in the base worktree before the base tests and in the change's checkout
+afterwards, or the base side would test the change's code and wrongly exonerate it. If the base
+cannot be checked out, the retries are still stored and nothing is exonerated. In the merge
+queue the base is the target branch, so failures from changes queued ahead count against this
+one, which errs towards blocking. The rerun command comes from the builder, so the core never names a runner;
 `$QQ_RETRY_TESTS` lists the failed test ids for a command that can select them. CI proves the
-done-when with `tools/planted_demo.sh`. "Through the gate" waits for the merge queue (V0-ORG-03).
+done-when with `tools/planted_demo.sh`: the planted failure is exonerated, and changes that break
+a test or the code under it still block. "Through the gate" waits for the merge queue (V0-ORG-03).
 
 ## v0 status
 

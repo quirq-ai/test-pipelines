@@ -37,6 +37,13 @@ inputs:
       failures that pass without the change fail the verdict.
     required: false
     default: ""
+  setup:
+    description: >-
+      For rerun: a shell command that prepares a checkout (install or build from $PWD). It runs in
+      the base worktree before the base tests and in the change's checkout afterwards. Needed
+      whenever the tests import installed code rather than the working tree.
+    required: false
+    default: ""
   base:
     description: The base commit for rerun (default the run's base, from the event).
     required: false
@@ -72,6 +79,7 @@ runs:
         QQ_JOB_STATUS: ${{ job.status }}
         QQ_RERUN: ${{ inputs.rerun }}
         QQ_BASE: ${{ inputs.base }}
+        QQ_SETUP: ${{ inputs.setup }}
         QQ_INFRA_CONFIG: ${{ inputs.infra-config }}
       run: |
         set -euo pipefail
@@ -91,6 +99,7 @@ runs:
         [ -z "$QQ_KIND" ] || args+=(--kind "$QQ_KIND")
         [ -z "$QQ_RERUN" ] || args+=(--rerun "$QQ_RERUN")
         [ -z "$QQ_BASE" ] || args+=(--base "$QQ_BASE")
+        [ -z "$QQ_SETUP" ] || args+=(--setup "$QQ_SETUP")
         [ -z "$QQ_INFRA_CONFIG" ] || args+=(--infra-config "$QQ_INFRA_CONFIG")
         out=$(mktemp -d "$RUNNER_TEMP/qq-results.XXXXXX")
         echo "out=$out" >> "$GITHUB_OUTPUT"
