@@ -195,12 +195,24 @@ MAX_ARTIFACT_BYTES = 20 * 1024 * 1024    # zipped and unzipped; the store is a g
 MAX_ARTIFACT_FILES = 1000
 MAX_RESULTS = 50_000                     # per bundle
 FAILURE_EVENTS = ("push", "schedule", "workflow_dispatch")
+# A failure record's public copy replaces a free-text subject with this digest of it, so its id
+# (from the raw subject) cannot be recomputed; the run-origin checks still apply.
+PUBLIC_SUBJECT = re.compile(r"sha256:[0-9a-f]{16}")
+CROSS_REPO_EVENTS = FAILURE_EVENTS       # the only events a --cross-repo source's runs may have
 
 
 @dataclass(frozen=True)
 class Trust:
-    workflows: tuple[str, ...] = DEFAULT_WORKFLOWS   # globs of the workflow files that may write
+    # Globs of the workflow files that may write; empty means DEFAULT_WORKFLOWS, except for a
+    # cross_repo source, which must name its own (it has no default).
+    workflows: tuple[str, ...] = ()
     cross_repo: frozenset[str] = frozenset()         # collected repos whose runs may name another
+
+    def globs(self, repo: str) -> tuple[str, ...]:
+        if self.workflows or repo not in self.cross_repo:
+            return self.workflows or DEFAULT_WORKFLOWS
+        raise GitHubAPIError(f"{repo} is a --cross-repo source, so --workflow must name its "
+                             "trusted uploader workflow (there is no default)")
 
 
 @dataclass(frozen=True)
@@ -274,7 +286,7 @@ def _origin(repo: str, art: dict, trust: Trust, token: str, get, runs: dict,
                              f"{repo} (a fork's pull request?); only {repo}'s own runs are stored")
     path = str(run.get("path") or "").split("@", 1)[0]
     # fnmatch's * also matches /, so a glob covers subdirectories too.
-    if not any(fnmatch.fnmatchcase(path, g) for g in trust.workflows):
+    if not any(fnmatch.fnmatchcase(path, g) for g in trust.globs(repo)):
         raise GitHubAPIError(f"workflow run {run_id} is from {_short(path)}, which is not an "
                              "allowed workflow (--workflow)")
     attempts = _int(run.get("run_attempt"))
@@ -290,6 +302,12 @@ def _origin(repo: str, art: dict, trust: Trust, token: str, get, runs: dict,
     prs = run.get("pull_requests")
     numbers = tuple(_int(p.get("number")) for p in prs if isinstance(p, dict)) \
         if isinstance(prs, list) else ()
+    if repo in trust.cross_repo and (event not in CROSS_REPO_EVENTS or not on_default):
+        # A cross-repo source may name any repo, so it is held to its trusted uploader runs only.
+        raise GitHubAPIError(f"{repo} is a --cross-repo source: only its "
+                             f"{', '.join(CROSS_REPO_EVENTS)} runs of a commit on the default "
+                             f"branch are stored, not workflow run {run_id} ({event or 'unknown'} "
+                             f"of {_short(sha)} on {_short(branch)})")
     return Origin(repo=repo, run_id=run_id, attempts=attempts, event=event, path=path,
                   head_branch=branch, head_sha=sha, on_default=on_default, pull_requests=numbers)
 
@@ -299,17 +317,20 @@ def _check_bundle(origin: Origin, trust: Trust, b: bundle.Bundle) -> None:
     run = b.run
     if origin.attempt_of("run", run.id) != run.attempt:
         raise GitHubAPIError(f"run {run.id}: attempt {run.attempt} does not match its id")
-    if run.kind not in origin.kinds():
+    cross = run.repo != origin.repo
+    if cross and (origin.repo not in trust.cross_repo or run.kind != RunKind.OTHER.value
+                  or not origin.on_default):
+        raise GitHubAPIError(f"run {run.id} is for {run.repo} but was found in {origin.repo}; "
+                             "only kind 'other' from a default-branch run of a --cross-repo "
+                             "repo may name another repo")
+    # _origin held a cross-repo source to push, schedule and dispatch runs on the default branch,
+    # each of which may produce kind other.
+    if not cross and run.kind not in origin.kinds():
         where = "" if origin.on_default else " off the default branch"
         raise GitHubAPIError(f"run {run.id} claims kind {_short(run.kind)}, which a "
                              f"{origin.event or 'unknown'} run{where} cannot produce")
-    if run.repo != origin.repo:
-        if (origin.repo not in trust.cross_repo or run.kind != RunKind.OTHER.value
-                or not origin.on_default):
-            raise GitHubAPIError(f"run {run.id} is for {run.repo} but was found in {origin.repo}; "
-                                 "only kind 'other' from a default-branch run of a --cross-repo "
-                                 "repo may name another repo")
-        # It names the other repo's commit (perf measures it), which this run's head cannot vouch for.
+    if cross:
+        pass   # perf names the measured repo's commit, which this run's head cannot vouch for
     elif origin.event == "pull_request":
         # The run tests GitHub's merge of the PR, which the API does not name; the PR's head
         # must be the run's head, and the PR one GitHub links to the run when it lists any
@@ -346,7 +367,8 @@ def _check_failure(origin: Origin, path: Path) -> None:
     if f.repo != origin.repo:
         raise GitHubAPIError(f"failure {_short(f.id)} is for {_short(f.repo)} but was found in "
                              f"{origin.repo}")
-    if f.id != failures.failure_id(f.kind, f.repo, f.subject):
+    if (not (isinstance(f.subject, str) and PUBLIC_SUBJECT.fullmatch(f.subject))
+            and f.id != failures.failure_id(f.kind, f.repo, f.subject)):
         raise GitHubAPIError(f"failure {_short(f.id)}: the id does not match its kind, repo and "
                              "subject")
     origin.attempt_of(f"failure {f.id}: run", f.run_id)
@@ -419,6 +441,7 @@ def collect(repo: str, store, token: str, get=http_get,
     runs: dict[int, dict] = {}     # workflow run id -> the run, fetched once
     default: list[str] = []
     history: dict[tuple[str, str], bool] = {}   # (repo, sha) -> in the default branch's history
+    trust.globs(repo)    # a --cross-repo source without --workflow is refused before any listing
 
     def default_branch() -> str:
         if not default:

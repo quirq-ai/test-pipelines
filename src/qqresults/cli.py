@@ -102,7 +102,7 @@ def cmd_collect(args) -> int:
     gh = backends.load("github")
     st = store.open_store(args.store)
     token = os.environ.get("GITHUB_TOKEN", "")
-    trust = gh.Trust(workflows=tuple(args.workflow or gh.DEFAULT_WORKFLOWS),
+    trust = gh.Trust(workflows=tuple(args.workflow or ()),
                      cross_repo=frozenset(args.cross_repo or ()))
     failed = False
     for repo in args.repo:
@@ -278,10 +278,11 @@ def build_parser() -> argparse.ArgumentParser:
     co.add_argument("--workflow", action="append", metavar="GLOB",
                     help="only runs of workflow files matching this glob may write; repeat for "
                          "more (default: .github/workflows/qq-*.yml and "
-                         ".github/workflows/presubmit.yml)")
+                         ".github/workflows/presubmit.yml; none for a --cross-repo repo)")
     co.add_argument("--cross-repo", action="append", metavar="OWNER/NAME",
                     help="this collected repo's runs may store kind 'other' runs naming "
-                         "another repo (perf)")
+                         "another repo (perf); needs --workflow, and only its push, schedule "
+                         "and dispatch runs on the default branch are stored")
     co.add_argument("--strict", action="store_true", help="exit 1 if any artifact was skipped")
     co.set_defaults(func=cmd_collect)
 

@@ -340,12 +340,46 @@ def test_collect_refuses_a_pull_request_the_run_is_not_for(tmp_path):
         == (1, [])
 
 
-def test_cross_repo_runs_must_be_on_the_default_branch(tmp_path):
-    perf = zipped(make("github/o/perf/2/1/measure/xo", kind="other", commit="xo-sha"))
-    trust = github.Trust(workflows=(".github/workflows/perf.yml",), cross_repo=frozenset({"o/perf"}))
-    runs = [workflow_run(2, repo="o/perf", branch="side", path=".github/workflows/perf.yml")]
-    _, _, errors = _collect_zips(FileStore(tmp_path), "o/perf", [(*perf, 2)], runs, trust)
-    assert "default-branch run" in errors[0]
+PERF = github.Trust(workflows=(".github/workflows/perf.yml",), cross_repo=frozenset({"o/perf"}))
+
+
+def _perf(tmp_path, trust=PERF, compare=None, **run):
+    """Collect one perf bundle naming another repo, from a run of perf.yml (overridden by run)."""
+    b = zipped(make("github/o/perf/2/1/measure/xo", kind="other", commit="xo-sha"))
+    wr = workflow_run(2, repo="o/perf", **{"path": ".github/workflows/perf.yml", **run})
+    st = FileStore(tmp_path)
+    new, _, errors = _collect_zips(st, "o/perf", [(*b, 2)], [wr], trust, compare=compare)
+    assert len(st.runs()) == new
+    return new, errors
+
+
+def test_a_cross_repo_source_stores_its_trusted_default_branch_runs(tmp_path):
+    for event in ("push", "schedule", "workflow_dispatch"):
+        assert _perf(tmp_path / event, event=event) == (1, [])
+
+
+def test_a_cross_repo_source_needs_its_own_workflow(tmp_path):
+    # It has no default workflow globs: without --workflow, nothing of it is read.
+    with pytest.raises(github.GitHubAPIError, match="--workflow must name"):
+        _perf(tmp_path, github.Trust(cross_repo=frozenset({"o/perf"})))
+
+
+@pytest.mark.parametrize("trust,run,compare,error", [
+    # Only the workflow given for it, never the default globs.
+    (PERF, {"path": ".github/workflows/qq-x.yml"}, None, "not an allowed workflow"),
+    (PERF, {"path": ".github/workflows/presubmit.yml"}, None, "not an allowed workflow"),
+    # Only push, schedule and dispatch runs (a fork's or same-repo PR, the merge queue).
+    (PERF, {"event": "pull_request", "branch": "feature"}, None, "--cross-repo source"),
+    (PERF, {"event": "pull_request", "branch": "main"}, None, "--cross-repo source"),
+    (PERF, {"event": "merge_group"}, None, "--cross-repo source"),
+    (PERF, {"event": "pull_request_target"}, None, "--cross-repo source"),
+    # Only on the default branch, with a commit in its history.
+    (PERF, {"branch": "side"}, None, "--cross-repo source"),
+    (PERF, {"sha": "t1"}, {"t1": "ahead"}, "--cross-repo source"),
+])
+def test_a_cross_repo_source_refuses_everything_else(tmp_path, trust, run, compare, error):
+    new, errors = _perf(tmp_path, trust, compare, **run)
+    assert new == 0 and error in errors[0]
 
 
 def test_collect_refuses_unreadable_artifacts_and_keeps_going(tmp_path):
@@ -380,7 +414,8 @@ def test_one_repo_cannot_hide_anothers_run_by_taking_its_id(tmp_path):
     st = FileStore(tmp_path)
     real_id = "github/quirq-ai/xo-space/555/1/postsubmit"
     squat = zipped(make(real_id, kind="other"))                 # uploaded by quirq-ai/perf
-    trust = github.Trust(cross_repo=frozenset({"quirq-ai/perf"}))
+    trust = github.Trust(workflows=(".github/workflows/presubmit.yml",),
+                         cross_repo=frozenset({"quirq-ai/perf"}))
     new, _, errors = _collect_zips(st, "quirq-ai/perf", [(*squat, 1)],
                                    [workflow_run(1, repo="quirq-ai/perf", event="schedule")], trust)
     assert new == 0 and "does not name workflow run" in errors[0]
@@ -457,11 +492,13 @@ def test_collect_caps_artifact_size_and_results(tmp_path, monkeypatch):
 # --- failure records --------------------------------------------------------------------------
 
 def _failure_zip(tmp_path, repo="o/x", run_id="github/o/x/7/1/held-canary", subject="planted",
-                 fid=None, links=()):
+                 fid=None, links=(), public_subject=None):
     from qqresults import failures
     f = failures.new("canary-held", repo, subject, run_id=run_id)
     if fid:
         f = Failure.from_dict({**f.to_dict(), "id": fid})
+    if public_subject:     # the public copy, which keeps the id of the raw subject
+        f = Failure.from_dict({**f.to_dict(), "subject": public_subject})
     state, _ = failures.open_record(f, tmp_path)
     for field, value in links:
         failures.add_link(state.path, field, value)
@@ -477,7 +514,7 @@ DEMO = github.Trust(workflows=(".github/workflows/failure-demo.yml",))
 
 
 def _demo_run(**kw):
-    return workflow_run(7, path=".github/workflows/failure-demo.yml", **kw)
+    return workflow_run(7, **{"path": ".github/workflows/failure-demo.yml", **kw})
 
 
 def test_collect_accepts_a_failure_from_a_default_branch_run(tmp_path):
@@ -518,6 +555,29 @@ def test_collect_refuses_a_failure_from_a_tag_named_like_the_default_branch(tmp_
                                    compare={"t1": "ahead"})
     assert new == 0 and "runs of a commit on the default branch" in errors[0]
     assert st.failures() == []
+
+
+def test_a_digested_subject_skips_only_the_id_check(tmp_path):
+    art = _failure_zip(tmp_path / "f", subject="free text", public_subject="sha256:0123456789abcdef")
+    st = FileStore(tmp_path / "ok")
+    assert _collect_zips(st, "o/x", [(*art, 7)], [_demo_run()], DEMO) == (1, 0, [])
+    for name, run, kw, error in [
+            ("pr", {"event": "pull_request", "branch": "feature"}, {}, "not a pull_request run"),
+            ("tag", {"sha": "t1"}, {"compare": {"t1": "ahead"}}, "commit on the default branch"),
+            ("workflow", {"path": ".github/workflows/evil.yml"}, {}, "not an allowed workflow")]:
+        st = FileStore(tmp_path / name)
+        new, _, errors = _collect_zips(st, "o/x", [(*art, 7)], [_demo_run(**run)], DEMO, **kw)
+        assert new == 0 and error in errors[0] and st.failures() == []
+    for name, kw, error in [
+            ("run", {"run_id": "github/o/x/8/1/held-canary"}, "does not name workflow run 7"),
+            ("repo", {"repo": "quirq-ai/xo-space"}, "is for 'quirq-ai/xo-space'"),
+            # Not exactly the public digest form: the id must match.
+            ("form", {"public_subject": "sha256:0123456789ABCDEF"}, "the id does not match")]:
+        art = _failure_zip(tmp_path / f"f-{name}", subject="free text",
+                           **{"public_subject": "sha256:0123456789abcdef", **kw})
+        st = FileStore(tmp_path / name)
+        new, _, errors = _collect_zips(st, "o/x", [(*art, 7)], [_demo_run()], DEMO)
+        assert new == 0 and error in errors[0] and st.failures() == []
 
 
 def test_collect_refuses_a_malformed_failure_link(tmp_path):

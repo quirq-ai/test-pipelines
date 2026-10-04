@@ -115,11 +115,18 @@ dispatch off it only `other`. Its `commit` must be the run's head commit (a disp
 and V0-TST-03's base run are the exceptions). For a pull request, whose run tests GitHub's merge
 commit that the API does not name, `commit` is not checked; instead the change's `head_sha` must
 be the run's head commit, and its `number` one of the run's `pull_requests` when GitHub lists any
-(it does for a same-repo PR). A run may name another repo only as kind `other`, from a
-default-branch run of a repo given with `--cross-repo` (the `scorecard` workflow passes
-`quirq-ai/perf`). Failure records are taken only from push, schedule or dispatch runs on the
-default branch; the record must be for the repo, its id must be the one its kind,
-repo and subject give, and its `run_id` must name the run. Records are type-checked (strings,
+(it does for a same-repo PR). A run may name another repo only as kind `other`, from a repo given
+with `--cross-repo` (the `scorecard` workflow passes `quirq-ai/perf`). Such a source can name any
+repo, so everything from it is held to more: `--workflow` must be given (its default globs never
+apply to it, and collecting it without one is an error), and only its push, schedule and dispatch
+runs on the default branch are read; every other artifact of it is refused. The artifacts API
+does not say which job uploaded an artifact, only which workflow run, so the job is not checked:
+a cross-repo source must upload from a workflow file of its own that holds only trusted jobs
+(no pull request triggers, no job running code under test). Failure records are taken only from
+push, schedule or dispatch runs on the default branch; the record must be for the repo, its id
+must be the one its kind, repo and subject give (unless the subject is the public
+`sha256:<16 hex>` digest of a free-text one, which cannot be checked against the id), and its
+`run_id` must name the run. Records are type-checked (strings,
 finite non-negative numbers, booleans, RFC 3339 UTC times like `2026-10-04T10:00:00Z`);
 artifacts over 20 MB, zipped or not, and bundles over 50,000 results are refused. Artifacts are
 read oldest first. A refused artifact is a warning (`--strict` makes it fail the step). A stored
@@ -130,7 +137,8 @@ What this still trusts: a run's own code shapes its record. Anyone whose change 
 queue (`merge_group`, including a fork's PR once it is approved into the queue) or as a same-repo
 pull request can make that run's bundle say what they like, within its kind, run and commit. A
 failure record's links are additive: a later default-branch run can add links (and so close the
-record) to a record an earlier run opened.
+record) to a record an earlier run opened, and a record with a digested subject may carry any id,
+so a default-branch run of an allowed workflow can add to any record of its repo.
 
 The `results` branch is only ever added to, by the `scorecard` workflow.
 TODO(suraj): add a ruleset on the `results` branch that blocks force-pushes and deletion (only
