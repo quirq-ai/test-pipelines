@@ -35,6 +35,9 @@ Add the sink after the test steps of any builder, pinned by commit:
     name: ${{ strategy.job-index }} # only under a matrix, so each leg's run is distinct
 ```
 
+A dispatched run that checks out another commit than `GITHUB_SHA` (a backfill) passes
+`commit: ${{ inputs.commit || github.sha }}` and `kind: postsubmit`; the commit must be 40 hex.
+
 It normalizes every JUnit report into `Result` records, computes the run's `Verdict`, and keeps the
 bundle (`run.json`, `results.jsonl`, `verdict.json`, in a directory) as a workflow artifact named
 `qq-results-<run id>`. The run kind comes from the event: `merge_group` is `gate`,
