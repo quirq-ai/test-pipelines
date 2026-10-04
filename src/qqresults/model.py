@@ -1,6 +1,6 @@
 """The records of the results store (plan §5.4, §5.10).
 
-    Change -> Run -> Result (write-once, raw plus normalized) -> Verdict
+    Change -> Run -> Result (write-once, normalized; raw only on opt-in) -> Verdict
     Failure links a red run, held canary, rollback or auto-revert to its culprit, operation and fix.
 
 Every record is a frozen dataclass that serializes to canonical JSON (sorted keys, no spaces), so
@@ -207,10 +207,11 @@ class Result(_Record):
     status: str                     # a Status
     expected: bool                  # PASS and SKIP are expected; FAIL and CRASH are not
     duration_s: float | None = None
-    message: str = ""               # the failure or skip message, truncated
+    message: str = ""               # the head of the failure or skip message (junit.MAX_MESSAGE)
     file: str = ""
     source: str = ""                # which report it came from, relative to the run's workspace
-    raw: str = ""                   # the original report element, truncated
+    raw: str = ""                   # the original report element, truncated; "" unless the sink
+                                    # was asked to keep it (--keep-raw-junit)
     metrics: dict[str, dict[str, Any]] = field(default_factory=dict)  # name -> {value, unit}; for bench
     schema: str = SCHEMA
 

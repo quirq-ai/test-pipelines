@@ -30,18 +30,20 @@ def find_reports(patterns: list[str], root: Path) -> list[Path]:
 
 def sink(run: Run, patterns: list[str], root: Path, out: Path, rerun_cmd: str = "",
          policy: Policy = Policy(), base_commit: str = "",
-         setup: str = "") -> tuple[Path, bundle.Bundle]:
+         setup: str = "", keep_raw: bool = False) -> tuple[Path, bundle.Bundle]:
     """Write the run's bundle under out. With rerun_cmd, failed tests are first retried and
-    compared with base (retry.py), and those runs are written next to it."""
+    compared with base (retry.py), and those runs are written next to it. keep_raw also keeps
+    each <testcase> element, captured output included, in every Result (junit.parse)."""
     reports = find_reports(patterns, root)
     results: list[Result] = []
     for path in reports:
         rel = path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path)
-        results.extend(junit.parse_file(path, run.id, source=rel))
+        results.extend(junit.parse_file(path, run.id, source=rel, keep_raw=keep_raw))
     if not reports:
         run = Run.from_dict({**run.to_dict(), "results_found": False})
     if rerun_cmd:
-        checked = retry.recheck(run, results, rerun_cmd, root, policy, base_commit, setup=setup)
+        checked = retry.recheck(run, results, rerun_cmd, root, policy, base_commit, setup=setup,
+                                keep_raw=keep_raw)
         for extra in checked.retries + checked.bases:
             bundle.write(extra, out)
         v = checked.verdict

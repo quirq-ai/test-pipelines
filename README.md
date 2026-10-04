@@ -8,7 +8,7 @@ test output into stored results and mechanical verdicts.
 
 ## What it holds (plan §5.4, §5.10)
 
-- **Result**: one test or action outcome, write-once, raw plus normalized. JUnit XML is the input,
+- **Result**: one test or action outcome, write-once, normalized. JUnit XML is the input,
   which every test adapter in `quirq-ai/recipes` emits.
 - **Run**: one gate or post-submit attempt that produced Results.
 - **Verdict**: computed mechanically from Results. Failed tests are retried, then run without the
@@ -50,6 +50,17 @@ pass, and so does a report with no test cases. Failing tests never fail the sink
 that is not JUnit XML does. Within one run a test with any unexpected result is UNEXPECTED: a
 repeated id is not a retry, so only V0-TST-03's explicit retries make a test FLAKY.
 
+What the sink publishes is permanent: the artifact is public on a public repo, and `collect`
+copies it into the write-once `results` branch, which keeps it after the job log is deleted. So
+each `Result` holds only structured fields (test id, status, expected, duration, file, report
+path, metrics) and the head of its failure or skip message: the first 20 lines and 1,000
+characters (plus a short truncation marker), with any `<system-out>`/`<system-err>` markup cut out. That is enough for the
+assertion and the first frames, which tell failures apart; the full text stays in the job log.
+`raw` is empty, and `<system-out>`/`<system-err>` are never stored (audit R3). To also keep each
+`<testcase>` element as it was, captured output included and capped at 16,000 characters, pass
+`keep-raw-junit: "true"` (`--keep-raw-junit`); only do that when everything the tests print may be
+public forever. Bundles written before this change keep their `raw` and still import.
+
 The same thing from a shell:
 
 ```sh
@@ -58,9 +69,10 @@ qqresults show .qq/results/qq-results-...
 ```
 
 Records live in `src/qqresults/model.py` (schema `quirq-results/1`): `Change`, `Run`, `Result`
-(write-once, normalized plus the raw `<testcase>`), `Verdict`, and `Failure` (plan §5.10). Test
-ids are `<classname>::<name>`, which keeps pytest, vitest, jest-junit and gotestsum ids stable
-across runs. Everything that knows GitHub is in `backends/github.py`.
+(write-once, normalized; the raw `<testcase>` only with `keep-raw-junit`), `Verdict`, and
+`Failure` (plan §5.10). Test ids are `<classname>::<name>`, which keeps pytest, vitest,
+jest-junit and gotestsum ids stable across runs. Everything that knows GitHub is in
+`backends/github.py`.
 
 ## The results store and scorecard v0 (V0-TST-02)
 

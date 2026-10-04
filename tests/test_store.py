@@ -47,6 +47,18 @@ def test_import_keeps_the_sink_bytes(tmp_path):
     assert json.loads(stored.read_text())["field_from_a_newer_sink"] == 1
 
 
+def test_a_bundle_with_raw_from_an_older_sink_still_imports(tmp_path):
+    b = make("r1", fail=True)
+    raw = '<testcase name="b"><failure message="x"/><system-out>out</system-out></testcase>'
+    old = Result.from_dict({**b.results[1].to_dict(), "raw": raw})
+    b = bundle.Bundle(b.run, [b.results[0], old], b.verdict)
+    src = bundle.write(b, tmp_path / "sink")
+    st = FileStore(tmp_path / "store")
+    assert st.import_dir(src)
+    assert st.bundle("r1").results[1].raw == raw
+    assert cli.main(["import", "--store", str(tmp_path / "store"), str(src)]) == 0   # a no-op
+
+
 @pytest.mark.parametrize("metric", [
     {"value": True, "unit": "s"},                 # a bool is not a number
     {"value": "1.5", "unit": "s"},
