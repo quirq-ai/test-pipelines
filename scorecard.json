@@ -1,0 +1,236 @@
+{
+  "generated_at": "2026-10-04T12:41:38Z",
+  "not_measured": [
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Repos behind the gate",
+      "target": "100% by end of P1",
+      "unit": "",
+      "value": null,
+      "waiting_on": "V0-ORG-03 merge queue and V0-ONB-01/02 manifests"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Landed on a green merge result",
+      "target": "100% (enforced)",
+      "unit": "",
+      "value": null,
+      "waiting_on": "V0-ORG-03 merge queue: gate runs on merge-group SHAs"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Time to revert a culprit",
+      "target": "mean under 30 min",
+      "unit": "",
+      "value": null,
+      "waiting_on": "V0-GAR-03 auto-revert"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Expired quarantines",
+      "target": "0",
+      "unit": "",
+      "value": null,
+      "waiting_on": "v1 quarantine with expiry"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Cache hit rate",
+      "target": "at least 90% (P3+)",
+      "unit": "",
+      "value": null,
+      "waiting_on": "V0-RBE-01 executor reporting reused actions"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Reproducibility",
+      "target": "100% of deterministic targets",
+      "unit": "",
+      "value": null,
+      "waiting_on": "remote-build digest comparison"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Pinned and mirrored deps",
+      "target": "100%",
+      "unit": "",
+      "value": null,
+      "waiting_on": "quirq-ai/sync"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Release cadence",
+      "target": "canary daily",
+      "unit": "",
+      "value": null,
+      "waiting_on": "V0-REL-03 daily canary"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Rollback time",
+      "target": "under 10 min",
+      "unit": "",
+      "value": null,
+      "waiting_on": "release rollback drill"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Unattended canary days",
+      "target": "14 in a row by P5",
+      "unit": "",
+      "value": null,
+      "waiting_on": "V0-REL-03 daily canary"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Canary hold or rollback time",
+      "target": "under 15 min",
+      "unit": "",
+      "value": null,
+      "waiting_on": "V0-REL-03 and health signals"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Failures fully recorded",
+      "target": "100%",
+      "unit": "",
+      "value": null,
+      "waiting_on": "V0-TST-04 failure records"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Postmortem action items closed",
+      "target": "at least 90%",
+      "unit": "",
+      "value": null,
+      "waiting_on": "postmortem tracking (v1)"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Open recurring failure classes",
+      "target": "0",
+      "unit": "",
+      "value": null,
+      "waiting_on": "v1 failure classes"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Fuzz finding turnaround",
+      "target": "under 24 h",
+      "unit": "",
+      "value": null,
+      "waiting_on": "v1 fuzzers"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Intervention rate",
+      "target": "falling every month",
+      "unit": "",
+      "value": null,
+      "waiting_on": "GitHub PR data (scorecard v1)"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "Revert precision",
+      "target": "at least 90%",
+      "unit": "",
+      "value": null,
+      "waiting_on": "V0-GAR-03 auto-revert"
+    },
+    {
+      "detail": "",
+      "extra": {},
+      "name": "CI cost per landed change",
+      "target": "measured against the V0-ORG-04 ceiling",
+      "unit": "",
+      "value": null,
+      "waiting_on": "V0-ORG-04 compute ceiling and billing data"
+    }
+  ],
+  "repos": {
+    "quirq-ai/test-pipelines": [
+      {
+        "detail": "",
+        "extra": {},
+        "name": "Gate time-to-green",
+        "target": "P1: p50 under 15 min, p90 under 30 min",
+        "unit": "min",
+        "value": null,
+        "waiting_on": "V0-GAT-04 records queue-entry time on gate runs"
+      },
+      {
+        "detail": "1 post-submit commits",
+        "extra": {},
+        "name": "Main-red time",
+        "target": "under 60 min/week",
+        "unit": "min/week",
+        "value": 0.0,
+        "waiting_on": ""
+      },
+      {
+        "detail": "0 of 6 runs passed only on retry",
+        "extra": {},
+        "name": "Flake rate",
+        "target": "under 1%",
+        "unit": "%",
+        "value": 0.0,
+        "waiting_on": ""
+      },
+      {
+        "detail": "",
+        "extra": {},
+        "name": "Gate runs passed",
+        "target": "measured",
+        "unit": "%",
+        "value": null,
+        "waiting_on": "gate runs in the store"
+      },
+      {
+        "detail": "1 of 1 postsubmit runs passed",
+        "extra": {},
+        "name": "Post-submit runs passed",
+        "target": "measured",
+        "unit": "%",
+        "value": 100.0,
+        "waiting_on": ""
+      },
+      {
+        "detail": "5 of 5 presubmit runs passed",
+        "extra": {},
+        "name": "Presubmit runs passed",
+        "target": "measured",
+        "unit": "%",
+        "value": 100.0,
+        "waiting_on": ""
+      },
+      {
+        "detail": "of 6 stored runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "extra": {},
+        "name": "Runs with no test results",
+        "target": "0",
+        "unit": "runs",
+        "value": 0,
+        "waiting_on": ""
+      }
+    ]
+  },
+  "since": "2026-09-27T12:41:38Z",
+  "until": "2026-10-04T12:41:38Z"
+}
