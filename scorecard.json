@@ -79,7 +79,7 @@
       }
     ]
   },
-  "generated_at": "2026-10-04T21:37:44Z",
+  "generated_at": "2026-10-04T22:47:23Z",
   "not_measured": [
     {
       "detail": "",
@@ -238,16 +238,19 @@
   "repos": {
     "quirq-ai/innernet": [
       {
-        "detail": "",
-        "extra": {},
+        "detail": "p50 1.0 / p90 1.0 over 1 green gate run",
+        "extra": {
+          "p50": 1.0,
+          "p90": 1.0
+        },
         "name": "Gate time-to-green",
         "target": "P1: p50 under 15 min, p90 under 30 min",
         "unit": "min",
-        "value": null,
-        "waiting_on": "V0-GAT-04 records queue-entry time on gate runs"
+        "value": 1.0,
+        "waiting_on": ""
       },
       {
-        "detail": "3 post-submit commits",
+        "detail": "4 post-submit commits",
         "extra": {},
         "name": "Main-red time",
         "target": "under 60 min/week",
@@ -256,7 +259,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 10 runs passed only on retry",
+        "detail": "0 of 12 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -265,16 +268,16 @@
         "waiting_on": ""
       },
       {
-        "detail": "",
+        "detail": "1 of 1 gate runs passed",
         "extra": {},
         "name": "Gate runs passed",
         "target": "measured",
         "unit": "%",
-        "value": null,
-        "waiting_on": "gate runs in the store"
+        "value": 100.0,
+        "waiting_on": ""
       },
       {
-        "detail": "3 of 3 postsubmit runs passed (1 cancelled or unknown not counted)",
+        "detail": "4 of 4 postsubmit runs passed (1 cancelled or unknown not counted)",
         "extra": {},
         "name": "Post-submit runs passed",
         "target": "measured",
@@ -292,7 +295,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "of 16 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 18 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -312,7 +315,7 @@
     ],
     "quirq-ai/test-pipelines": [
       {
-        "detail": "",
+        "detail": "1 green run(s) without a queue time",
         "extra": {},
         "name": "Gate time-to-green",
         "target": "P1: p50 under 15 min, p90 under 30 min",
@@ -330,7 +333,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 99 runs passed only on retry",
+        "detail": "0 of 104 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -339,13 +342,13 @@
         "waiting_on": ""
       },
       {
-        "detail": "",
+        "detail": "1 of 1 gate runs passed",
         "extra": {},
         "name": "Gate runs passed",
         "target": "measured",
         "unit": "%",
-        "value": null,
-        "waiting_on": "gate runs in the store"
+        "value": 100.0,
+        "waiting_on": ""
       },
       {
         "detail": "27 of 27 postsubmit runs passed",
@@ -357,7 +360,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "73 of 73 presubmit runs passed",
+        "detail": "77 of 77 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
@@ -366,7 +369,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "of 100 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 105 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -459,7 +462,7 @@
       }
     ]
   },
-  "since": "2026-09-27T21:37:44Z",
+  "since": "2026-09-27T22:47:23Z",
   "skipped": 0,
-  "until": "2026-10-04T21:37:44Z"
+  "until": "2026-10-04T22:47:23Z"
 }
