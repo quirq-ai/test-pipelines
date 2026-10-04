@@ -67,6 +67,15 @@ inputs:
     description: Set to "true" to fail when the verdict fails, so the sink decides the check.
     required: false
     default: "false"
+  keep-raw-junit:
+    description: >-
+      Set to "true" to also keep each <testcase> element, its <system-out> and <system-err>
+      included (up to 16,000 characters), in every result. This publishes that text permanently:
+      in the artifact and in the write-once results store, which cannot delete it later, even
+      after the job log is gone. By default only structured fields and the head of each failure
+      message (20 lines, 1,000 characters) are kept.
+    required: false
+    default: "false"
   retention-days:
     description: How long GitHub keeps the bundle artifact. TODO(expert) long-term storage.
     required: false
@@ -93,6 +102,7 @@ runs:
         QQ_BASE: ${{ inputs.base }}
         QQ_SETUP: ${{ inputs.setup }}
         QQ_INFRA_CONFIG: ${{ inputs.infra-config }}
+        QQ_KEEP_RAW_JUNIT: ${{ inputs.keep-raw-junit }}
       run: |
         set -euo pipefail
         python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || {
@@ -115,6 +125,7 @@ runs:
         [ -z "$QQ_BASE" ] || args+=(--base "$QQ_BASE")
         [ -z "$QQ_SETUP" ] || args+=(--setup "$QQ_SETUP")
         [ -z "$QQ_INFRA_CONFIG" ] || args+=(--infra-config "$QQ_INFRA_CONFIG")
+        [ "$QQ_KEEP_RAW_JUNIT" != "true" ] || args+=(--keep-raw-junit)
         out=$(mktemp -d "$RUNNER_TEMP/qq-results.XXXXXX")
         echo "out=$out" >> "$GITHUB_OUTPUT"
         qqresults sink "${args[@]}" --root "$GITHUB_WORKSPACE" --out "$out"

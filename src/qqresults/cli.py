@@ -2,8 +2,11 @@
 
     qqresults sink --junit GLOB [--junit GLOB ...] --out DIR [--backend github|local] [--kind K]
                    [--rerun CMD [--base SHA] [--infra-config PATH]] [--fail-on-verdict]
+                   [--keep-raw-junit]
         Normalize this job's JUnit reports into one write-once run bundle under DIR; with
-        --rerun, retry failed tests and compare them with base first (V0-TST-03).
+        --rerun, retry failed tests and compare them with base first (V0-TST-03). Results keep
+        structured fields and the head of each message; --keep-raw-junit also keeps each
+        <testcase> element, captured output included, which publishes it for good.
     qqresults show BUNDLE_DIR [--json]
         Print a bundle's verdict.
     qqresults import --store DIR BUNDLE_DIR...
@@ -16,11 +19,13 @@
         Plan §8's metrics from the store.
     qqresults failure open --dir DIR --kind K --repo R --subject S [--summary ...] [--mirror REPO]
     qqresults failure link --dir DIR ID --culprit C --fix F --covering-test T [--mirror REPO]
+                           [--run-id RUN --link-copy OUT]
     qqresults failure list --dir DIR
         Failure records (V0-TST-04): one per held canary, rollback or auto-revert, mirrored
         to one labelled GitHub issue (token from GITHUB_TOKEN). DIR is a store's failures/
         directory or a scratch directory that the backend keeps. The issue and --public-copy
-        carry structured fields only; the summary needs --public-summary.
+        carry structured fields only; the summary needs --public-summary. --link-copy writes
+        the links just added as a link bundle, for the backend to keep (link/action.yml).
 """
 from __future__ import annotations
 
@@ -68,7 +73,7 @@ def cmd_sink(args) -> int:
         pol = dataclasses.replace(pol, compare_with_base=False)
     path, b = sink.sink(run, args.junit, Path(args.root).resolve(), Path(args.out),
                         rerun_cmd=args.rerun or "", policy=pol, base_commit=args.base or "",
-                        setup=args.setup or "")
+                        setup=args.setup or "", keep_raw=args.keep_raw_junit)
     v = b.verdict
     print(f"run {run.id} ({run.kind}): {len(b.results)} result(s) -> {path}")
     print(f"verdict: {'PASS' if v.passed else 'FAIL'} {v.counts} {v.reason}".rstrip())
@@ -190,7 +195,8 @@ def _mirror(state: failures.State, repo: str) -> failures.State:
     return failures.read(state.path)
 
 
-def _report(state: failures.State, created: bool | None, args) -> None:
+def _report(state: failures.State, created: bool | None, args,
+            before: set[str] | None = None) -> None:
     state = failures.read(state.path)   # with any mark the mirror added
     f = state.current
     upload = ""
@@ -198,6 +204,10 @@ def _report(state: failures.State, created: bool | None, args) -> None:
         # A security record is uploaded only as its id and security mark (replacing any public
         # copy made before it looked that way), so the store learns the mark and never mirrors it.
         upload = str(failures.public_copy(state, Path(args.public_copy)))
+    if before is not None and args.link_copy:
+        # Only the links this call added (and any the mirror added), filtered like the public
+        # copy; a security record's links carry no values.
+        upload = str(failures.link_copy(state, before, args.run_id, Path(args.link_copy)))
     verb = "" if created is None else ("opened " if created else "already open: ")
     print(f"{verb}{f.id} ({f.kind}, {f.repo}) at {state.path}")
     print("closed" if state.closed else "open; missing " + ", ".join(state.missing))
@@ -235,6 +245,8 @@ def cmd_failure(args) -> int:
     elif args.action == "link":
         path = parent / failures.dirname(args.id)
         repo = failures.read(path).record.repo  # fails clearly if the record is not here
+        links_dir = path / failures.LINKS
+        before = {p.name for p in links_dir.glob("*.json")} if links_dir.is_dir() else set()
         for field in failures.VALUE_LINKS:
             value = getattr(args, field, None)
             if not value:
@@ -256,7 +268,7 @@ def cmd_failure(args) -> int:
             if args.mirror:
                 state = _mirror(state, args.mirror)
         finally:
-            _report(state, None, args)
+            _report(state, None, args, before)
     else:
         for d in sorted(parent.iterdir()) if parent.is_dir() else []:
             if (d / failures.RECORD).is_file():
@@ -298,6 +310,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-base", action="store_true", help="do not compare with base")
     s.add_argument("--fail-on-verdict", action="store_true",
                    help="exit 1 when the verdict fails (use when the sink decides the check)")
+    s.add_argument("--keep-raw-junit", action="store_true",
+                   help="also keep each <testcase> element, <system-out>/<system-err> included "
+                        "(up to 16,000 characters), in the bundle: it is published permanently "
+                        "in the artifact and the write-once results store")
     s.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"),
                    help=argparse.SUPPRESS)
     s.set_defaults(func=cmd_sink)
@@ -364,6 +380,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="show the summary in the public issue and upload (default: withheld)")
     fa.add_argument("--public-copy", metavar="DIR",
                     help="write the record's public view under DIR, for upload")
+    fa.add_argument("--link-copy", metavar="DIR",
+                    help="link: write the links this call added as a link bundle under DIR, for "
+                         "upload (needs --run-id, the run that linked)")
     for name in failures.VALUE_LINKS:
         if name != "operation":
             fa.add_argument("--" + name.replace("_", "-"), dest=name, help="link")
@@ -380,9 +399,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "failure":
         need = {"open": ("kind", "repo", "subject"), "link": ("id",)}.get(args.action, ())
+        if args.action == "link" and args.link_copy:
+            need += ("run_id",)
         missing = [n for n in need if not getattr(args, n)]
         if missing:
-            parser.error(f"failure {args.action} needs " + ", ".join("--" + m for m in missing))
+            parser.error(f"failure {args.action} needs " + ", ".join(
+                "--" + m.replace("_", "-") for m in missing))
+        if args.link_copy and args.action != "link":
+            parser.error("--link-copy is only for failure link")
     try:
         return args.func(args)
     except Error as e:

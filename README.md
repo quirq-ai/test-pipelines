@@ -8,7 +8,7 @@ test output into stored results and mechanical verdicts.
 
 ## What it holds (plan §5.4, §5.10)
 
-- **Result**: one test or action outcome, write-once, raw plus normalized. JUnit XML is the input,
+- **Result**: one test or action outcome, write-once, normalized. JUnit XML is the input,
   which every test adapter in `quirq-ai/recipes` emits.
 - **Run**: one gate or post-submit attempt that produced Results.
 - **Verdict**: computed mechanically from Results. Failed tests are retried, then run without the
@@ -50,6 +50,17 @@ pass, and so does a report with no test cases. Failing tests never fail the sink
 that is not JUnit XML does. Within one run a test with any unexpected result is UNEXPECTED: a
 repeated id is not a retry, so only V0-TST-03's explicit retries make a test FLAKY.
 
+What the sink publishes is permanent: the artifact is public on a public repo, and `collect`
+copies it into the write-once `results` branch, which keeps it after the job log is deleted. So
+each `Result` holds only structured fields (test id, status, expected, duration, file, report
+path, metrics) and the head of its failure or skip message: the first 20 lines and 1,000
+characters (plus a short truncation marker), with any `<system-out>`/`<system-err>` markup cut out. That is enough for the
+assertion and the first frames, which tell failures apart; the full text stays in the job log.
+`raw` is empty, and `<system-out>`/`<system-err>` are never stored (audit R3). To also keep each
+`<testcase>` element as it was, captured output included and capped at 16,000 characters, pass
+`keep-raw-junit: "true"` (`--keep-raw-junit`); only do that when everything the tests print may be
+public forever. Bundles written before this change keep their `raw` and still import.
+
 The same thing from a shell:
 
 ```sh
@@ -58,9 +69,10 @@ qqresults show .qq/results/qq-results-...
 ```
 
 Records live in `src/qqresults/model.py` (schema `quirq-results/1`): `Change`, `Run`, `Result`
-(write-once, normalized plus the raw `<testcase>`), `Verdict`, and `Failure` (plan §5.10). Test
-ids are `<classname>::<name>`, which keeps pytest, vitest, jest-junit and gotestsum ids stable
-across runs. Everything that knows GitHub is in `backends/github.py`.
+(write-once, normalized; the raw `<testcase>` only with `keep-raw-junit`), `Verdict`, and
+`Failure` (plan §5.10). Test ids are `<classname>::<name>`, which keeps pytest, vitest,
+jest-junit and gotestsum ids stable across runs. Everything that knows GitHub is in
+`backends/github.py`.
 
 ## The results store and scorecard v0 (V0-TST-02)
 
@@ -82,14 +94,19 @@ qqresults collect --store .qq/store --repo quirq-ai/xo-space   # needs GITHUB_TO
 ```
 
 Scorecard v0 measures, per repo: gate time-to-green p50/p90 (gate runs carry their queue-entry
-time once `quirq-ai/gate/timing` exports `QQ_QUEUED_AT` before the sink, V0-GAT-04; one sample per green gate workflow run, from its first queue entry to the last
+time once `quirq-ai/gate/timing` exports `QQ_QUEUED_AT`, a strict RFC 3339 time, before the sink, V0-GAT-04; one sample per green gate workflow run, from its first queue entry to the last
 finish of the latest attempt of each job, so a re-run counts its whole wait and red runs are
-not counted), main-red minutes per week, flake rate, pass rates of gate,
+not counted), main-red minutes per week (commits in main's push order, each push's `before` to
+its `after`; when the stored runs do not link them into one chain, by job finish time, and the
+row says so), flake rate, pass rates of gate,
 post-submit and presubmit runs, and runs that stored no results. A run with test results is red
 when its verdict failed; one without (a repo whose only check is a typecheck, or a job that
 broke before its tests) is red only when the job itself failed, and a cancelled job, such as one
 superseded by a newer push, is not counted. The sink records the job's status for this. Every other plan §8 metric is
-listed as not measured, with the item that will measure it; nothing unmeasured shows as zero.
+listed as not measured, with the work item (quirq-infra v0 or v1) that will measure it, or
+`TODO(suraj): no item yet`; nothing unmeasured shows as zero. A metric whose runs are stored but
+say nothing (cancelled, or no results and no job status) is not measured and says "runs stored,
+status unknown" rather than waiting on runs.
 
 ### What collect trusts
 
@@ -115,7 +132,9 @@ dispatch off it only `other`. Its `commit` must be the run's head commit (a disp
 and V0-TST-03's base run are the exceptions). For a pull request, whose run tests GitHub's merge
 commit that the API does not name, `commit` is not checked; instead the change's `head_sha` must
 be the run's head commit, and its `number` one of the run's `pull_requests` when GitHub lists any
-(it does for a same-repo PR). A run may name another repo only as kind `other`, from a repo given
+(it does for a same-repo PR). A gate run's `queued_at` must lie between 24 hours before GitHub
+created its workflow run and five minutes after the run's finish (the finish is the runner's
+clock), so one bad runner clock cannot dominate p90; without the run's creation time it is refused. A run may name another repo only as kind `other`, from a repo given
 with `--cross-repo` (the `scorecard` workflow passes `quirq-ai/perf`). Such a source can name any
 repo, so everything from it is held to more: `--workflow` must be given (its default globs never
 apply to it, and collecting it without one is an error), and only its push, schedule, dispatch
@@ -130,10 +149,20 @@ push, schedule or dispatch runs on the default branch; the record must be for th
 must be the one its kind, repo and subject give (unless the subject is the public
 `sha256:<16 hex>` digest of a free-text one, which cannot be checked against the id; the id must
 then still be `<kind>-<16 hex>`), and its
-`run_id` must name the run. Records are type-checked (strings,
+`run_id` must name the run. A link bundle (from the `link` action) is held to the same: its
+`target.json` must name a record of the repo by a `<kind>-<16 hex>` id and name the run in its
+`run_id`. Its links are added only to a record already stored, and every bundle in an artifact
+is checked against its record before any is imported: a bundle whose record is not stored yet
+is retried at the next collect, and refused for good (and not read again) once it is 7 days
+old, since a record still missing after 28 scheduled collects was refused or has expired. A
+link bundle may carry no mark but `security`; one with any other mark is refused whole. Every
+link, in a record's artifact or a link bundle, must be dated between its record's opening and
+5 minutes from now (later links win, so a link dated far ahead would outrank every later one).
+Records are type-checked (strings,
 finite non-negative numbers, booleans, RFC 3339 UTC times like `2026-10-04T10:00:00Z`);
 artifacts over 20 MB, zipped or not, and bundles over 50,000 results are refused. Artifacts are
-read oldest first. A refused artifact is a warning (`--strict` makes it fail the step). A stored
+read oldest first, so a record reported again keeps the opening time and run of its first report.
+A refused artifact is a warning (`--strict` makes it fail the step). A stored
 record that does not read is left out of queries and the scorecard, with a warning and a count
 in the card, so it cannot break them.
 
@@ -231,7 +260,29 @@ is printed in the log, so the text is public anyway. TODO(suraj): where private 
 
 The record id is derived from kind, repo and subject, and the issue carries the id in a hidden
 marker, so reporting the same event twice (a retried pipeline, a second runner) still gives one
-record and one issue. What is learned later is added as link records, never by rewriting:
+record and one issue. GitHub's issue list can lag behind a create, so two racing runners may
+each open one; every report closes each open issue with the marker but the lowest-numbered as a
+duplicate. What is learned later is added as link records, never by rewriting, with the
+`link` action:
+
+```yaml
+- uses: quirq-ai/test-pipelines/link@<commit>        # needs issues: write
+  with:
+    id: ${{ steps.failure.outputs.id }}               # the failure action's id output
+    culprit: quirq-ai/xo-space@<commit>
+    fix: https://github.com/quirq-ai/xo-space/pull/12
+    covering-test: <commit or URL>
+    dir: .qq/store/failures   # only when the record is not the failure action's in this job
+```
+
+It adds the links to the record in `dir` (by default the directory the failure action keeps in
+this job; otherwise a checkout of the `results` branch's `failures/`), updates the issue (closing
+it when complete), and uploads the links this call added as a `qq-failure-*` link bundle:
+`target.json` (the record id, its repo and this run) and `links/`, filtered as the failure
+artifact is. `collect` adds them to the stored record, so the store closes when the issue does.
+On a security record the bundle carries no values: each link goes up as `withheld`, next to the
+security mark, so the record can still close. Linking the same value again (the issue, on every
+report) adds nothing to the store. From a shell, `--link-copy DIR --run-id RUN` writes the bundle:
 
 ```sh
 qqresults failure link <id> --dir <store>/failures --culprit <owner/repo@sha> --fix <PR URL> \
@@ -245,8 +296,14 @@ record security if the value reads that way). Never run `failure open --dir` on 
 writes the full record. Keep the detail where it belongs (the PR, the postmortem) and link to it.
 
 A record closes only when culprit, fix and covering test are linked (infra-config
-`postmortem.toml` `record_needs`), and the scorecard reports the share that are. A link stored
-as `withheld` counts as linked, so a record can close on values nobody can read publicly.
+`postmortem.toml` `record_needs`), and the scorecard reports the share that are (TODO(suraj):
+plan §8 also lists the operation). The scorecard counts held canaries, canary rollbacks,
+auto-reverts and fuzz findings opened in the window; red-run records and the one planted record
+that `failure-demo` reports (fixed by its id in `scorecard.DEMO_RECORDS`, so no pipeline can
+take its own records out) are left out, each noted in the card. A fuzz
+finding, like any security record, is stored only as its id and marks, so it is counted by id
+and closes on its `withheld` links. A link stored as `withheld` counts as linked, so a record can
+close on values nobody can read publicly.
 TODO(expert): whether withheld links should count towards closing (audit S4).
 
 Free text is never public without the opt-in. The issue title and body, the failure artifact and
@@ -319,7 +376,7 @@ nothing on GitHub remembers it, and a later such report from a fresh runner (wit
 `security: "true"`) opens a public issue. The store learns the mark only once `collect` has run,
 and the action does not read the store. TODO(expert): a durable mark the action can check before
 opening an issue. The `failure-demo` workflow proves the done-when against the real API
-with a planted held canary.
+with a planted held canary, then links and closes it with the `link` action.
 
 ## v0 status
 

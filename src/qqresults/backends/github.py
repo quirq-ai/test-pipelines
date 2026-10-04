@@ -111,13 +111,24 @@ def run_from_env(env: Mapping[str, str], kind: str = "", name: str = "") -> Run:
     )
 
 
+# RFC 3339 only: YYYY-MM-DDTHH:MM:SS, an optional fraction, then Z or +-HH:MM. fromisoformat alone
+# also takes ISO 8601's basic (20261004T120000Z) and week (2026-W40-7T12:00Z) forms.
+RFC3339 = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?"
+                     r"(Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])")
+# A gate run's queue entry is at most this long before GitHub created its workflow run.
+MAX_QUEUE_WAIT = dt.timedelta(hours=24)
+CLOCK_SKEW = dt.timedelta(minutes=5)    # the runner's clock (finished_at) against GitHub's
+
+
 def _rfc3339_utc(text: str) -> str:
-    """text as RFC 3339 UTC ("...Z"), or "" when it is missing or not a timestamp with a zone."""
-    try:
-        t = dt.datetime.fromisoformat(text.strip().upper().replace("Z", "+00:00"))
-    except ValueError:
+    """text as RFC 3339 UTC ("...Z"), or "" when it is missing or not a strict RFC 3339 time
+    (RFC3339; lowercase t and z, which RFC 3339 allows, are read as T and Z)."""
+    text = text.strip().upper()
+    if not RFC3339.fullmatch(text):
         return ""
-    if t.tzinfo is None:
+    try:
+        t = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
         return ""
     return t.astimezone(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -136,6 +147,11 @@ class GitHubAPIError(Error):
 class NeedsDeletion(Error):
     """A public issue holds a record that now looks security-related. Editing it does not
     remove the text (edit history, timeline, notification emails), so a person must delete it."""
+
+
+class OrphanLinks(GitHubAPIError):
+    """A link bundle whose record was still not stored LINK_BUNDLE_WAIT after the bundle was
+    uploaded. It is refused for good (and marked as read), not retried at every collect."""
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -174,7 +190,9 @@ def http_get(url: str, token: str) -> bytes:
 def list_result_artifacts(repo: str, token: str, get=http_get, max_pages: int = 20) -> list[dict]:
     """The repo's unexpired qq-results-* and qq-failure-* artifacts, oldest first.
 
-    Oldest first, so a later upload can never take a run's place by being listed before it.
+    Oldest first, so a later upload can never take a run's place by being listed before it, a
+    failure record reported again keeps the opened_at and run_id of its first report, and a link
+    bundle comes after the record it links to.
     """
     found = []
     for page in range(1, max_pages + 1):
@@ -229,6 +247,7 @@ class Origin:
     head_sha: str
     on_default: bool      # head_branch is the default branch and head_sha is in its history
     pull_requests: tuple[int, ...] = ()   # the PRs GitHub links to the run (same-repo PRs only)
+    created_at: str = ""  # when GitHub created the run (RFC 3339 UTC); "" when it did not say
 
     def kinds(self) -> set[str]:
         """The run kinds a bundle from this run may claim."""
@@ -311,7 +330,8 @@ def _origin(repo: str, art: dict, trust: Trust, token: str, get, runs: dict,
                              f"branch are stored, not workflow run {run_id} ({event or 'unknown'} "
                              f"of {_short(sha)} on {_short(branch)})")
     return Origin(repo=repo, run_id=run_id, attempts=attempts, event=event, path=path,
-                  head_branch=branch, head_sha=sha, on_default=on_default, pull_requests=numbers)
+                  head_branch=branch, head_sha=sha, on_default=on_default, pull_requests=numbers,
+                  created_at=_rfc3339_utc(str(run.get("created_at") or "")))
 
 
 def _check_bundle(origin: Origin, trust: Trust, b: bundle.Bundle) -> None:
@@ -350,21 +370,48 @@ def _check_bundle(origin: Origin, trust: Trust, b: bundle.Bundle) -> None:
     elif run.commit != origin.head_sha:
         raise GitHubAPIError(f"run {run.id}: commit {_short(run.commit)} is not "
                              f"{origin.head_sha}, the commit its workflow run tested")
+    if run.queued_at:
+        _check_queued(origin, run)
     if len(b.results) > MAX_RESULTS:
         raise GitHubAPIError(f"run {run.id}: {len(b.results)} results, more than {MAX_RESULTS}")
     if b.verdict.run_id != run.id or any(r.run_id != run.id for r in b.results):
         raise GitHubAPIError(f"run {run.id}: its results or verdict name another run")
 
 
-def _check_failure(origin: Origin, path: Path) -> None:
-    """A failure record must come from a default-branch run of its repo and name that run."""
-    from qqresults import failures
+def _check_queued(origin: Origin, run: Run) -> None:
+    """A queue entry lies between MAX_QUEUE_WAIT before GitHub created the workflow run and the
+    run's finish (with CLOCK_SKEW of slack, since the finish is the runner's clock), so one
+    runner's bad clock (or a 1970 default) cannot dominate gate timing. Without the creation time
+    there is no lower bound, so the queue time is refused rather than trusted."""
+    def at(text: str) -> dt.datetime:
+        return dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
 
+    if not origin.created_at:
+        raise GitHubAPIError(f"run {run.id}: has queued_at but workflow run {origin.run_id} has no "
+                             "creation time to check it against")
+    queued = at(run.queued_at)
+    earliest = at(origin.created_at) - MAX_QUEUE_WAIT
+    if (run.finished_at and queued > at(run.finished_at) + CLOCK_SKEW) or queued < earliest:
+        raise GitHubAPIError(f"run {run.id}: queued_at {run.queued_at} is not between "
+                             f"{earliest.strftime('%Y-%m-%dT%H:%M:%SZ')} (24 h before workflow run "
+                             f"{origin.run_id} was created) and its finish "
+                             f"{run.finished_at or 'unknown'}; check the runner's clock and "
+                             "quirq-ai/gate/timing")
+
+
+def _check_failure_origin(origin: Origin) -> None:
     if origin.event not in FAILURE_EVENTS or not origin.on_default:
         raise GitHubAPIError(f"failure records are taken only from {', '.join(FAILURE_EVENTS)} "
                              "runs of a commit on the default branch, not a "
                              f"{origin.event or 'unknown'} run of {_short(origin.head_sha)} on "
                              f"{_short(origin.head_branch)}")
+
+
+def _check_failure(origin: Origin, path: Path, now: dt.datetime) -> None:
+    """A failure record must come from a default-branch run of its repo and name that run."""
+    from qqresults import failures
+
+    _check_failure_origin(origin)
     f = failures.read(path).record
     if f.repo != origin.repo:
         raise GitHubAPIError(f"failure {_short(f.id)} is for {_short(f.repo)} but was found in "
@@ -375,17 +422,45 @@ def _check_failure(origin: Origin, path: Path) -> None:
         raise GitHubAPIError(f"failure {_short(f.id)}: the id does not match its kind, repo and "
                              "subject")
     origin.attempt_of(f"failure {f.id}: run", f.run_id)
+    _check_links(f.id, path, f.opened_at, now)
+
+
+def _check_link_bundle(origin: Origin, path: Path):
+    """A link bundle (links added after the record was opened) is held to the same origin rules
+    as a record: a default-branch run of the record's repo, named as the run that linked. What
+    it may carry is checked against its stored record (failures.check_link_bundle)."""
+    from qqresults import failures
+
+    _check_failure_origin(origin)
+    target = failures.read_target(path)
+    if target.repo != origin.repo:
+        raise GitHubAPIError(f"links for {_short(target.id)} are for {_short(target.repo)} but "
+                             f"were found in {origin.repo}")
+    origin.attempt_of(f"links for {target.id}: run", target.run_id)
+    return target
+
+
+def _check_links(fid: str, path: Path, opened_at: object, now: dt.datetime) -> None:
+    """Each link is a {field, value, at} record dated between the record's opening and now
+    (with failures.LINK_CLOCK_SKEW): later links win, so a time far ahead would outrank every
+    later link for good."""
+    from qqresults import failures
+
+    latest = (now + failures.LINK_CLOCK_SKEW).strftime("%Y-%m-%dT%H:%M:%SZ")
     links = path / failures.LINKS
     for p in sorted(links.glob("*.json")) if links.is_dir() else []:
         try:
             link = json.loads(p.read_text(encoding="utf-8"))
         except (OSError, ValueError, RecursionError) as e:
-            raise GitHubAPIError(f"failure {f.id}: link {p.name}: {e}") from None
+            raise GitHubAPIError(f"failure {fid}: link {p.name}: {e}") from None
         if not (isinstance(link, dict) and link.get("field") in failures.LINK_FIELDS
                 and isinstance(link.get("value"), str) and link["value"]
                 and is_time(link.get("at"))):
-            raise GitHubAPIError(f"failure {f.id}: link {p.name} is not a "
+            raise GitHubAPIError(f"failure {fid}: link {p.name} is not a "
                                  "{field, value, at} record")
+        if not (isinstance(opened_at, str) and opened_at <= link["at"] <= latest):
+            raise GitHubAPIError(f"failure {fid}: link {p.name} is dated {link['at']}, not "
+                                 f"between the record's opening {_short(opened_at)} and {latest}")
 
 
 def _unzip(data: bytes, dest: str) -> None:
@@ -407,7 +482,21 @@ def _unzip(data: bytes, dest: str) -> None:
         raise GitHubAPIError(f"cannot unzip: {type(e).__name__}: {e}") from None
 
 
-def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: Trust) -> bool:
+# How long a link bundle waits for its record. A record and its links come from the same repo
+# and are listed together, oldest first, so a record that is still not stored after a week (28
+# scheduled collects) was refused or has expired; a week still rides out a scorecard outage or a
+# collect fix that takes a few days to land.
+LINK_BUNDLE_WAIT = dt.timedelta(days=7)
+
+
+def _uploaded_before(art: dict, when: dt.datetime) -> bool:
+    """Whether GitHub says the artifact was created before when (False when it does not say)."""
+    created = _rfc3339_utc(str(art.get("created_at") or ""))
+    return bool(created) and created < when.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: Trust,
+                     now: dt.datetime) -> bool:
     url = art.get("archive_download_url")
     if not isinstance(url, str) or not url:
         raise GitHubAPIError("the artifact has no archive_download_url")
@@ -418,12 +507,33 @@ def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: T
         _unzip(data, tmp)
         root = Path(tmp)
         if art["name"].startswith(FAILURE_PREFIX):
-            recs = [d for d in [root, *sorted(root.iterdir())] if (d / "failure.json").is_file()]
-            if not recs:
-                raise GitHubAPIError("no failure record inside")
+            from qqresults import failures
+
+            dirs = [root, *sorted(root.iterdir())]
+            recs = [d for d in dirs if (d / failures.RECORD).is_file()]
+            links = [d for d in dirs if (d / failures.TARGET).is_file() and d not in recs]
+            if not recs and not links:
+                raise GitHubAPIError("no failure record or link bundle inside")
             for d in recs:        # all of them, before importing any
-                _check_failure(origin, d)
-            return any([store.import_failure(d) for d in recs])
+                _check_failure(origin, d, now)
+            in_artifact = {}
+            for d in recs:
+                f = failures.read(d).record
+                in_artifact.setdefault(f.id, f)
+            for d in links:       # each against its record, before importing any
+                target = _check_link_bundle(origin, d)
+                record = store.stored_failure(target.id) or in_artifact.get(target.id)
+                if record is None:
+                    if _uploaded_before(art, now - LINK_BUNDLE_WAIT):
+                        raise OrphanLinks(f"links for {target.id}: the record is still not "
+                                          f"stored {LINK_BUNDLE_WAIT.days} days after upload; "
+                                          "refused for good")
+                    raise GitHubAPIError(f"links for {target.id}: the record is not in the store "
+                                         "yet (retried at the next collect)")
+                failures.check_link_bundle(d, record, now)
+            # Records first, so a bundle's links can find a record in the same artifact.
+            return any([store.import_failure(d) for d in recs]
+                       + [store.import_links(d, now) for d in links])
         # One bundle at the root, or (with retries, V0-TST-03) one bundle per directory.
         dirs = [root] if (root / "run.json").is_file() else sorted(
             d for d in root.iterdir() if (d / "run.json").is_file())
@@ -434,8 +544,8 @@ def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: T
         return any([store.import_dir(d) for d in dirs])
 
 
-def collect(repo: str, store, token: str, get=http_get,
-            trust: Trust = Trust()) -> tuple[int, int, list[str]]:
+def collect(repo: str, store, token: str, get=http_get, trust: Trust = Trust(),
+            now: dt.datetime | None = None) -> tuple[int, int, list[str]]:
     """Import every result bundle and failure record that the repo's trusted runs kept.
 
     Returns (new, already stored, errors). One bad artifact is reported and skipped, so it does
@@ -443,6 +553,7 @@ def collect(repo: str, store, token: str, get=http_get,
     repo's GITHUB_TOKEN.
     """
     new = old = 0
+    now = now or dt.datetime.now(dt.UTC)
     errors = []
     runs: dict[int, dict] = {}     # workflow run id -> the run, fetched once
     default: list[str] = []
@@ -475,7 +586,7 @@ def collect(repo: str, store, token: str, get=http_get,
                 raise GitHubAPIError(f"size {_short(art.get('size_in_bytes'))} is not at most "
                                      f"{MAX_ARTIFACT_BYTES} bytes")
             origin = _origin(repo, art, trust, token, get, runs, default_branch, in_default)
-            if _import_artifact(art, store, token, get, origin, trust):
+            if _import_artifact(art, store, token, get, origin, trust, now):
                 new += 1
             else:
                 old += 1
@@ -483,6 +594,8 @@ def collect(repo: str, store, token: str, get=http_get,
                 store.mark_artifact(f"{art['name']}-{art.get('id', '')}")
         except Error as e:
             errors.append(f"{repo} artifact {art.get('name')}: {e}")
+            if isinstance(e, OrphanLinks):
+                store.mark_artifact(f"{art['name']}-{art.get('id', '')}")
     return new, old, errors
 
 
@@ -534,6 +647,18 @@ def _patch(repo: str, issue: dict, want: dict, token: str, call) -> None:
             raise GitHubAPIError(f"{repo}#{issue['number']}: updating the issue: HTTP {status}")
 
 
+def _close_duplicates(repo: str, issues: list[dict], token: str, call) -> dict:
+    """Close every open issue but the lowest-numbered one as a duplicate; return that one.
+
+    The issue list can lag behind a create, so two racing runners may each keep the issue it
+    opened; whichever call next sees both closes the later one."""
+    keep, *rest = sorted(issues, key=lambda i: i["number"])
+    for issue in rest:
+        if issue.get("state") != "closed":
+            _patch(repo, issue, {"state": "closed", "state_reason": "duplicate"}, token, call)
+    return keep
+
+
 def _withdrawn(issue: dict) -> bool:
     """Whether mirror_issue withdrew this issue (its record looked security-related)."""
     from qqresults import failures
@@ -546,8 +671,9 @@ def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
     """Create or update the one labelled issue that mirrors a failure record.
 
     Returns (issue URL, created). The issue is found again by the marker its body starts with,
-    so a second call never opens a second issue; if two runners race and both open one, the
-    higher-numbered duplicate is closed. A security-looking record is never mirrored: it returns
+    so a second call never opens a second issue; if two runners race and both open one, every
+    call closes each open marker issue but the lowest-numbered one as a duplicate (the issue list
+    can lag a create, so one call may not see the other's issue yet). A security-looking record is never mirrored: it returns
     ("", False). An issue opened before the record looked that way has its title and body
     replaced and is closed, then NeedsDeletion is raised: the old text stays in its edit history
     and in emails already sent, so only deleting the issue (a repo admin) removes it.
@@ -562,21 +688,14 @@ def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
     f = state.current
     existing = _find_issues(repo, f.id, token, call)
     if state.security or any(_withdrawn(i) for i in existing):
-        for issue in existing:
-            _patch(repo, issue, {"title": f"{failures.WITHHELD_TITLE} ({f.id})",
-                                 "body": failures.marker(f.id) + "\n" + failures.WITHHELD_BODY,
-                                 "state": "closed"}, token, call)
-        if existing:
-            urls = ", ".join(i["html_url"] for i in existing)
-            raise NeedsDeletion(f"{f.id} now looks security-related but was mirrored to {urls}; "
-                                "its text is hidden and closed but stays in the edit history. "
-                                "A repo admin must delete the issue.")
+        _withdraw(repo, f.id, existing, token, call)
         return "", False
     title, body = failures.issue_title(state), failures.issue_body(state)
+    want = {"title": title, "body": body, "state": "closed" if state.closed else "open"}
     if existing:
-        _patch(repo, existing[0], {"title": title, "body": body,
-                                   "state": "closed" if state.closed else "open"}, token, call)
-        return existing[0]["html_url"], False
+        keep = _close_duplicates(repo, existing, token, call)
+        _patch(repo, keep, want, token, call)
+        return keep["html_url"], False
     labels = [FAILURE_LABEL, f"{FAILURE_LABEL}:{f.kind}"]
     for name in labels:
         status, _ = call("POST", f"{API}/repos/{repo}/labels", token,
@@ -589,9 +708,30 @@ def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
     if status != 201:
         raise GitHubAPIError(f"{repo}: opening the failure issue: HTTP {status} "
                              "(the token needs issues: write)")
-    # Another runner may have opened one at the same moment: keep the lowest number only.
-    now_there = _find_issues(repo, f.id, token, call)
-    if now_there and now_there[0]["number"] != created["number"]:
-        _patch(repo, created, {"state": "closed", "state_reason": "duplicate"}, token, call)
-        return now_there[0]["html_url"], False
-    return created["html_url"], True
+    # Another runner may have opened one at the same moment: keep the lowest number only. The
+    # list may not show the issue just created yet, so it is added from the create's response.
+    now_there = list({created["number"]: created,
+                      **{i["number"]: i for i in _find_issues(repo, f.id, token, call)}}.values())
+    if any(_withdrawn(i) for i in now_there):
+        # A racing runner withdrew an issue in the meantime: that is a security mark, so the
+        # issue just opened is withdrawn too.
+        _withdraw(repo, f.id, now_there, token, call)
+    keep = _close_duplicates(repo, now_there, token, call)
+    _patch(repo, keep, want, token, call)   # the kept issue may be another runner's, or closed
+    return keep["html_url"], keep["number"] == created["number"]
+
+
+def _withdraw(repo: str, fid: str, issues: list[dict], token: str, call) -> None:
+    """Hide the text of every issue of the record and close it; raise NeedsDeletion if there
+    were any (editing does not remove the old text)."""
+    from qqresults import failures
+
+    for issue in issues:
+        _patch(repo, issue, {"title": f"{failures.WITHHELD_TITLE} ({fid})",
+                             "body": failures.marker(fid) + "\n" + failures.WITHHELD_BODY,
+                             "state": "closed"}, token, call)
+    if issues:
+        urls = ", ".join(i["html_url"] for i in issues)
+        raise NeedsDeletion(f"{fid} now looks security-related but was mirrored to {urls}; "
+                            "its text is hidden and closed but stays in the edit history. "
+                            "A repo admin must delete the issue.")

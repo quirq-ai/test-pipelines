@@ -1,14 +1,16 @@
 # V0-TST-04 done-when, against the real GitHub API: a held canary creates exactly one failure
 # record and one issue. Reports the same planted held canary twice (as a retrying pipeline would),
 # then checks there is one issue with its marker and one record in a store collected from the
-# artifacts. The planted record is then linked and closed. Its subject never changes, so every run
-# reuses the same record and issue.
+# artifacts. The planted record is then linked and closed through the link action, whose upload
+# closes the stored record too. Its subject never changes, so every run reuses the same record and
+# issue. The scorecard leaves this one record out (scorecard.DEMO_RECORDS).
 name: failure-demo
 on:
   workflow_dispatch:
   pull_request:
     paths:
       - failure/**
+      - link/**
       - src/qqresults/failures.py
       - src/qqresults/backends/github.py
       - .github/workflows/failure-demo.yml
@@ -16,6 +18,7 @@ on:
     branches: [main]
     paths:
       - failure/**
+      - link/**
       - src/qqresults/failures.py
       - src/qqresults/backends/github.py
       - .github/workflows/failure-demo.yml
@@ -87,11 +90,12 @@ jobs:
           echo "records with id $ID: $records"
           test "$records" = "1"
           echo "OK: one failure record ($ID) and one issue ($FIRST_ISSUE)"
+      # Links the record this job opened and uploads the links, so the next scorecard collect
+      # closes the stored record as this closes the issue (default-branch runs only).
       - name: link and close the planted record
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: >-
-          qqresults failure link "${{ steps.first.outputs.id }}" --dir "$RUNNER_TEMP/store/failures"
-          --culprit "planted (demo)" --fix "none needed (demo)"
-          --covering-test "tests/test_failures.py::test_a_held_canary_creates_exactly_one_record_and_one_issue"
-          --mirror "$GITHUB_REPOSITORY"
+        uses: ./link
+        with:
+          id: ${{ steps.first.outputs.id }}
+          culprit: "planted (demo)"
+          fix: "none needed (demo)"
+          covering-test: "tests/test_failures.py::test_a_held_canary_creates_exactly_one_record_and_one_issue"
