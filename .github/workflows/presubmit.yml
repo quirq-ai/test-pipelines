@@ -18,7 +18,9 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.14"
-      - run: python -m pip install --quiet -e ".[test]"
+      - run: |   # qqresults runs from source; only the pinned test runner is installed
+          python -m pip install --quiet --only-binary=:all: "pytest==9.1.1"
+          echo "$GITHUB_WORKSPACE/tools/bin" >> "$GITHUB_PATH"
       - run: python -m pytest -q -p no:cacheprovider --junitxml=.qq/out/junit/tests.xml
       # V0-TST-03 done-when: a planted failure that also fails on base does not block, and a
       # failure the change introduced does, decided by the sink after retry and base comparison.
