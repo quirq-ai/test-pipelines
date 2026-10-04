@@ -91,6 +91,8 @@ qqresults query results --store .qq/store --run <run id> --unexpected
 qqresults query history --store .qq/store --test 'tests.test_greet::test_hello'
 qqresults scorecard --store .qq/store --days 7          # --json for machines
 qqresults collect --store .qq/store --repo quirq-ai/xo-space   # needs GITHUB_TOKEN
+qqresults collect --store .qq/store --repo quirq-ai/xo-space --report r.jsonl \
+  && qqresults scorecard --store .qq/store --collect-report r.jsonl   # "Collect incomplete" on skips
 ```
 
 Scorecard v0 measures, per repo: gate time-to-green p50/p90 (gate runs carry their queue-entry
@@ -107,6 +109,26 @@ listed as not measured, with the work item (quirq-infra v0 or v1) that will meas
 `TODO(suraj): no item yet`; nothing unmeasured shows as zero. A metric whose runs are stored but
 say nothing (cancelled, or no results and no job status) is not measured and says "runs stored,
 status unknown" rather than waiting on runs.
+
+### A partial collect says so
+
+`collect` skips an artifact it cannot read or refuses (an API error such as a rate-limited 403,
+a refused origin, a bad archive) with a warning, so one bad artifact cannot block the others,
+and a repo whose artifacts cannot be listed does not stop the next repo. The card must not
+present what is left as complete, so the scorecard workflow joins the two through one report:
+
+- `collect --report FILE` appends JSON lines to FILE: `{"repo", "finished": false}` for every
+  repo before any is read, then, per repo, `{"repo", "finished": true, "listed", "new",
+  "stored", "skipped": [reason, ...]}`. Several collect calls share one FILE. It lives in the
+  runner's temp directory, never in the store, so no stale report carries over to a later card.
+- `scorecard --collect-report FILE` reads it, and the card (and `scorecard.json`'s `collect`)
+  then says either "Collect complete" or "Collect incomplete", with each repo that skipped
+  artifacts (how many, and the first five reasons), could not be listed, or did not finish.
+  A missing or unreadable report, or one that names no repo, is incomplete too; when the
+  collect step fails, the workflow appends a `(collect step)` line that did not finish.
+
+The runs collect missed are left out of that card only: a skip from an API error is retried by
+the next collect. Without `--collect-report` the card says nothing about collect, as before.
 
 ### What collect trusts
 

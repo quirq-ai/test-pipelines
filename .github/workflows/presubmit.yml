@@ -69,7 +69,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          qqresults collect --store "$RUNNER_TEMP/store" --repo "$GITHUB_REPOSITORY"
+          qqresults collect --store "$RUNNER_TEMP/store" --repo "$GITHUB_REPOSITORY" \
+            --report "$RUNNER_TEMP/collect-report.jsonl"
           qqresults query runs --store "$RUNNER_TEMP/store" | tail -5
-          qqresults scorecard --store "$RUNNER_TEMP/store" --days 30 | tee -a "$GITHUB_STEP_SUMMARY"
+          qqresults scorecard --store "$RUNNER_TEMP/store" --days 30 \
+            --collect-report "$RUNNER_TEMP/collect-report.jsonl" | tee -a "$GITHUB_STEP_SUMMARY"
           test -n "$(qqresults query runs --store "$RUNNER_TEMP/store")"
