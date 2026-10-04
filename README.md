@@ -63,7 +63,8 @@ branch. The `scorecard` workflow collects every `qq-results-*` artifact from the
 runs into it, commits only new files, and writes `scorecard.md` and `scorecard.json` next to them
 (and to the run's summary). It also collects perf's runs (V0-PRF-01): their Run names the
 measured repo with kind `other`, so they are stored and queryable but never counted as that
-repo's presubmit, gate or post-submit runs. Importing a run that is already stored is a no-op; importing different
+repo's presubmit, gate or post-submit runs. `collect` refuses any other kind of run that names
+a repo other than the one it was found in. Importing a run that is already stored is a no-op; importing different
 bytes for the same run is an error.
 
 ```sh

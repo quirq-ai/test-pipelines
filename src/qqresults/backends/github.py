@@ -19,6 +19,7 @@ import zipfile
 from collections.abc import Mapping
 from pathlib import Path
 
+from qqresults import bundle
 from qqresults.errors import Error
 from qqresults.model import Change, Run, RunKind
 
@@ -104,7 +105,7 @@ def run_from_env(env: Mapping[str, str], kind: str = "", name: str = "") -> Run:
 def _rfc3339_utc(text: str) -> str:
     """text as RFC 3339 UTC ("...Z"), or "" when it is missing or not a timestamp with a zone."""
     try:
-        t = dt.datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+        t = dt.datetime.fromisoformat(text.strip().upper().replace("Z", "+00:00"))
     except ValueError:
         return ""
     if t.tzinfo is None:
@@ -178,7 +179,17 @@ def _import_artifact(repo: str, art: dict, store, token: str, get) -> bool:
                 z.extractall(tmp)
         except zipfile.BadZipFile:
             raise GitHubAPIError("not a zip archive") from None
+        _check_origin(repo, Path(tmp))
         return store.import_dir(Path(tmp))
+
+
+def _check_origin(repo: str, path: Path) -> None:
+    """A repo's artifacts may describe another repo's code only as kind "other" (perf runs do),
+    so one repo's workflows cannot add runs that the scorecard counts for another."""
+    run = bundle.read(path).run
+    if run.repo.lower() != repo.lower() and run.kind != RunKind.OTHER.value:
+        raise GitHubAPIError(f"run {run.id} is for {run.repo} but was found in {repo}; "
+                             "only kind 'other' may name another repo")
 
 
 def collect(repo: str, store, token: str, get=http_get) -> tuple[int, int, list[str]]:

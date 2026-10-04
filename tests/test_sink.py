@@ -132,6 +132,7 @@ def test_unreadable_bundle_line_is_a_bundle_error(tmp_path, junit_dir):
 @pytest.mark.parametrize("value, expected", [
     ("2026-10-04T12:00:00Z", "2026-10-04T12:00:00Z"),
     ("2026-10-04T14:00:00+02:00", "2026-10-04T12:00:00Z"),
+    ("2026-10-04t12:00:00z", "2026-10-04T12:00:00Z"),   # RFC 3339 allows lowercase
     ("2026-10-04T12:00:00", ""),          # no zone: ignored
     ("yesterday", ""), ("", "")])
 def test_gate_timing_sets_queued_at(tmp_path, value, expected):

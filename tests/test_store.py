@@ -90,8 +90,8 @@ def zipped(b):
 
 
 def test_collect_imports_each_artifact_once(tmp_path):
-    name1, zip1 = zipped(make("github/o/x/1/1/presubmit"))
-    name2, zip2 = zipped(make("github/o/x/2/1/presubmit", fail=True))
+    name1, zip1 = zipped(make("github/o/x/1/1/presubmit", repo="o/x"))
+    name2, zip2 = zipped(make("github/o/x/2/1/presubmit", fail=True, repo="o/x"))
     listing = {"artifacts": [
         {"name": name1, "expired": False, "archive_download_url": "https://dl/1"},
         {"name": name2, "expired": False, "archive_download_url": "https://dl/2"},
@@ -149,3 +149,21 @@ def test_collect_cli_warns_and_keeps_going(tmp_path, capsys, monkeypatch):
     captured = capsys.readouterr()
     assert "o/x: 1 new, 0 already stored, 1 skipped" in captured.out
     assert "warning: o/bad: HTTP 404" in captured.err
+
+
+def test_collect_refuses_runs_one_repo_files_for_another(tmp_path):
+    forged, forged_zip = zipped(make("github/o/perf/1/1/x", kind="postsubmit", fail=True))
+    perf, perf_zip = zipped(make("github/o/perf/2/1/x", kind="other"))   # how perf names xo-space
+    listing = {"artifacts": [
+        {"name": forged, "expired": False, "archive_download_url": "https://dl/1"},
+        {"name": perf, "expired": False, "archive_download_url": "https://dl/2"}]}
+
+    def get(url, token):
+        if "/actions/artifacts" in url:
+            return json.dumps(listing).encode()
+        return {"https://dl/1": forged_zip, "https://dl/2": perf_zip}[url]
+
+    st = FileStore(tmp_path)
+    new, old, errors = github.collect("o/perf", st, "tok", get=get)
+    assert (new, old) == (1, 0) and len(errors) == 1 and "only kind 'other'" in errors[0]
+    assert [r.kind for r, _ in st.runs()] == ["other"]

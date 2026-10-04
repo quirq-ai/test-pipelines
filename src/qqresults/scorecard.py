@@ -85,8 +85,9 @@ def job_key(run: Run) -> str:
 
 def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
     m = Metric("Gate time-to-green", "P1: p50 under 15 min, p90 under 30 min", unit="min")
-    minutes = [(parse_time(r.finished_at) - parse_time(r.queued_at)).total_seconds() / 60
-               for r, _ in runs if r.kind == RunKind.GATE and r.queued_at and r.finished_at]
+    waits = [(parse_time(r.finished_at) - parse_time(r.queued_at)).total_seconds() / 60
+             for r, _ in runs if r.kind == RunKind.GATE and r.queued_at and r.finished_at]
+    minutes = [w for w in waits if w >= 0]   # a clock or input error is not a negative wait
     if not minutes:
         m.waiting_on = "V0-GAT-04 records queue-entry time on gate runs"
         return m
