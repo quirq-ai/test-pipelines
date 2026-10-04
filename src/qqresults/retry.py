@@ -34,9 +34,9 @@ base), and one type shared by every failure is the kind if it carries one. Only 
 missing, or every failure has the same type and it carries no kind, do the messages decide,
 for every result alike: the kind is the first word of the message's first line, after removing
 ANSI escape codes and a leading `E` marker, and only if it looks like an exception class, an
-identifier or namespaced identifier (`a.b.C`, `a::C`) whose last part ends in `Error`,
-`Exception`, `Failure`, `Fault` or `Panic`, in any case, with an optional trailing colon (such
-as `FileNotFoundError:`). A failure with no class-like kind never exonerates: an empty message
+identifier or namespaced identifier (`a.b.C`, `a::C`) whose last part is CamelCase and ends in
+`Error`, `Exception`, `Failure`, `Fault` or `Panic` after more letters, with an optional
+trailing colon (such as `FileNotFoundError:`). A failure with no class-like kind never exonerates: an empty message
 (some runners write none), a file path, a test name, prose such as `expected` or `Test method X
 threw exception:`, a quoted word, or `assert`. Some words carry no kind even when class-like,
 compared in any case, with any trailing punctuation and without their namespace: generic words
@@ -197,11 +197,12 @@ def _kind(r: Result, by_type: bool) -> str:
 
 
 # The first word of a message counts as a kind only when it looks like an exception class: an
-# identifier, or a namespaced one (`a.b.C`, `a::C`), whose last part ends in one of these, in any
-# case, with an optional trailing colon. Anything else (a file path, a test name, prose, a quoted
-# word) carries no kind, so the failure never exonerates.
-_CLASS_SUFFIXES = ("error", "exception", "failure", "fault", "panic")
-_CLASS_LIKE = re.compile(r"\A(?:[^\W\d]\w*(?:\.|::))*[^\W\d]\w*:?\Z")
+# identifier, or a namespaced one (`a.b.C`, `a::C`), whose last part is CamelCase and ends in one
+# of these with something before it (`ValueError`, not `Error`, `Terror` or `parse_error`), with
+# an optional trailing colon. Anything else (a file path, a test name, prose, a quoted word)
+# carries no kind, so the failure never exonerates.
+_CLASS_SUFFIXES = ("Error", "Exception", "Failure", "Fault", "Panic")
+_CLASS_LIKE = re.compile(r"\A(?:[^\W\d]\w*(?:\.|::))*[A-Z][A-Za-z0-9]*:?\Z")
 
 
 def _informative(kind: str) -> bool:
@@ -211,8 +212,9 @@ def _informative(kind: str) -> bool:
 
 def _class_like(word: str) -> bool:
     """A message's first word that carries a kind: class-like (_CLASS_LIKE) and not generic."""
-    last = re.split(r"\.|::", word.rstrip(":"))[-1].casefold()
-    return (bool(_CLASS_LIKE.match(word)) and last.endswith(_CLASS_SUFFIXES)
+    last = re.split(r"\.|::", word.rstrip(":"))[-1]
+    return (bool(_CLASS_LIKE.match(word))
+            and any(last.endswith(x) and len(last) > len(x) for x in _CLASS_SUFFIXES)
             and junit.informative_type(word))
 
 

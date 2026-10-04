@@ -216,8 +216,9 @@ type shared by every failure is the kind if it carries one. Only when a type is 
 every failure has the same type and it says nothing (Rust libtest's `assert`), do the messages
 decide: the kind is the first word of the message's first line, after removing ANSI escape
 codes and a leading pytest `E` marker, and only if it looks like an exception class: an
-identifier or namespaced identifier (`a.b.C`, `a::C`) whose last part ends in `Error`,
-`Exception`, `Failure`, `Fault` or `Panic`, such as `FileNotFoundError:`. **A failure with no
+identifier or namespaced identifier (`a.b.C`, `a::C`) whose last part is CamelCase and ends in
+`Error`, `Exception`, `Failure`, `Fault` or `Panic` after at least one more letter, such as
+`FileNotFoundError:` (not `Error`, `Terror` or `parse_error`). **A failure with no
 class-like kind never exonerates**: an empty message (libtest writes none), a file path
 (`src/lib.rs:5:9:`), a test name, prose (`expected`, MSTest's `Test method X threw
 exception:`), a quoted word, `assert`, `thread` (`thread 'x' panicked at`), `Traceback`, jest's

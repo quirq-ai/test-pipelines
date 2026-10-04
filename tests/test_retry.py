@@ -726,6 +726,9 @@ def test_an_uninformative_type_falls_back_to_the_messages(change, base, change_t
     "src/lib.rs:5:9:", "test_foo", "expected", "'NoneType'", "Test", "Test:", "x", "Assertion",
     "error[E0308]:", "ValueError!", "a..Error", "1Error", "Error", "Exception:", "a.b.Exception",
     "Failure", "Panic:", "std::io::Error:", "[captured", "AssertionError(", "\"TypeError\"",
+    # review of #28: only a CamelCase class with something before the suffix
+    "assertionerror:", "Terror", "parse_error:", "crate::parse_error:", "test_parse_error",
+    "Fault:",
 ])
 def test_a_message_word_that_is_not_class_like_is_no_kind(word):
     v = _decide_kinds(f"{word} with the change", f"{word} on base")
@@ -734,7 +737,7 @@ def test_a_message_word_that_is_not_class_like_is_no_kind(word):
 
 @pytest.mark.parametrize("word", [
     "AssertionError:", "FileNotFoundError", "java.io.IOException:", "System.IO.IOException:",
-    "std::num::ParseIntError:", "ComparisonFailure:", "SegmentationFault", "BoxPanic:", "assertionerror:",
+    "std::num::ParseIntError:", "ComparisonFailure:", "SegmentationFault", "BoxPanic:",
     "pkg.sub.MyError",
 ])
 def test_a_class_like_message_word_is_a_kind(word):
