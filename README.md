@@ -136,16 +136,21 @@ unchecked (perf-publish.yml reads perf's validated `perf-data` branch instead). 
 push, schedule or dispatch runs on the default branch; the record must be for the repo, its id
 must be the one its kind, repo and subject give (unless the subject is the public
 `sha256:<16 hex>` digest of a free-text one, which cannot be checked against the id; the id must
-then still be `<kind>-<16 hex>`), and its
-`run_id` must name the run. A link bundle (from the `link` action) is held to the same: its
+then still be `<kind>-<16 hex>`), its
+`run_id` must name the run, and its opening time must lie between 24 hours before GitHub created
+that run and 5 minutes after the run's last update or now, whichever is later (without the run's
+creation time it is refused). A link bundle (from the `link` action) is held to the same: its
 `target.json` must name a record of the repo by a `<kind>-<16 hex>` id and name the run in its
 `run_id`. Its links are added only to a record already stored, and every bundle in an artifact
-is checked against its record before any is imported: a bundle whose record is not stored yet
-is retried at the next collect, and refused for good (and not read again) once it is 7 days
-old, since a record still missing after 28 scheduled collects was refused or has expired. A
+is checked against its record before any is imported. A bundle whose record is not stored yet
+is tried again after the rest of the listing (its record may be in a newer artifact); if the
+record is still missing, it is retried at the next collect, and refused for good (and not read
+again) once it is 7 days old, since a record still missing after 28 scheduled collects was refused or has expired. A
 link bundle may carry no mark but `security`; one with any other mark is refused whole. Every
 link, in a record's artifact or a link bundle, must be dated between its record's opening and
-5 minutes from now (later links win, so a link dated far ahead would outrank every later one).
+5 minutes from now (later links win, so a link dated far ahead would outrank every later one); a
+link bundle's links may also be dated up to 5 minutes before the opening, for the clock of the
+runner that wrote them.
 Records are type-checked (strings,
 finite non-negative numbers, booleans, RFC 3339 UTC times like `2026-10-04T10:00:00Z`);
 artifacts over 20 MB, zipped or not, and bundles over 50,000 results are refused. Artifacts are

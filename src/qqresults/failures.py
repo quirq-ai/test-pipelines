@@ -399,15 +399,16 @@ def read_target(path: Path) -> Target:
 
 # A link's time decides which value is current (later links win), so a time far ahead would
 # outrank every later link forever. A link's time must lie between its record's opening and
-# now, with this much slack for the clock of the runner that wrote it.
+# now, with this much slack at both ends for the clock of the runner that wrote it (a link written
+# seconds after the record, by a runner whose clock is behind, is dated before the opening).
 LINK_CLOCK_SKEW = dt.timedelta(minutes=5)
 
 
 def check_link_bundle(src: Path, record: Failure, at_most: dt.datetime) -> Target:
     """Raise FailureError unless the link bundle at src fits record (the stored record it
     targets): the same repo, links this version writes, only the marks a link bundle may carry
-    (BUNDLE_MARKS, as "true"), and every time between the record's opening and at_most plus
-    LINK_CLOCK_SKEW. A bundle that does not fit is refused whole, never trimmed."""
+    (BUNDLE_MARKS, as "true"), and every time between the record's opening and at_most, each
+    with LINK_CLOCK_SKEW of slack. A bundle that does not fit is refused whole, never trimmed."""
     target = read_target(src)
     if record.id != target.id:
         raise FailureError(f"links for {target.id} checked against record {record.id}")
@@ -415,6 +416,12 @@ def check_link_bundle(src: Path, record: Failure, at_most: dt.datetime) -> Targe
         raise FailureError(f"links for {target.id} name repo {target.repo[:60]!r}, but the "
                            f"record is for {record.repo}")
     latest = (at_most + LINK_CLOCK_SKEW).astimezone(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        opened = dt.datetime.strptime(record.opened_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.UTC)
+    except (TypeError, ValueError):
+        raise FailureError(f"links for {target.id}: the record's opening time "
+                           f"{str(record.opened_at)[:40]!r} is not a UTC time") from None
+    earliest = (opened - LINK_CLOCK_SKEW).strftime("%Y-%m-%dT%H:%M:%SZ")
     for p in sorted((src / LINKS).glob("*.json")) if (src / LINKS).is_dir() else []:
         try:
             link = json.loads(p.read_text(encoding="utf-8"))
@@ -429,9 +436,10 @@ def check_link_bundle(src: Path, record: Failure, at_most: dt.datetime) -> Targe
         if field in MARKS and (field not in BUNDLE_MARKS or value != "true"):
             raise FailureError(f"links for {target.id}: a link bundle may not carry the {field} "
                                f"mark {value[:20]!r}")
-        if not record.opened_at <= at <= latest:   # one fixed format, so text order is time order
-            raise FailureError(f"links for {target.id}: {p.name} is dated {at}, not between the "
-                               f"record's opening {record.opened_at} and {latest}")
+        if not earliest <= at <= latest:   # one fixed format, so text order is time order
+            raise FailureError(f"links for {target.id}: {p.name} is dated {at}, not between "
+                               f"{earliest} (the record's opening {record.opened_at}, less the "
+                               f"clock skew) and {latest}")
     return target
 
 
