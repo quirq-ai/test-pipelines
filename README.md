@@ -61,7 +61,9 @@ across runs. Everything that knows GitHub is in `backends/github.py`.
 The store is a write-once tree of run bundles (`runs/<bundle>/`), kept on this repo's `results`
 branch. The `scorecard` workflow collects every `qq-results-*` artifact from the onboarded repos'
 runs into it, commits only new files, and writes `scorecard.md` and `scorecard.json` next to them
-(and to the run's summary). Importing a run that is already stored is a no-op; importing different
+(and to the run's summary). It also collects perf's runs (V0-PRF-01): their Run names the
+measured repo with kind `other`, so they are stored and queryable but never counted as that
+repo's presubmit, gate or post-submit runs. Importing a run that is already stored is a no-op; importing different
 bytes for the same run is an error.
 
 ```sh
@@ -73,8 +75,8 @@ qqresults scorecard --store .qq/store --days 7          # --json for machines
 qqresults collect --store .qq/store --repo quirq-ai/xo-space   # needs GITHUB_TOKEN
 ```
 
-Scorecard v0 measures, per repo: gate time-to-green p50/p90 (once gate runs carry their
-queue-entry time, V0-GAT-04), main-red minutes per week, flake rate, pass rates of gate,
+Scorecard v0 measures, per repo: gate time-to-green p50/p90 (gate runs carry their queue-entry
+time once `quirq-ai/gate/timing` exports `QQ_QUEUED_AT` before the sink, V0-GAT-04), main-red minutes per week, flake rate, pass rates of gate,
 post-submit and presubmit runs, and runs that stored no results. A run with test results is red
 when its verdict failed; one without (a repo whose only check is a typecheck, or a job that
 broke before its tests) is red only when the job itself failed, and a cancelled job, such as one

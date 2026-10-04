@@ -177,10 +177,11 @@ def pass_rate(runs: list[tuple[Run, Verdict]], kind: str, name: str) -> Metric:
 
 def missing_results(runs: list[tuple[Run, Verdict]]) -> Metric:
     m = Metric("Runs with no test results", "0", unit="runs")
-    m.value = sum(1 for r, v in runs if not (r.results_found and v.counts)
-                  and r.job_status != "cancelled")
-    m.detail = (f"of {len(runs)} stored runs; a repo with no test reports (only a typecheck, say) "
-                "shows up here, not as red")
+    m.value = sum(1 for r, v in runs if r.kind in VERIFYING
+                  and not (r.results_found and v.counts) and r.job_status != "cancelled")
+    verifying = sum(1 for r, _ in runs if r.kind in VERIFYING)
+    m.detail = (f"of {verifying} presubmit, gate and post-submit runs; a repo with no test "
+                "reports (only a typecheck, say) shows up here, not as red")
     return m
 
 

@@ -97,7 +97,19 @@ def run_from_env(env: Mapping[str, str], kind: str = "", name: str = "") -> Run:
         finished_at=dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         executor="github-actions",
         job_status=env.get("QQ_JOB_STATUS", ""),   # the sink action passes ${{ job.status }}
+        queued_at=_rfc3339_utc(env.get("QQ_QUEUED_AT", "")),   # set by quirq-ai/gate/timing
     )
+
+
+def _rfc3339_utc(text: str) -> str:
+    """text as RFC 3339 UTC ("...Z"), or "" when it is missing or not a timestamp with a zone."""
+    try:
+        t = dt.datetime.fromisoformat(text.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if t.tzinfo is None:
+        return ""
+    return t.astimezone(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # --- collecting bundles into the store ---------------------------------------------------------

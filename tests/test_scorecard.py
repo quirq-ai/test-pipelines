@@ -106,3 +106,12 @@ def test_a_passing_rerun_of_a_failed_job_ends_the_red(tmp_path):
 def test_gate_p90_is_a_field(tmp_path):
     card = scorecard.compute(seeded(tmp_path), SINCE, UNTIL)
     assert metric(card, "quirq-ai/xo-space", "Gate time-to-green").extra == {"p50": 15.0, "p90": 19.0}
+
+
+def test_perf_runs_naming_a_product_repo_are_not_counted_as_its_ci(tmp_path):
+    st = seeded(tmp_path)
+    st.put(make("perf1", kind="other", commit="c9", finished="2026-10-04T12:00:00Z", fail=True))
+    card = scorecard.compute(st, SINCE, UNTIL)
+    assert metric(card, "quirq-ai/xo-space", "Main-red time").value == 45.0
+    assert metric(card, "quirq-ai/xo-space", "Post-submit runs passed").value == 75.0
+    assert metric(card, "quirq-ai/xo-space", "Runs with no test results").value == 0
