@@ -33,6 +33,28 @@ _CAPTURED = re.compile(r"<(system-out|system-err)\b[^>]*?(?:/>|>.*?(?:</\1\s*>|$
                        re.DOTALL | re.IGNORECASE)
 
 
+# Words that say nothing about a failure's kind (see retry.py): compared ignoring case, trailing
+# punctuation and any namespace (`a.b.Exception` is `Exception`). The root exception classes are
+# generic, and so are runner categories: some runners write one fixed `type` for every failure
+# (an `assert` for an assertion and for an unrelated panic alike, a `timeout`), or begin every
+# message with the same word (`thread '<name>' panicked at`, `Traceback`, `thrown:`), so equal
+# words on both sides say nothing about whether it is the same failure (audit N1).
+GENERIC_KINDS = frozenset({"failed", "fail", "failure", "error", "def", "[captured",
+                           "exception", "throwable", "baseexception",
+                           "assert", "timeout", "timed", "panicked", "panic", "thread",
+                           "traceback", "thrown", "abort", "aborted", "signal", "killed"})
+_TRAILING = ":.!?;,"
+
+
+def informative_type(kind: str) -> bool:
+    """False for a kind that says nothing about the failure: no letters, a generic word, or
+    words separated by whitespace. A type is a single class name; one with a space is a runner
+    category (`test failure`, `test timeout`) or several types joined by the parser (`A / B`)."""
+    last = re.split(r"\.|::", kind.casefold().rstrip(_TRAILING))[-1]
+    return (any(c.isalpha() for c in kind) and not any(c.isspace() for c in kind)
+            and last not in GENERIC_KINDS)
+
+
 # A <failure> that reports a timeout, an abort or a signal is a CRASH (model.Status: a timeout or
 # a dead process is not an assertion), whatever tag the runner chose, so it never exonerates
 # (audit N1). The rule is deliberately narrow, so an ordinary assertion that mentions one of
@@ -40,19 +62,23 @@ _CAPTURED = re.compile(r"<(system-out|system-err)\b[^>]*?(?:/>|>.*?(?:</\1\s*>|$
 #   - the `type`, split into words at anything that is not a letter or digit and compared in any
 #     case, has one of _CRASH_TYPE_WORDS as a whole word (`timeout`, `test timeout`, `test
 #     abort`, `x.Timeout`; not `TimeoutError`, which is an exception class the test raised), or
-#   - the first line of the message, in any case, after leading spaces, quotes and one generic
-#     prefix (`Failed:`, `thrown:`, `Error:`, `failure:`), begins with a timeout, abort or signal
-#     report: `Timeout`, `Timed out`, `Exceeded timeout`, `test timed out`, `abort`/`aborted`,
-#     `process aborted`, `killed by signal`, `terminated by signal`, `caught`/`received`/`fatal
-#     signal`, `signal: <number>` or a signal name such as `SIGSEGV`.
-# A message that begins with `timeout` used as a value (`timeout == 5`, `timeout is None`,
-# `timeout in (1, 2)`, `timeout.seconds`, `timeout[0]`, `timeout(...)`) stays a FAIL; an
-# assertion message that begins `assert`, `expected` or an exception class never matches.
+#   - the failure has no type, or one that carries no kind (informative_type: `assert`, `test
+#     failure`), and the first line of its message, in any case, after leading spaces, quotes
+#     and one generic prefix (`Failed:`, `thrown:`, `Error:`, `failure:`), begins with a
+#     timeout, abort or signal report: `Timeout`, `Timed out`, `Exceeded timeout`, `test timed
+#     out`, `abort`/`aborted`, `process aborted`, `killed by signal`, `terminated by signal`,
+#     `caught`/`received`/`fatal signal`, `signal <number>` followed by a signal name
+#     (`signal: 11, SIGSEGV`), or a signal name such as `SIGSEGV`.
+# A failure whose type is an exception class (`AssertionError`) is an assertion whatever its
+# message says (`timeout: expected 3 to equal 5`, `Aborted transactions: 2 != 3`). A message
+# that begins with `timeout` used as a value (`timeout == 5`, `timeout is None`, `timeout in (1,
+# 2)`, `timeout.seconds`, `timeout[0]`, `timeout(...)`) stays a FAIL, as does `signal 5 != 3`;
+# an assertion message that begins `assert`, `expected` or an exception class never matches.
 # Limits: a report that names the timeout later in the line (`test x: timeout after 5s`), or as
-# an exception class (`TimeoutError`), stays a FAIL, and its kind is compared as usual. An
-# assertion message that happens to begin with one of these words in another sense (`Aborted
-# transactions: 2 != 3`) becomes a CRASH. That error only ever blocks: a CRASH never exonerates,
-# and one that passes on a retry is FLAKY, as a FAIL would be.
+# an exception class (`TimeoutError`), stays a FAIL, and its kind is compared as usual. With no
+# informative type, an assertion message that happens to begin with one of these words in
+# another sense (`Aborted transactions: 2 != 3`) becomes a CRASH. That error only ever blocks: a
+# CRASH never exonerates, and one that passes on a retry is FLAKY, as a FAIL would be.
 _CRASH_TYPE_WORDS = frozenset({"timeout", "timedout", "abort", "aborted", "signal", "sigsegv",
                                "sigabrt", "sigbus", "sigfpe", "sigill", "sigkill", "sigterm"})
 _SIG_NAME = r"sig(?:segv|abrt|bus|fpe|ill|kill|term|trap|sys|pipe|alrm|int|quit)\b"
@@ -62,7 +88,8 @@ _CRASH_MESSAGE = re.compile(
     r"|timed\s+out\b|exceeded\s+(?:the\s+)?timeout\b|test\s+timed\s+out\b"
     r"|(?:process\s+|test\s+)?abort(?:ed)?\b"
     r"|(?:killed|terminated|aborted)\s+by\s+signal\b"
-    r"|(?:caught|received|fatal)\s+signal\b|signal\s*:?\s*\d"
+    r"|(?:caught|received|fatal)\s+signal\b"
+    rf"|signal\s*:?\s*\d+\W*{_SIG_NAME}"
     rf"|{_SIG_NAME})",
     re.IGNORECASE)
 _ESCAPES = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])|\[[0-9;]+m")
@@ -73,6 +100,8 @@ def _reports_crash(child: ET.Element) -> bool:
     words = re.split(r"[^0-9a-z]+", (child.get("type") or "").casefold())
     if _CRASH_TYPE_WORDS.intersection(words):
         return True
+    if informative_type(" ".join((child.get("type") or "").split())):
+        return False    # an exception class: an assertion, whatever the message says
     line = _ESCAPES.sub("", _message(child)).strip().split("\n", 1)[0]
     return bool(_CRASH_MESSAGE.match(line.strip()))
 

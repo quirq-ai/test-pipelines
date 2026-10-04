@@ -610,9 +610,10 @@ def test_the_failure_type_is_the_kind_when_every_failure_has_one():
     # A root exception class is no kind either.
     for root in ("Exception", "java.lang.Throwable", "kotlin.Exception", "System.Exception",
                  "builtins.BaseException"):
-        broad = _decide_kinds("x", "y", change_type=root, base_type=root)   # messages decide
+        broad = _decide_kinds("ValueError: x", "OSError: y", change_type=root,
+                              base_type=root)   # the messages decide
         assert not broad.passed and broad.tests[0].reason == (
-            "no signal: fails differently without the change (y vs x)")
+            "no signal: fails differently without the change (OSError: vs ValueError:)")
         broad = _decide_kinds("Error", "Error", change_type=root, base_type=root)
         assert not broad.passed and broad.tests[0].reason.startswith(NO_KIND)
     # A type on one side only: the messages decide, for every result alike.
@@ -630,18 +631,17 @@ def test_the_failure_type_is_the_kind_when_every_failure_has_one():
     ("thread 'tests::test_add' panicked at src/lib.rs:10:9:\nassertion `left == right` failed",
      "thread 'tests::test_add' panicked at src/lib.rs:9:70:\ncalled `Result::unwrap()` on an "
      "`Err` value: Os { code: 2, kind: NotFound }", "assert", "assert"),
-    ("", "", "timeout", "assert"),                       # libtest timeout
-    ("", "", "timeout", "timeout"),
+    ("", "", "timeout", "timeout"),                      # libtest timeout
     # cargo-nextest categories
     ("", "", "test failure", "test failure"),
     ("", "", "test timeout", "test timeout"),
     ("", "", "test abort", "test abort"),
-    ("", "", "test failure", "test abort"),
     # joined types, whitespace in a type
     ("", "", "AssertionError / Exception", "AssertionError / Exception"),
     ("", "", "Assertion\tError", "Assertion\tError"),
     # runner categories as words, in any case and with trailing punctuation
-    ("", "", "ASSERT", "Assert:"),
+    ("", "", "ASSERT", "ASSERT"),
+    ("", "", "Assert:", "Assert:"),
     ("", "", "panicked", "panicked"),
     ("", "", "Traceback", "Traceback"),
     ("", "", "thrown:", "thrown:"),
@@ -655,35 +655,88 @@ def test_the_failure_type_is_the_kind_when_every_failure_has_one():
     ("panicked at x.rs:1:1", "panicked at x.rs:2:2", "", ""),
     ("assert 1 == 2", "assert x", "", ""),
     ("panic: runtime error", "panic: open testdata", "", ""),
-    # an uninformative type on one side: the messages decide, and say nothing either
-    ("", "", "AssertionError", "assert"),
-    ("Failed", "Failed", "AssertionError", "assert"),
-], ids=["libtest-assert", "libtest-assert-messages", "libtest-timeout-vs-assert",
-        "libtest-timeout", "nextest-failure", "nextest-timeout", "nextest-abort",
-        "nextest-failure-vs-abort", "joined", "tab", "assert-case", "panicked", "traceback",
-        "thrown", "namespaced-assert", "jest-thrown", "traceback-message", "timeout-message",
-        "rust-thread", "panicked-message", "assert-message", "panic-message",
-        "one-uninformative-type", "one-uninformative-type-generic-message"])
+    # the same uninformative type everywhere, and messages that say nothing either
+    ("Failed", "Failed", "assert", "assert"),
+], ids=["libtest-assert", "libtest-assert-messages", "libtest-timeout", "nextest-failure",
+        "nextest-timeout", "nextest-abort", "joined", "tab", "ASSERT", "Assert-colon",
+        "panicked", "traceback", "thrown", "namespaced-assert", "jest-thrown",
+        "traceback-message", "timeout-message", "rust-thread", "panicked-message",
+        "assert-message", "panic-message", "generic-message"])
 def test_a_runner_category_is_no_kind(change, base, change_type, base_type):
     v = _decide_kinds(change, base, change_type=change_type, base_type=base_type)
     assert not v.passed and v.tests[0].status == "UNEXPECTED"
     assert v.tests[0].reason.startswith(NO_KIND)
 
 
+# AUDIT-R5 N1 review B1: when every failure has a type, different types fail differently, even
+# when a type says little or the messages begin alike.
+@pytest.mark.parametrize("change, base, change_type, base_type", [
+    # a JavaScript runner: an exception class with the change, a plain Error on base
+    ("Cannot read properties of undefined (reading 'bar')",
+     "Cannot find module '../gen/config.json'", "TypeError", "Error"),
+    ("TypeError: Cannot read properties of undefined (reading 'bar')",
+     "Error: Cannot find module '../gen/config.json'", "TypeError", "Error"),
+    # libtest timeout vs assert, nextest failure vs abort
+    ("", "", "timeout", "assert"),
+    ("", "", "test failure", "test abort"),
+    ("", "", "ASSERT", "Assert:"),
+    # an informative type on one side, an uninformative one on the other
+    ("AssertionError: x", "AssertionError: y", "AssertionError", "assert"),
+    ("ValueError: x", "AssertionError: y", "AssertionError", "assert"),
+    ("", "", "AssertionError", "IOError"),
+], ids=["TypeError-vs-Error", "TypeError-vs-Error-prefixed", "libtest-timeout-vs-assert",
+        "nextest-failure-vs-abort", "case-differs", "mixed-same-message",
+        "mixed-different-message", "types-different"])
+def test_different_types_fail_differently(change, base, change_type, base_type):
+    v = _decide_kinds(change, base, change_type=change_type, base_type=base_type)
+    assert not v.passed and v.tests[0].status == "UNEXPECTED"
+    assert v.tests[0].reason.startswith("no signal: fails differently without the change")
+
+
+def test_one_fixed_type_and_a_shared_message_prefix_never_exonerate():
+    # AUDIT-R5 N1 review B1, repro 2: an MSTest JUnit logger writes type="failure" for every
+    # failure and begins every message alike; the exception that differs is later in the line.
+    v = _decide_kinds(
+        "Test method Tests.Calc.Add threw exception: \nSystem.NullReferenceException: Object "
+        "reference not set to an instance of an object.",
+        "Test method Tests.Calc.Add threw exception: \nSystem.IO.FileNotFoundException: Could "
+        "not find file 'gen/config.json'.", change_type="failure", base_type="failure")
+    assert not v.passed and v.tests[0].reason.startswith(NO_KIND)
+
+
 @pytest.mark.parametrize("change, base, change_type, base_type, status", [
-    # An uninformative type falls back to the messages, for every result alike.
+    # One uninformative type everywhere: the messages decide.
     ("FileNotFoundError: gen/x", "FileNotFoundError: gen/x", "assert", "assert", "EXONERATED"),
     ("ValueError: bad", "FileNotFoundError: gen/x", "test failure", "test failure", "UNEXPECTED"),
-    # An informative type on one side and an uninformative one on the other: messages, never a
-    # type compared with a message word.
-    ("AssertionError: x", "AssertionError: y", "AssertionError", "assert", "EXONERATED"),
-    ("ValueError: x", "AssertionError: y", "AssertionError", "assert", "UNEXPECTED"),
-    # Informative types on both sides still decide.
+    # A type missing on one side: the messages decide, for every result alike.
+    ("AssertionError: x", "AssertionError: y", "AssertionError", "", "EXONERATED"),
+    ("ValueError: x", "AssertionError: y", "AssertionError", "", "UNEXPECTED"),
+    # One informative type everywhere decides.
     ("", "", "AssertionError", "AssertionError", "EXONERATED"),
-    ("", "", "AssertionError", "IOError", "UNEXPECTED"),
 ], ids=["assert-type-same-message", "category-type-different-message",
-        "mixed-same-message", "mixed-different-message", "types-same", "types-different"])
+        "missing-same-message", "missing-different-message", "types-same"])
 def test_an_uninformative_type_falls_back_to_the_messages(change, base, change_type, base_type,
                                                           status):
     v = _decide_kinds(change, base, change_type=change_type, base_type=base_type)
     assert v.tests[0].status == status and v.passed == (status == "EXONERATED")
+
+
+# AUDIT-R5 N1 review: a message's first word is a kind only when it looks like an exception class.
+@pytest.mark.parametrize("word", [
+    "src/lib.rs:5:9:", "test_foo", "expected", "'NoneType'", "Test", "Test:", "x", "Assertion",
+    "error[E0308]:", "ValueError!", "a..Error", "1Error", "Error", "Exception:", "a.b.Exception",
+    "Failure", "Panic:", "std::io::Error:", "[captured", "AssertionError(", "\"TypeError\"",
+])
+def test_a_message_word_that_is_not_class_like_is_no_kind(word):
+    v = _decide_kinds(f"{word} with the change", f"{word} on base")
+    assert not v.passed and v.tests[0].reason.startswith(NO_KIND)
+
+
+@pytest.mark.parametrize("word", [
+    "AssertionError:", "FileNotFoundError", "java.io.IOException:", "System.IO.IOException:",
+    "std::num::ParseIntError:", "ComparisonFailure:", "SegmentationFault", "BoxPanic:", "assertionerror:",
+    "pkg.sub.MyError",
+])
+def test_a_class_like_message_word_is_a_kind(word):
+    v = _decide_kinds(f"{word} with the change", f"{word} on base")
+    assert v.passed and v.tests[0].status == "EXONERATED"

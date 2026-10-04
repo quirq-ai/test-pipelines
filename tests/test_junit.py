@@ -189,10 +189,15 @@ def _failure_status(attrs: str, text: str = "") -> str:
     ('message="SIGSEGV"', ""),
     ('message="  \'Timeout\'"', ""),
     ('message="[31mTimeout[0m"', ""),     # an ANSI code whose ESC the runner dropped
+    # with a type that carries no kind, the message decides
+    ('type="assert" message="timed out after 5s"', ""),
+    ('type="test failure" message="timeout: expected 3 to equal 5"', ""),
+    ('type="failure" message="Aborted (core dumped)"', ""),
 ], ids=["libtest-timeout", "nextest-timeout", "nextest-abort", "TIMEOUT", "namespaced",
         "sig-type", "jest", "pytest-timeout", "mocha", "bare", "timed-out", "test-timed-out",
         "aborted-text", "process-aborted", "killed", "fatal-signal", "signal-number", "sig-name",
-        "quoted", "ansi"])
+        "quoted", "ansi", "assert-type-timed-out", "category-type-timeout",
+        "generic-type-aborted"])
 def test_a_failure_that_reports_a_timeout_abort_or_signal_is_a_crash(attrs, text):
     assert _failure_status(attrs, text) == Status.CRASH
 
@@ -213,10 +218,18 @@ def test_a_failure_that_reports_a_timeout_abort_or_signal_is_a_crash(attrs, text
     ('type="AssertionError" message="expected 1"', "timeout after 5s"),   # first line only
     ('message="the call aborted"', ""),
     ('message="signals: 3 != 4"', ""),
+    # review of the N1 fix: an exception-class type keeps an assertion a FAIL
+    ('message="signal 5 != 3"', ""),
+    ('message="signal: 5 != 3"', ""),
+    ('type="AssertionError" message="timeout: expected 3 to equal 5"', ""),
+    ('type="AssertionError" message="Aborted transactions: 2 != 3"', ""),
+    ('type="AssertionError" message="Timeout"', ""),
+    ('type="java.lang.AssertionError" message="SIGSEGV handler not installed"', ""),
 ], ids=["assert-timeout", "timeout-eq", "timeout-is", "timeout-in", "timeout-attr",
         "timeout-underscore", "assertion-mentions", "expected-abort", "TimeoutError-message",
         "TimeoutError-type", "assert-type", "nextest-failure", "body-only", "later-in-line",
-        "signals"])
+        "signals", "signal-compare", "signal-colon-compare", "typed-timeout-prefix",
+        "typed-aborted", "typed-Timeout", "typed-sig-name"])
 def test_an_assertion_that_mentions_a_timeout_stays_a_fail(attrs, text):
     assert _failure_status(attrs, text) == Status.FAIL
 
