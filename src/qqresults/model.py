@@ -280,4 +280,7 @@ class Failure(_Record):
 
     LINKS: ClassVar[tuple[str, ...]] = (
         "culprit", "fix", "covering_test", "operation", "postmortem", "failure_class")
+    # TODO(suraj): plan §8 also lists "operation" as needed to close a record; infra-config
+    # postmortem.toml record_needs agrees with this set, so the two disagree. Hardcoded here, not
+    # read from postmortem.toml.
     NEEDED_TO_CLOSE: ClassVar[tuple[str, ...]] = ("culprit", "fix", "covering_test")

@@ -16,11 +16,13 @@
         Plan §8's metrics from the store.
     qqresults failure open --dir DIR --kind K --repo R --subject S [--summary ...] [--mirror REPO]
     qqresults failure link --dir DIR ID --culprit C --fix F --covering-test T [--mirror REPO]
+                           [--run-id RUN --link-copy OUT]
     qqresults failure list --dir DIR
         Failure records (V0-TST-04): one per held canary, rollback or auto-revert, mirrored
         to one labelled GitHub issue (token from GITHUB_TOKEN). DIR is a store's failures/
         directory or a scratch directory that the backend keeps. The issue and --public-copy
-        carry structured fields only; the summary needs --public-summary.
+        carry structured fields only; the summary needs --public-summary. --link-copy writes
+        the links just added as a link bundle, for the backend to keep (link/action.yml).
 """
 from __future__ import annotations
 
@@ -190,7 +192,8 @@ def _mirror(state: failures.State, repo: str) -> failures.State:
     return failures.read(state.path)
 
 
-def _report(state: failures.State, created: bool | None, args) -> None:
+def _report(state: failures.State, created: bool | None, args,
+            before: set[str] | None = None) -> None:
     state = failures.read(state.path)   # with any mark the mirror added
     f = state.current
     upload = ""
@@ -198,6 +201,10 @@ def _report(state: failures.State, created: bool | None, args) -> None:
         # A security record is uploaded only as its id and security mark (replacing any public
         # copy made before it looked that way), so the store learns the mark and never mirrors it.
         upload = str(failures.public_copy(state, Path(args.public_copy)))
+    if before is not None and args.link_copy:
+        # Only the links this call added (and any the mirror added), filtered like the public
+        # copy; a security record's links carry no values.
+        upload = str(failures.link_copy(state, before, args.run_id, Path(args.link_copy)))
     verb = "" if created is None else ("opened " if created else "already open: ")
     print(f"{verb}{f.id} ({f.kind}, {f.repo}) at {state.path}")
     print("closed" if state.closed else "open; missing " + ", ".join(state.missing))
@@ -235,6 +242,8 @@ def cmd_failure(args) -> int:
     elif args.action == "link":
         path = parent / failures.dirname(args.id)
         repo = failures.read(path).record.repo  # fails clearly if the record is not here
+        links_dir = path / failures.LINKS
+        before = {p.name for p in links_dir.glob("*.json")} if links_dir.is_dir() else set()
         for field in failures.VALUE_LINKS:
             value = getattr(args, field, None)
             if not value:
@@ -256,7 +265,7 @@ def cmd_failure(args) -> int:
             if args.mirror:
                 state = _mirror(state, args.mirror)
         finally:
-            _report(state, None, args)
+            _report(state, None, args, before)
     else:
         for d in sorted(parent.iterdir()) if parent.is_dir() else []:
             if (d / failures.RECORD).is_file():
@@ -363,6 +372,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="show the summary in the public issue and upload (default: withheld)")
     fa.add_argument("--public-copy", metavar="DIR",
                     help="write the record's public view under DIR, for upload")
+    fa.add_argument("--link-copy", metavar="DIR",
+                    help="link: write the links this call added as a link bundle under DIR, for "
+                         "upload (needs --run-id, the run that linked)")
     for name in failures.VALUE_LINKS:
         if name != "operation":
             fa.add_argument("--" + name.replace("_", "-"), dest=name, help="link")
@@ -379,9 +391,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "failure":
         need = {"open": ("kind", "repo", "subject"), "link": ("id",)}.get(args.action, ())
+        if args.action == "link" and args.link_copy:
+            need += ("run_id",)
         missing = [n for n in need if not getattr(args, n)]
         if missing:
-            parser.error(f"failure {args.action} needs " + ", ".join("--" + m for m in missing))
+            parser.error(f"failure {args.action} needs " + ", ".join(
+                "--" + m.replace("_", "-") for m in missing))
+        if args.link_copy and args.action != "link":
+            parser.error("--link-copy is only for failure link")
     try:
         return args.func(args)
     except Error as e:

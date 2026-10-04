@@ -137,10 +137,20 @@ push, schedule or dispatch runs on the default branch; the record must be for th
 must be the one its kind, repo and subject give (unless the subject is the public
 `sha256:<16 hex>` digest of a free-text one, which cannot be checked against the id; the id must
 then still be `<kind>-<16 hex>`), and its
-`run_id` must name the run. Records are type-checked (strings,
+`run_id` must name the run. A link bundle (from the `link` action) is held to the same: its
+`target.json` must name a record of the repo by a `<kind>-<16 hex>` id and name the run in its
+`run_id`. Its links are added only to a record already stored, and every bundle in an artifact
+is checked against its record before any is imported: a bundle whose record is not stored yet
+is retried at the next collect, and refused for good (and not read again) once it is 7 days
+old, since a record still missing after 28 scheduled collects was refused or has expired. A
+link bundle may carry no mark but `security`; one with any other mark is refused whole. Every
+link, in a record's artifact or a link bundle, must be dated between its record's opening and
+5 minutes from now (later links win, so a link dated far ahead would outrank every later one).
+Records are type-checked (strings,
 finite non-negative numbers, booleans, RFC 3339 UTC times like `2026-10-04T10:00:00Z`);
 artifacts over 20 MB, zipped or not, and bundles over 50,000 results are refused. Artifacts are
-read oldest first. A refused artifact is a warning (`--strict` makes it fail the step). A stored
+read oldest first, so a record reported again keeps the opening time and run of its first report.
+A refused artifact is a warning (`--strict` makes it fail the step). A stored
 record that does not read is left out of queries and the scorecard, with a warning and a count
 in the card, so it cannot break them.
 
@@ -220,7 +230,29 @@ is printed in the log, so the text is public anyway. TODO(suraj): where private 
 
 The record id is derived from kind, repo and subject, and the issue carries the id in a hidden
 marker, so reporting the same event twice (a retried pipeline, a second runner) still gives one
-record and one issue. What is learned later is added as link records, never by rewriting:
+record and one issue. GitHub's issue list can lag behind a create, so two racing runners may
+each open one; every report closes each open issue with the marker but the lowest-numbered as a
+duplicate. What is learned later is added as link records, never by rewriting, with the
+`link` action:
+
+```yaml
+- uses: quirq-ai/test-pipelines/link@<commit>        # needs issues: write
+  with:
+    id: ${{ steps.failure.outputs.id }}               # the failure action's id output
+    culprit: quirq-ai/xo-space@<commit>
+    fix: https://github.com/quirq-ai/xo-space/pull/12
+    covering-test: <commit or URL>
+    dir: .qq/store/failures   # only when the record is not the failure action's in this job
+```
+
+It adds the links to the record in `dir` (by default the directory the failure action keeps in
+this job; otherwise a checkout of the `results` branch's `failures/`), updates the issue (closing
+it when complete), and uploads the links this call added as a `qq-failure-*` link bundle:
+`target.json` (the record id, its repo and this run) and `links/`, filtered as the failure
+artifact is. `collect` adds them to the stored record, so the store closes when the issue does.
+On a security record the bundle carries no values: each link goes up as `withheld`, next to the
+security mark, so the record can still close. Linking the same value again (the issue, on every
+report) adds nothing to the store. From a shell, `--link-copy DIR --run-id RUN` writes the bundle:
 
 ```sh
 qqresults failure link <id> --dir <store>/failures --culprit <owner/repo@sha> --fix <PR URL> \
@@ -234,8 +266,14 @@ record security if the value reads that way). Never run `failure open --dir` on 
 writes the full record. Keep the detail where it belongs (the PR, the postmortem) and link to it.
 
 A record closes only when culprit, fix and covering test are linked (infra-config
-`postmortem.toml` `record_needs`), and the scorecard reports the share that are. A link stored
-as `withheld` counts as linked, so a record can close on values nobody can read publicly.
+`postmortem.toml` `record_needs`), and the scorecard reports the share that are (TODO(suraj):
+plan §8 also lists the operation). The scorecard counts held canaries, canary rollbacks,
+auto-reverts and fuzz findings opened in the window; red-run records and the one planted record
+that `failure-demo` reports (fixed by its id in `scorecard.DEMO_RECORDS`, so no pipeline can
+take its own records out) are left out, each noted in the card. A fuzz
+finding, like any security record, is stored only as its id and marks, so it is counted by id
+and closes on its `withheld` links. A link stored as `withheld` counts as linked, so a record can
+close on values nobody can read publicly.
 TODO(expert): whether withheld links should count towards closing (audit S4).
 
 Free text is never public without the opt-in. The issue title and body, the failure artifact and
@@ -308,7 +346,7 @@ nothing on GitHub remembers it, and a later such report from a fresh runner (wit
 `security: "true"`) opens a public issue. The store learns the mark only once `collect` has run,
 and the action does not read the store. TODO(expert): a durable mark the action can check before
 opening an issue. The `failure-demo` workflow proves the done-when against the real API
-with a planted held canary.
+with a planted held canary, then links and closes it with the `link` action.
 
 ## v0 status
 

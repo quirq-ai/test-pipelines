@@ -14,7 +14,7 @@
 # artifact holds only the record id and its security mark. Otherwise the issue and the uploaded
 # artifact carry structured fields only; the summary and other free text appear there only with
 # `public-summary: "true"`. Needs `issues: write` on the job's token. The artifact is what the
-# results store collects.
+# results store collects. Links learned later go through the link action (link/action.yml).
 #
 # Every input (and the step's environment) is printed in the run log, which is public on a public
 # repo. Never put security detail in `summary` or any other input there: write it to a file on the
