@@ -149,3 +149,25 @@ def test_collect_cli_warns_and_keeps_going(tmp_path, capsys, monkeypatch):
     captured = capsys.readouterr()
     assert "o/x: 1 new, 0 already stored, 1 skipped" in captured.out
     assert "warning: o/bad: HTTP 404" in captured.err
+
+
+def test_collect_reads_an_artifact_holding_several_bundles(tmp_path):
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        main = bundle.write(make("github/o/x/9/1/presubmit"), Path(tmp))
+        bundle.write(make("github/o/x/9/1/presubmit/retry1"), Path(tmp))
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for d in Path(tmp).iterdir():
+                for f in bundle.FILES:
+                    z.write(d / f, f"{d.name}/{f}")
+
+    def get(url, token):
+        if "/actions/artifacts" in url:
+            return json.dumps({"artifacts": [{"name": main.name, "archive_download_url": "u"}]}).encode()
+        return buf.getvalue()
+
+    st = FileStore(tmp_path)
+    assert github.collect("o/x", st, "", get=get) == (1, 0, [])
+    assert len(st.runs()) == 2
