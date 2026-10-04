@@ -96,6 +96,7 @@ def run_from_env(env: Mapping[str, str], kind: str = "", name: str = "") -> Run:
         url=f"{server}/{repo}/actions/runs/{env['GITHUB_RUN_ID']}/attempts/{attempt}",
         finished_at=dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         executor="github-actions",
+        job_status=env.get("QQ_JOB_STATUS", ""),   # the sink action passes ${{ job.status }}
     )
 
 

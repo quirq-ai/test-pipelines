@@ -75,7 +75,10 @@ qqresults collect --store .qq/store --repo quirq-ai/xo-space   # needs GITHUB_TO
 
 Scorecard v0 measures, per repo: gate time-to-green p50/p90 (once gate runs carry their
 queue-entry time, V0-GAT-04), main-red minutes per week, flake rate, pass rates of gate,
-post-submit and presubmit runs, and runs that stored no results. Every other plan §8 metric is
+post-submit and presubmit runs, and runs that stored no results. A run with test results is red
+when its verdict failed; one without (a repo whose only check is a typecheck, or a job that
+broke before its tests) is red only when the job itself failed, and a cancelled job, such as one
+superseded by a newer push, is not counted. The sink records the job's status for this. Every other plan §8 metric is
 listed as not measured, with the item that will measure it; nothing unmeasured shows as zero.
 
 ## v0 status

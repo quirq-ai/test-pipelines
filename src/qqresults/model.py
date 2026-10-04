@@ -110,6 +110,7 @@ class Run(_Record):
     adapters: dict[str, str] = field(default_factory=dict)   # kind -> recipes version
     executor: str = ""
     results_found: bool = True      # False when the run produced no test results at all
+    job_status: str = ""            # how the job itself ended: success, failure or cancelled
     schema: str = SCHEMA
 
     _nested: ClassVar[dict[str, type[_Record]]] = {"change": Change}

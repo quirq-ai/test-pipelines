@@ -64,3 +64,24 @@ def test_cli_scorecard(tmp_path, capsys):
     assert "## quirq-ai/xo-space" in capsys.readouterr().out
     assert cli.main(["scorecard", "--store", str(tmp_path), "--json"]) == 0
     assert '"not_measured"' in capsys.readouterr().out
+
+
+def test_runs_without_results_are_not_red_unless_the_job_failed(tmp_path):
+    from qqresults import bundle, verdict
+    from qqresults.model import Run
+    st = FileStore(tmp_path)
+
+    def bare(rid, commit, finished, job_status):
+        run = Run(id=rid, repo="quirq-ai/innernet", kind="postsubmit", commit=commit,
+                  finished_at=finished, results_found=False, job_status=job_status)
+        st.put(bundle.Bundle(run, [], verdict.compute(run, [])))
+
+    bare("a", "c1", "2026-10-04T09:00:00Z", "success")      # typecheck only: no test reports
+    bare("b", "c2", "2026-10-04T10:00:00Z", "failure")      # build broke before any test ran
+    bare("c", "c3", "2026-10-04T10:30:00Z", "success")
+    bare("d", "c4", "2026-10-04T11:00:00Z", "cancelled")    # superseded; says nothing
+    card = scorecard.compute(st, SINCE, UNTIL)
+    assert metric(card, "quirq-ai/innernet", "Main-red time").value == 30.0
+    m = metric(card, "quirq-ai/innernet", "Post-submit runs passed")
+    assert m.value == round(200 / 3, 1) and "1 cancelled or unknown" in m.detail
+    assert metric(card, "quirq-ai/innernet", "Runs with no test results").value == 3

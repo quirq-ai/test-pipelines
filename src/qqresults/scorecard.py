@@ -16,6 +16,24 @@ from qqresults.store import FileStore, RunFilter
 VERIFYING = (RunKind.PRESUBMIT.value, RunKind.GATE.value, RunKind.POSTSUBMIT.value)
 
 
+def red(run: Run, v: Verdict) -> bool | None:
+    """Whether a run counts as red on the scorecard; None when it says nothing.
+
+    A run with test results is red when its verdict failed. A run without any (a repo whose only
+    check is a typecheck, or a job that broke before its tests) is red only when the job itself
+    failed. A cancelled job (superseded by a newer push) says nothing.
+    """
+    if run.job_status == "cancelled":
+        return None
+    if run.results_found and v.counts:
+        return not v.passed
+    if run.job_status == "failure":
+        return True
+    if run.job_status == "success":
+        return False
+    return None   # no results and no job status: unknown, not counted
+
+
 @dataclass
 class Metric:
     name: str
@@ -73,7 +91,7 @@ def main_red(runs: list[tuple[Run, Verdict]], since: dt.datetime, until: dt.date
     m = Metric("Main-red time", "under 60 min/week", unit="min/week")
     commits: dict[str, list[tuple[Run, Verdict]]] = defaultdict(list)
     for r, v in runs:
-        if r.kind == RunKind.POSTSUBMIT and r.finished_at:
+        if r.kind == RunKind.POSTSUBMIT and r.finished_at and red(r, v) is not None:
             commits[r.commit].append((r, v))
     if not commits:
         m.waiting_on = "post-submit runs that store results (the sink on each repo's main)"
@@ -81,8 +99,8 @@ def main_red(runs: list[tuple[Run, Verdict]], since: dt.datetime, until: dt.date
     # A commit is red as soon as its first job fails, and green once its last job has passed.
     ordered = []
     for jobs in commits.values():
-        red = [parse_time(r.finished_at) for r, v in jobs if not v.passed]
-        ordered.append((min(red), False) if red
+        reds = [parse_time(r.finished_at) for r, v in jobs if red(r, v)]
+        ordered.append((min(reds), False) if reds
                        else (max(parse_time(r.finished_at) for r, _ in jobs), True))
     ordered.sort()
     red_since = None
@@ -103,7 +121,7 @@ def main_red(runs: list[tuple[Run, Verdict]], since: dt.datetime, until: dt.date
 
 def flake_rate(runs: list[tuple[Run, Verdict]]) -> Metric:
     m = Metric("Flake rate", "under 1%", unit="%")
-    verifying = [(r, v) for r, v in runs if r.kind in VERIFYING]
+    verifying = [(r, v) for r, v in runs if r.kind in VERIFYING and r.job_status != "cancelled"]
     if not verifying:
         m.waiting_on = "presubmit, gate or post-submit runs in the store"
         return m
@@ -115,20 +133,25 @@ def flake_rate(runs: list[tuple[Run, Verdict]]) -> Metric:
 
 def pass_rate(runs: list[tuple[Run, Verdict]], kind: str, name: str) -> Metric:
     m = Metric(name, "measured", unit="%")
-    of_kind = [(r, v) for r, v in runs if r.kind == kind]
-    if not of_kind:
+    of_kind = [red(r, v) for r, v in runs if r.kind == kind]
+    counted = [x for x in of_kind if x is not None]
+    if not counted:
         m.waiting_on = f"{kind} runs in the store"
         return m
-    passed = sum(1 for _, v in of_kind if v.passed)
-    m.value = round(100 * passed / len(of_kind), 1)
-    m.detail = f"{passed} of {len(of_kind)} {kind} runs passed"
+    passed = counted.count(False)
+    m.value = round(100 * passed / len(counted), 1)
+    m.detail = f"{passed} of {len(counted)} {kind} runs passed"
+    if len(counted) < len(of_kind):
+        m.detail += f" ({len(of_kind) - len(counted)} cancelled or unknown not counted)"
     return m
 
 
 def missing_results(runs: list[tuple[Run, Verdict]]) -> Metric:
     m = Metric("Runs with no test results", "0", unit="runs")
-    m.value = sum(1 for r, _ in runs if not r.results_found)
-    m.detail = f"of {len(runs)} stored runs"
+    m.value = sum(1 for r, v in runs if not (r.results_found and v.counts)
+                  and r.job_status != "cancelled")
+    m.detail = (f"of {len(runs)} stored runs; a repo with no test reports (only a typecheck, say) "
+                "shows up here, not as red")
     return m
 
 
