@@ -105,8 +105,8 @@ artifact's workflow run (`GET /repos/{repo}/actions/runs/{id}`, fetched once per
   repo and `perf-publish.yml` for perf.
 
 A run is on the default branch only when its head branch is the default branch's name and its
-head commit is in that branch's history (`GET /repos/{repo}/compare/refs/heads/{default}...{sha}` is
-`identical` or `behind`, fetched once per commit), so a tag named like the default branch is not.
+head commit is in that branch's history (`GET /repos/{repo}/compare/refs/heads/{default}...{sha}`
+is `identical` or `behind`, fetched once per commit), so a tag named like the default branch is not.
 Every bundle in it must then name that run and one of its attempts in its id
 (`github/<repo>/<run id>/<attempt>/<job>`) and claim the kind its event gives: `merge_group` is
 `gate`, `pull_request` is `presubmit`, a push to the default branch is `postsubmit`, a schedule
@@ -122,7 +122,10 @@ apply to it, and collecting it without one is an error), and only its push, sche
 and workflow_run runs on the default branch are read; every other artifact of it is refused. The
 artifacts API does not say which job uploaded an artifact, only which workflow run, so the job is not checked:
 a cross-repo source must upload from a workflow file of its own that holds only trusted jobs
-(no pull request triggers, no job running code under test). Failure records are taken only from
+(no pull request triggers, no job running code under test). An uploader started by workflow_run
+vouches for the run that triggered it, which collect cannot see: it must filter on the default
+branch, check that run's event and head repository, and never republish that run's artifacts
+unchecked (perf-publish.yml reads perf's validated `perf-data` branch instead). Failure records are taken only from
 push, schedule or dispatch runs on the default branch; the record must be for the repo, its id
 must be the one its kind, repo and subject give (unless the subject is the public
 `sha256:<16 hex>` digest of a free-text one, which cannot be checked against the id; the id must

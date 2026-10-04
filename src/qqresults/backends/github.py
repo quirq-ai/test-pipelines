@@ -298,7 +298,7 @@ def _origin(repo: str, art: dict, trust: Trust, token: str, get, runs: dict,
     event = str(run.get("event") or "")
     sha = str(run.get("head_sha") or "")
     # head_branch is only a ref's short name: a tag named like the default branch has it too, so
-    # the commit must also be in the default branch's history. Only these events use on_default.
+    # the commit must also be in the default branch's history. Only CROSS_REPO_EVENTS use it.
     on_default = (event in CROSS_REPO_EVENTS and bool(branch) and branch == default_branch()
                   and bool(sha) and in_default(sha))
     prs = run.get("pull_requests")
@@ -325,8 +325,8 @@ def _check_bundle(origin: Origin, trust: Trust, b: bundle.Bundle) -> None:
         raise GitHubAPIError(f"run {run.id} is for {run.repo} but was found in {origin.repo}; "
                              "only kind 'other' from a default-branch run of a --cross-repo "
                              "repo may name another repo")
-    # _origin held a cross-repo source to push, schedule and dispatch runs on the default branch,
-    # each of which may produce kind other.
+    # _origin held a cross-repo source to push, schedule, dispatch and workflow_run runs on the
+    # default branch, each of which may produce kind other.
     if not cross and run.kind not in origin.kinds():
         where = "" if origin.on_default else " off the default branch"
         raise GitHubAPIError(f"run {run.id} claims kind {_short(run.kind)}, which a "
