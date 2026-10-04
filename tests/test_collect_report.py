@@ -1,5 +1,6 @@
 """A partial collect must not publish a scorecard that looks complete (AUDIT N7)."""
 import json
+import urllib.error
 
 import pytest
 
@@ -10,10 +11,13 @@ RATE = "GET https://api.github.com/x: HTTP 403 rate limit exceeded (rate limited
 
 
 def fake_collect(outcomes):
-    def collect(repo, store, token, trust):
+    def collect(repo, store, token, trust, refused=None):
         out = outcomes[repo]
         if isinstance(out, Exception):
             raise out
+        if len(out) == 4:          # (new, old, errors, refused)
+            refused.extend(out[3])
+            out = out[:3]
         return out
     return collect
 
@@ -53,7 +57,8 @@ def test_the_json_card_says_it_too(tmp_path, monkeypatch, capsys):
     status = json.loads(out)["collect"]
     assert status["complete"] is False
     assert status["repos"] == [{"repo": "o/x", "finished": True, "listed": True, "skipped": 1,
-                                "reasons": ["o/x artifact a: HTTP 403"]}]
+                                "reasons": ["o/x artifact a: HTTP 403"], "refused": 0,
+                                "refused_reasons": []}]
 
 
 def test_a_crash_leaves_the_repos_it_did_not_finish(tmp_path, monkeypatch, capsys):
@@ -65,7 +70,7 @@ def test_a_crash_leaves_the_repos_it_did_not_finish(tmp_path, monkeypatch, capsy
 
 def test_a_full_collect_says_complete(tmp_path, monkeypatch, capsys):
     out = run(tmp_path, monkeypatch, capsys, {"o/x": (1, 2, []), "o/y": (0, 0, [])})
-    assert "Collect complete: every artifact of 2 repo(s) was read." in out
+    assert "Collect complete: every trusted artifact of 2 repo(s) was read." in out
     assert "incomplete" not in out
 
 
@@ -118,3 +123,110 @@ def test_a_reason_cannot_add_markdown_to_the_card(tmp_path, monkeypatch, capsys)
     line = next(l for l in out.splitlines() if l.startswith("- o/x"))
     assert line.count("`") == 2 and "'![x](https://e.example/p.png)'" in line
     assert line.endswith("...`") and "line two" not in line
+
+
+FORK = "o/x artifact qq-results-f: workflow run 9 ran code from mallory/x, not o/x (a fork's pull request?)"
+
+
+def test_a_trust_refusal_is_listed_apart_and_keeps_the_card_complete(tmp_path, monkeypatch, capsys):
+    out = run(tmp_path, monkeypatch, capsys, {"o/x": (1, 0, [], [FORK])})
+    assert "Collect complete" in out and "incomplete" not in out
+    assert "- o/x: 1 artifact(s) refused (not trusted): `" + FORK + "`" in out
+
+
+def test_a_refusal_next_to_a_real_skip_is_still_incomplete(tmp_path, monkeypatch, capsys):
+    out = run(tmp_path, monkeypatch, capsys, {"o/x": (1, 0, ["o/x artifact a: HTTP 403"], [FORK])},
+              "--json")
+    repo = json.loads(out)["collect"]["repos"][0]
+    assert json.loads(out)["collect"]["complete"] is False
+    assert (repo["skipped"], repo["refused"]) == (1, 1)
+
+
+def test_collect_sorts_trust_refusals_from_errors(tmp_path):
+    from qqresults.store import FileStore
+    arts = {"artifacts": [
+        {"id": 1, "name": "qq-results-a", "size_in_bytes": 10, "workflow_run": {"id": 7},
+         "archive_download_url": "https://api.example/a"},
+        {"id": 2, "name": "qq-results-b", "size_in_bytes": 10, "workflow_run": {"id": 8},
+         "archive_download_url": "https://api.example/b"}]}
+    runs = {7: {"head_repository": {"full_name": "mallory/x"}, "path": ".github/workflows/qq-x.yml",
+                "run_attempt": 1},
+            8: {"head_repository": {"full_name": "o/x"}, "path": ".github/workflows/evil.yml",
+                "run_attempt": 1}}
+
+    def get(url, token):
+        if "/actions/artifacts?" in url:
+            return json.dumps(arts if "page=1" in url else {"artifacts": []}).encode()
+        if "/actions/runs/" in url:
+            return json.dumps(runs[int(url.rsplit("/", 1)[1])]).encode()
+        raise AssertionError(url)
+    refused = []
+    new, old, errors = github.collect("o/x", FileStore(tmp_path), "", get=get, refused=refused)
+    assert (new, old, errors) == (0, 0, [])
+    assert "a fork's pull request" in refused[0] and "not an allowed workflow" in refused[1]
+    # without a refused list they stay errors, as before
+    assert len(github.collect("o/x", FileStore(tmp_path), "", get=get)[2]) == 2
+
+
+def test_passes_over_one_repo_are_merged(tmp_path):
+    report = tmp_path / "r.jsonl"
+    report.write_text("\n".join(json.dumps(e) for e in [
+        {"repo": "o/x", "finished": False},
+        {"repo": "o/x", "finished": True, "listed": True, "skipped": ["o/x artifact a: HTTP 403"]},
+        {"repo": "o/x", "finished": False},
+        {"repo": "o/x", "finished": True, "listed": True, "skipped": [], "refused": [FORK]},
+    ]) + "\n")
+    status = scorecard.collect_status(report)
+    assert not status["complete"]
+    assert status["repos"] == [{"repo": "o/x", "finished": True, "listed": True, "skipped": 1,
+                                "reasons": ["o/x artifact a: HTTP 403"], "refused": 1,
+                                "refused_reasons": [FORK]}]
+    # a second pass that never finished leaves the repo unfinished, though the first did
+    report.write_text("\n".join(json.dumps(e) for e in [
+        {"repo": "o/x", "finished": False},
+        {"repo": "o/x", "finished": True, "listed": True, "skipped": []},
+        {"repo": "o/x", "finished": False}]) + "\n")
+    assert scorecard.collect_status(report)["repos"][0]["finished"] is False
+    # and a pass that could not list makes it unlisted though another pass listed
+    report.write_text("\n".join(json.dumps(e) for e in [
+        {"repo": "o/x", "finished": True, "listed": False, "skipped": ["o/x: HTTP 502"]},
+        {"repo": "o/x", "finished": True, "listed": True, "skipped": []}]) + "\n")
+    status = scorecard.collect_status(report)
+    assert not status["complete"] and status["repos"][0]["listed"] is False
+
+
+SIGNED = "https://storage.example/blob/a.zip?sv=2024&se=2026&sig=SECRETSIGNATURE%3D"
+
+
+class _Opener:
+    def __init__(self, exc):
+        self.exc = exc
+
+    def open(self, req, timeout):
+        raise self.exc
+
+
+@pytest.mark.parametrize("exc", [
+    urllib.error.HTTPError(SIGNED, 403, "Forbidden", {}, None),
+    urllib.error.URLError("connection reset"),
+])
+def test_error_messages_drop_the_query_of_a_signed_url(monkeypatch, exc):
+    monkeypatch.setattr(github.urllib.request, "build_opener", lambda *a: _Opener(exc))
+    with pytest.raises(github.GitHubAPIError) as e:
+        github._request(SIGNED, "")
+    assert "sig=" not in str(e.value) and "SECRET" not in str(e.value)
+    assert "GET https://storage.example/blob/a.zip:" in str(e.value)
+
+
+def test_a_failed_storage_get_after_the_redirect_leaks_no_signature(monkeypatch):
+    # The API answers with a redirect to signed storage, whose GET then fails.
+    monkeypatch.setattr(github.urllib.request, "build_opener",
+                        lambda *a: _Opener(urllib.error.HTTPError(SIGNED, 403, "Forbidden", {}, None)))
+    real = github._request
+    monkeypatch.setattr(github, "_request",
+                        lambda url, token, accept="application/vnd.github+json":
+                        (302, {"Location": SIGNED}, b"") if url.startswith("https://api")
+                        else real(url, token, accept))
+    with pytest.raises(github.GitHubAPIError) as e:
+        github.http_get("https://api.github.com/x/zip?per_page=1", "t")
+    assert "sig=" not in str(e.value) and "storage.example/blob/a.zip" in str(e.value)

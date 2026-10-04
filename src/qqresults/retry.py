@@ -294,9 +294,6 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
             base_commit: str = "", runner: Runner = shell, setup: str = "",
             keep_raw: bool = False) -> Rechecked:
     """Retry the failed tests, then compare the still-failing ones with base."""
-    if base_commit and not re.fullmatch(r"[0-9a-f]{40}", base_commit):   # a name can be shadowed
-        raise RetryError(f"base must be a full 40-hex lowercase commit id, not {base_commit!r}: "
-                         "a branch or tag name is fetched by name, and a tag can shadow a branch")
     retries: list[bundle.Bundle] = []
     failing = [c.test_id for c in verdict.compute(run, results).tests
                if c.status == VerdictStatus.UNEXPECTED.value]
@@ -324,6 +321,12 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
                 not_compared = REBASE_QUEUE
         except RetryError as e:              # cannot tell: never exonerate without knowing
             base_error = f"cannot read the tested commit's parents: {e}"
+    if (remaining and policy.compare_with_base and not (base_error or not_compared)
+            and base_commit and not re.fullmatch(r"[0-9a-f]{40}", base_commit)):
+        # A name is fetched by name, and a tag can shadow a branch: refuse the comparison, so
+        # the failures stay UNEXPECTED, but keep the run and its retries.
+        base_error = (f"explicit base {base_commit[:60]!r} is not a full 40-hex commit id; "
+                      "not compared")
     if remaining and policy.compare_with_base and not (base_error or not_compared):
         # An explicit base is one more base, never a replacement for the run's own.
         commits = list(dict.fromkeys(candidate_bases(run) + ([base_commit] if base_commit else [])))

@@ -52,8 +52,9 @@ inputs:
     default: ""
   base:
     description: >-
-      One more base for rerun, as a full 40-hex commit id (a branch or tag name is refused); a
-      failure must fail at it as well as at the run's own bases (the tested commit without the
+      One more base for rerun, as a full 40-hex commit id. With anything else (a branch or tag
+      name), the bundle is still written but nothing is compared with base, so failures stay
+      unexpected. A failure must fail at it as well as at the run's own bases (the tested commit without the
       change: a PR or queue entry's first parent, a push's before; and the target branch's
       commit). It never replaces them. A queue entry whose tested commit is
       neither a merge nor a child of the target branch's commit may be from a rebase queue and

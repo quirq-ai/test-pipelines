@@ -67,10 +67,6 @@ def _run(args):
 
 
 def cmd_sink(args) -> int:
-    if args.base and not re.fullmatch(r"[0-9a-f]{40}", args.base):
-        raise SystemExit("qqresults sink: --base must be a full 40-hex lowercase commit, not "
-                         f"{args.base!r} (a branch or tag name is fetched by name; a tag can "
-                         "shadow a branch)")
     run = _run(args)
     pol = policy.from_infra_config(Path(args.infra_config)) if args.infra_config else policy.Policy()
     if args.retries is not None:
@@ -123,16 +119,19 @@ def cmd_collect(args) -> int:
     for repo in args.repo:
         _log_collect(args.report, {"repo": repo, "finished": False})
     for repo in args.repo:
-        listed = True
+        listed, refused = True, []
         try:
-            new, old, errors = gh.collect(repo, st, token, trust=trust)
+            new, old, errors = gh.collect(repo, st, token, trust=trust, refused=refused)
         except Error as e:   # one repo failing to list must not hide the others
             new, old, errors, listed = 0, 0, [f"{repo}: {e}"], False
-        print(f"{repo}: {new} new, {old} already stored, {len(errors)} skipped")
+        print(f"{repo}: {new} new, {old} already stored, {len(errors)} skipped, "
+              f"{len(refused)} refused (not trusted)")
         for e in errors:
             print(f"qqresults: warning: {e}", file=sys.stderr)
+        for e in refused:
+            print(f"qqresults: refused (not trusted): {e}", file=sys.stderr)
         _log_collect(args.report, {"repo": repo, "finished": True, "listed": listed, "new": new,
-                                   "stored": old, "skipped": errors})
+                                   "stored": old, "skipped": errors, "refused": refused})
         failed |= bool(errors)
     # A bad artifact is skipped with a warning so it cannot block every later collection.
     return 1 if failed and args.strict else 0
@@ -323,8 +322,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--rerun", metavar="CMD",
                    help="retry failed tests with this shell command, then compare with base "
                         "(it writes JUnit to $QQ_JUNIT_DIR; $QQ_RETRY_TESTS lists the failed ids)")
-    s.add_argument("--base", help="one more base commit for --rerun, as a full 40-hex commit id; "
-                                  "a failure must also fail at the run's own bases")
+    s.add_argument("--base", help="one more base commit for --rerun, as a full 40-hex commit id "
+                                  "(otherwise the comparison is refused and the failures stay "
+                                  "unexpected); a failure must also fail at the run's own bases")
     s.add_argument("--setup", metavar="CMD",
                    help="prepares a checkout for --rerun: runs in the base worktree before its "
                         "tests and in the change's checkout after ($QQ_SIDE says which)")
