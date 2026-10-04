@@ -102,7 +102,7 @@ artifact's workflow run (`GET /repos/{repo}/actions/runs/{id}`, fetched once per
 - come from an allowed workflow file: `--workflow GLOB`, repeatable, by default
   `.github/workflows/qq-*.yml` (infra-config's generated builders) and
   `.github/workflows/presubmit.yml`. The `scorecard` workflow adds `failure-demo.yml` for this
-  repo and `perf.yml` plus `perf-publish.yml` for perf.
+  repo and `perf-publish.yml` for perf.
 
 A run is on the default branch only when its head branch is the default branch's name and its
 head commit is in that branch's history (`GET /repos/{repo}/compare/refs/heads/{default}...{sha}` is
