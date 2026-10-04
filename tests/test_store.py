@@ -519,11 +519,11 @@ def _demo_run(**kw):
 
 def test_collect_accepts_a_failure_from_a_default_branch_run(tmp_path):
     st = FileStore(tmp_path / "store")
-    art = _failure_zip(tmp_path / "f", links=[("culprit", "c")])
+    art = _failure_zip(tmp_path / "f", links=[("culprit", "c0ffee0")])
     for event in ("push", "schedule", "workflow_dispatch"):
         st = FileStore(tmp_path / event)
         assert _collect_zips(st, "o/x", [(*art, 7)], [_demo_run(event=event)], DEMO) == (1, 0, [])
-        assert st.failures()[0].links == {"culprit": "c"}
+        assert st.failures()[0].links == {"culprit": "c0ffee0"}
 
 
 @pytest.mark.parametrize("run,kw,error", [
