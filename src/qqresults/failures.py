@@ -12,7 +12,8 @@ It closes only when culprit, fix and covering test are all linked (postmortem.to
 Free text (the summary, and any value public_value() does not allow) stays in the record. What
 goes public (the issue, and the copy uploaded as an artifact) is public_view(): structured fields
 only, plus the summary when the caller opted in with a public_summary mark. A security record
-goes public only as its id and security mark (public_copy), so the store learns the mark.
+goes public only as its id, subject digest and security mark (public_copy), so the store learns
+the mark.
 
 The same layout is a failure bundle (kept by the backend, e.g. as a workflow artifact) and its
 place in the store (`<store>/failures/<dir>`).
@@ -49,40 +50,103 @@ LINK_FIELDS = VALUE_LINKS + MARKS          # every field a link file may have
 # any run of spaces (or none) matches.
 #
 # Words that are security terms in themselves match alone; words that are just as common in
-# ordinary failures (crash, panic, heap, leak, certificate, escalated, "not verified") match only
-# in a security phrase, so a CrashLoopBackOff, a Go panic, a Java heap OOM, a goroutine leak, an
-# expired certificate or a page escalated to on-call still gets its public issue.
+# ordinary failures (crash, panic, heap, leak, certificate, escalated, "not verified", overflow,
+# injection, token, auth, jwt, sandbox, privileged, access control, cors) match only in a security
+# phrase, so a CrashLoopBackOff, a Go panic, a Java heap OOM, a goroutine leak, an expired
+# certificate, a stack overflow in a recursion test, a dependency injection container, a token
+# bucket or an auth service timeout still gets its public issue.
+#
+# Memory-safety findings (use-after-free, double free, heap/stack buffer overflow, out-of-bounds
+# read or write, sanitizer and KASAN reports) match alone. A bare crash signal or bound error
+# (CRASH_WORDS: segfault, SIGSEGV, SIGABRT, SIGBUS, overflow, null dereference, out-of-bounds
+# index) is an ordinary crash unless the record's free text anywhere (subject, summary, labels,
+# link values) also names untrusted input (UNTRUSTED_INPUT: malformed, crafted, attacker,
+# untrusted, remote or user input, fuzzing) or an attack surface (ATTACK_SURFACE: tls, a
+# certificate, a decoder or parser, a codec or image library, a packet, http2 or grpc, a font,
+# a protocol, malloc or an allocation or buffer size), so "SIGSEGV in tls handshake" is withheld
+# and "segfault in worker" is not.
+# "parse" also matches inside test names (test_parse_args): that fails closed, on purpose.
 _SECRETS = r"(?:credential|token|secret|pass\s*word|passwd|api\s*key|ssh\s*key|private\s*key|key|pii|data)s?"
+_EXPOSED_THINGS = (r"(?:env(?:ironment)?(?:\s*var\w*)?|keys?|secrets?|endpoints?|credentials?|"
+                   r"tokens?)\b")
 _PHRASES = (
-    r"secur", r"vulnerab", r"\bcve\b", r"exploit", r"over\s*flow", r"use\s*after\s*free",
-    r"out\s*of\s*bounds", r"injection", r"credential", r"secret", r"token", r"pass\s*word",
-    r"private\s*key", r"sandbox", r"privilege", r"privesc", r"\bxss\b", r"\brce\b", r"ssrf",
-    r"csrf", r"bypass", r"unauthori", r"unauthenticated", r"\bauth[nz]?\b",
+    r"secur", r"vulnerab", r"\bcve\b", r"\bcve\s*\d{4}", r"exploit", r"use\s*after\s*free",
+    r"buffer\s*over\s*(?:flow|run)", r"(?:out\s*of\s*bounds|\boob)\s*(?:read|writ|access|load|store)",
+    r"(?:sql|nosql|command|cmd|os\s*command|shell|code|template|ldap|xpath|header|crlf|log|"
+    r"prompt|html|script|xml)\s*inject", r"\bsqli\b", r"injection\s*attack",
+    r"credential", r"secret", r"pass\s*word", r"private\s*key", r"sandbox\s*(?:escape|breakout|bypass)",
+    r"privesc", r"\bxss\b", r"\brce\b", r"ssrf", r"csrf", r"\bxsrf\b",
+    r"cross\s*site\s*(?:scripting|request\s*forger)", r"bypass", r"unauthori", r"unauthenticated",
     rf"{_SECRETS}\s*(?:is\s*|was\s*|are\s*)?leak", rf"leak\w*\s*(?:the\s*|an?\s*)?{_SECRETS}",
-    r"sanitizer", r"\b[amkt]san\b", r"\bubsan\b", r"heap\s*(?:overflow|buffer|corruption|spray|"
+    rf"(?:leaked|leaking|leaks|expos\w*)\s*(?:the\s*|an?\s*|in\s*|to\s*|via\s*)?{_EXPOSED_THINGS}",
+    rf"(?:leaked|exposed)\s*(?:in\s*|to\s*|via\s*)?(?:the\s*)?logs?\b",
+    rf"\b{_EXPOSED_THINGS}\s*(?:is\s*|was\s*|are\s*|were\s*)?(?:leak\w*|expos\w*)",
+    r"sanitizer", r"\b[amkt]san\b", r"\bubsan\b", r"\bkasan\b", r"heap\s*(?:overflow|buffer|corruption|spray|"
     r"over\s*read|under\s*(?:flow|read)|use\s*after)", r"traversal", r"\bdos\b", r"redos",
     r"denial\s*of\s*service", r"deserializ", r"memory\s*corruption", r"arbitrary\s*code",
-    r"remote\s*code\s*exec", r"\bsqli\b", r"sql\s*inject", r"api\s*key", r"ssh\s*key", r"passwd",
+    r"remote\s*code\s*exec", r"api\s*key", r"ssh\s*key", r"passwd", r"\baws\s*(?:secret\s*)?(?:access\s*)?keys?\b",
+    r"\bkeys?\s*(?:was\s*|were\s*)?(?:committed|pushed|checked\s*in)",
     r"attacker", r"\bpii\b", r"\bghsa\b", r"double\s*free", r"open\s*redirect", r"malicious",
-    r"access\s*control", r"sensitive\s*data", r"segv", r"segfault", r"sigabrt", r"sigbus",
-    r"sigill", r"stack\s*smash", r"\buaf\b", r"\boob\b", r"over\s*read", r"\bxxe\b",
-    r"xml\s*external\s*entit", r"null\s*(?:pointer|ptr)\s*deref", r"zip\s*slip",
+    r"(?:broken|improper|missing)\s*access\s*control", r"sensitive\s*data",
+    r"sigill", r"stack\s*smash", r"\buaf\b", r"over\s*read", r"\bxxe\b",
+    r"xml\s*external\s*entit", r"zip\s*slip",
     r"unsigned\s*(?:update|package|artifact|image|binar)", r"verify\s*=?\s*false",
-    r"insecure\s*skip\s*verify", r"prototype\s*pollution", r"\bjwt", r"\bcors\b", r"toctou",
-    r"authentication", r"authorization", r"\bidor\b", r"\bssti\b", r"\bcwe\b", r"spoof",
+    r"insecure\s*skip\s*verify", r"prototype\s*pollution", r"toctou",
+    r"\bjwt\b.{0,40}?(?:\bnone\b|\balg\b|not\s*(?:verified|checked|validated)|forg|signature|"
+    r"secret|leak|unsigned|tamper)", r"(?:forged|unsigned|tampered)\s*jwt",
+    r"\b(?:missing|no|broken|lacks?|without)\s*(?:authn?\b|authz\b|authenticat\w*|authoriz\w*|"
+    r"access\s*control|auth\s*check)",
+    r"(?:authoriz\w*|authenticat\w*|\bauth[nz]?|access\s*control|auth\s*check)\s*(?:is\s*)?"
+    r"(?:missing|absent|not\s*enforced|bypass\w*)",
+    r"container\s*(?:escape|break\s*out)",
+    r"(?:token|credential|password|secret|api\s*key|cookie)s?\s*(?:\w+\s*){0,2}?(?:over|via|in)\s*"
+    r"(?:plain\s*)?(?:http\b|plain\s*text|clear\s*text)",
+    r"\balg\s*=?\s*[\"']?none\b", r"\bcors\b.{0,30}?(?:any|all|every|wildcard|arbitrary|reflect\w*|"
+    r"null|\*)\s*origin", r"\bcors\s*misconfig", r"\bidor\b", r"\bssti\b", r"\bcwe\b", r"spoof",
     r"impersonat", r"smuggl", r"without\s*(?:login|auth|password|a\s*session)",
     r"reachable\s*without", r"anonymous\s*(?:access|user|read|write|request)",
     r"open\s*to\s*(?:every|any|anon|all\b|the\s*public)", r"world\s*(?:read|writ)",
     r"publicly\s*(?:accessible|readable|writable|reachable|exposed)",
     r"privilege\s*escalat|escalat\w*\s*(?:of\s*)?privilege",
+    r"account\s*take\s*over", r"session\s*fixation", r"exfiltrat", r"back\s*door", r"malware",
+    r"\bmitm\b", r"man\s*in\s*the\s*middle", r"log\s*4\s*shell", r"heartbleed", r"click\s*jack",
     r"(?:certificate|cert|tls|ssl|hostname)\s*(?:validation|verification|check\w*)\s*"
     r"(?:is\s*|was\s*)?(?:disabled|skipped|off|bypass)",
+    r"(?:signature|sig|certificate|cert|tls|ssl|token|host\w*|auth\w*|permission|access|csrf|"
+    r"origin|jwt)s?\s*(?:verification|validation|check)s?\s*(?:is\s*|was\s*|are\s*|were\s*)?"
+    r"(?:skipped|disabled|bypass)",
     r"(?:skip\w*|disabl\w*|no|without)\s*(?:tls|ssl|cert\w*|hostname)\s*verif",
+    r"stack\s*use\s*after\s*(?:return|scope)", r"type\s*confusion", r"dangling\s*pointer",
+    r"arbitrary\s*file\s*(?:read|writ)",
+    r"(?:pickle|yaml|marshal)\W*loads?\W+(?:\w+\W+){0,3}?(?:untrusted|user\s*input)",
+    r"untrusted\s*(?:\w+\s*){0,2}?(?:pickle|yaml|marshal)\s*load",
+    r"self\s*signed\s*cert\w*\s*(?:is\s*|was\s*|were\s*)?accepted",
+    r"hostname\s*(?:mismatch|verification|check)\s*(?:is\s*|was\s*)?(?:ignored|skipped|disabled)",
+    r"integer\s*over\s*flow\s*in\s*(?:the\s*)?(?:length|size|bounds)\s*check",
+    r"session\s*(?:token|cookie|id)?\s*(?:is\s*|was\s*)?(?:still\s*)?(?:reused|valid|usable|accepted)"
+    r"\s*after\s*(?:log\s*out|sign\s*out)",
+    r"race\s*condition\s*in\s*(?:the\s*)?(?:auth\w*|login|session|permission|access\s*check)",
     r"(?:signature|sig|auth\w*|login|sign\s*in|token|cert\w*|password|session|csrf|origin|"
     r"permission)s?\s*(?:is\s*|was\s*|are\s*)?(?:not|never|no\s*longer|un)\s*(?:required|checked|"
     r"enforced|verified|validated)",
 )
 SECURITY_WORDS = re.compile("|".join(_PHRASES))
+# Ordinary crash signals that count only with UNTRUSTED_INPUT or ATTACK_SURFACE (see above).
+CRASH_WORDS = re.compile(r"segv|segfault|sigabrt|sigbus|out\s*of\s*bounds|\boob\b|"
+                         r"over\s*flow|null\s*(?:pointer\s*|ptr\s*)?deref")
+# A label (stage, signal, channel) that is itself a crash word is withheld, so a bare "segfault"
+# never shows next to a "decoder" label.
+LABEL_CRASH_WORDS = CRASH_WORDS
+UNTRUSTED_INPUT = re.compile(
+    r"malformed|crafted|attacker|untrusted|remote\s*(?:input|request|peer|attacker)|user\s*input|"
+    r"large\s*request|"
+    r"from\s*the\s*network|\bfuzz(?:er|ers|ing|ed)?\b")
+ATTACK_SURFACE = re.compile(
+    r"\b(?:tls|ssl|handshake|libssl|openssl|boringssl|x509|certs?|certificates?|decod\w*|"
+    r"pars(?:e|er|ers|ing)|codecs?|deserializ\w*|packets?|libxml\w*|"
+    r"image\s*(?:decod\w*|pars\w*|load\w*)|fonts?|media|protocols?|alloc(?:ation)?\s*size|"
+    r"libpng|png|jpe?g|webp|gif|zlib|inflate|ffmpeg|http2|unmarshal\w*|grpc|"
+    r"[mc]alloc|realloc|buffer\s*size)\b")
 
 
 def security_text(text: str) -> str:
@@ -96,7 +160,30 @@ def security_text(text: str) -> str:
 
 
 def reads_as_security(text: str) -> bool:
-    return bool(SECURITY_WORDS.search(security_text(text)))
+    """True when text matches SECURITY_WORDS, or has a crash word and, anywhere in it, untrusted
+    input or an attack surface. Pass all of a record's free text at once (looks_security_related
+    does), so a crash word in one field and an attack surface in another still count."""
+    text = security_text(text)
+    return bool(SECURITY_WORDS.search(text) or (
+        CRASH_WORDS.search(text)
+        and (UNTRUSTED_INPUT.search(text) or ATTACK_SURFACE.search(text))))
+
+
+_HEX = re.compile(r"\b(?:sha(?:1|256|512):)?[0-9a-f]{7,}\b", re.IGNORECASE)
+
+
+def free_text_reads_as_security(text: str, repo: str) -> bool:
+    """reads_as_security for free text of a record of repo, without its own names (below)."""
+    return reads_as_security(_without_own_names(text, repo))
+
+
+def _without_own_names(text: str, repo: str) -> str:
+    """text without the record's own repo (owner/name, org-chosen, as public_value exempts it),
+    digests and hex runs, which are not prose, so a repo called auth-gateway does not make the run
+    ids and links that name it read as security."""
+    if _REPO.fullmatch(repo):
+        text = re.sub(rf"(?<![\w.-]){re.escape(repo)}(?![\w-])", " ", text, flags=re.IGNORECASE)
+    return _HEX.sub(" ", text)
 
 
 # Errs towards withholding where the word is a security term ("tokenizer" matches too), at the
@@ -131,14 +218,16 @@ def looks_security_related(f: Failure, links: dict[str, str] | None = None) -> b
     """True when the record or any link reads like a security issue. Errs towards True.
 
     Only free text is classified: names the org chose (the repo, the run id with its job, the
-    issue URL) are not, so a repo called auth-gateway does not make all its failures security.
+    issue URL, and the record's own owner/name wherever it appears, as in a run-id subject or a
+    pull request URL) are not, so a repo called auth-gateway does not make all its failures
+    security.
     """
     if f.security or f.kind in SECURITY_KINDS or (links or {}).get("security"):
         return True
     org_chosen = {"id", "kind", "repo", "run_id", "opened_at", "schema"}
     text = [v for k, v in f.to_dict().items() if k not in org_chosen and isinstance(v, str)]
     text += [str(v) for k, v in (links or {}).items() if k not in MARKS + ("issue",)]
-    return reads_as_security(" | ".join(text))
+    return free_text_reads_as_security(" | ".join(text), f.repo)
 
 
 def new(kind: str, repo: str, subject: str, **fields) -> Failure:
@@ -304,7 +393,8 @@ def public_value(v: str, repo: str, field: str = "") -> str:
     if not v:
         return v
     if field in LABEL_FIELDS:
-        ok = _LABEL.fullmatch(v) and "test" not in v and not reads_as_security(v)
+        ok = (_LABEL.fullmatch(v) and "test" not in v and not reads_as_security(v)
+              and not LABEL_CRASH_WORDS.search(security_text(v)))
         return v if ok else WITHHELD
     if field == "repo":   # org-chosen: a plain owner/name shows as it is
         return v if _REPO.fullmatch(v) else WITHHELD
@@ -324,13 +414,23 @@ def public_value(v: str, repo: str, field: str = "") -> str:
     return v
 
 
+_SUBJECT_DIGEST = re.compile(r"sha256:[0-9a-f]{16}")
+
+
+def subject_digest(subject: str) -> str:
+    """The subject as a public copy shows it in place of free text: sha256:<16 hex> of it (a
+    subject already in that form is kept, so a copy of a copy does not change)."""
+    if _SUBJECT_DIGEST.fullmatch(subject):
+        return subject
+    return "sha256:" + hashlib.sha256(subject.encode()).hexdigest()[:16]
+
+
 def public_view(f: Failure, public_summary: bool = False) -> Failure:
     """The failure as it may be shown publicly: every free-text field is withheld unless it is a
     short label (stage, signal, channel) or a commit, digest, own-org reference or GitHub URL; a
     free-text subject is replaced by its digest, and the summary is dropped unless the caller
     opted in. Kind, id and opened_at are not free text (an enum, a hash, a time)."""
-    subject = f.subject if public_value(f.subject, f.repo) == f.subject else (
-        "sha256:" + hashlib.sha256(f.subject.encode()).hexdigest()[:16])
+    subject = f.subject if public_value(f.subject, f.repo) == f.subject else subject_digest(f.subject)
     return dataclasses.replace(
         f, repo=public_value(f.repo, f.repo, "repo"), subject=subject,
         summary=f.summary if public_summary else "",
@@ -384,7 +484,7 @@ def _public_bundle(src: Path, dest: Path) -> None:
 
     A record that is not security-related gets its public view, with its links passed through the
     same filter and renamed from their public bodies. A security record gets a marks-only bundle:
-    its id, kind, structured subject and run, and one security mark, so whoever reads the bundle
+    its id, kind, subject digest and run, and one security mark, so whoever reads the bundle
     learns the mark (and stops mirroring) and nothing else.
     """
     state = read(src)
@@ -393,10 +493,10 @@ def _public_bundle(src: Path, dest: Path) -> None:
     (dest / LINKS).mkdir(parents=True, exist_ok=True)
     if state.security:
         pub = public_view(state.record)
-        record = Failure(id=pub.id, kind=pub.kind, repo=pub.repo, subject=pub.subject,
+        record = Failure(id=pub.id, kind=pub.kind, repo=pub.repo,
+                         subject=subject_digest(state.record.subject),
                          opened_at=pub.opened_at, run_id=pub.run_id, security=True)
-        at = state.record.opened_at if _TIME.fullmatch(state.record.opened_at) else now()
-        _write_link(dest, "security", "true", at)
+        _write_link(dest, "security", "true", state.record.opened_at)   # check_shape: a time
     else:
         record = public_view(state.record, state.public_summary)
         for p in sorted((src / LINKS).glob("*.json")) if (src / LINKS).is_dir() else []:

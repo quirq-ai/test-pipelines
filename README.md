@@ -205,7 +205,9 @@ Every held canary, canary rollback and auto-revert opens one write-once `Failure
 GitHub prints every input of an action (and its steps' environment) in the run log, and a public
 repo's run logs are public. So never put security detail in `summary`, or in any other input, on a
 public repo: write it to a file on the runner and pass `summary-file: <path>` instead (the file's
-contents are not logged). TODO(suraj): where private details live.
+contents are not logged). Write that file without echoing the text through the log: a step that
+runs `echo "${{ ... }}" > summary.txt` has the expression expanded into its script, and the script
+is printed in the log, so the text is public anyway. TODO(suraj): where private details live.
 
 The record id is derived from kind, repo and subject, and the issue carries the id in a hidden
 marker, so reporting the same event twice (a retried pipeline, a second runner) still gives one
@@ -259,16 +261,29 @@ copy written by `--public-copy`, never the record itself.
 
 The security classifier errs towards withholding: records flagged `security`, of kind `fuzz`, or
 whose free text (summary, subject, labels, link values) matches security terms such as
-"overflow", "credential", "segfault", "remote code execution" or "without login" are kept but
-never mirrored to a public issue, even with the opt-in. Words common in ordinary failures (crash,
-panic, heap, leak, certificate, escalated, "not verified") count only in a security phrase
-("heap buffer overflow", "credential leak", "certificate verification disabled", "signature not
-verified"). Names the org chose (the repo, the run id and job, the issue URL) are not
-classified. Text is matched after NFKC normalisation, removing zero-width and other format
+"buffer overflow", "credential", "use-after-free", "remote code execution" or "without login" are
+kept but never mirrored to a public issue, even with the opt-in. Words common in ordinary failures
+(crash, panic, heap, leak, certificate, escalated, "not verified", overflow, injection, token,
+auth, JWT, sandbox, privileged, access control, CORS) count only in a security phrase ("heap
+buffer overflow", "SQL injection", "credential leak", "auth bypass", "missing authorization
+check", "sandbox escape", "container breakout", "CORS any origin", "certificate verification
+disabled", "JWT signature not verified"). Memory-safety findings (use-after-free, double free,
+heap or stack buffer overflow, out-of-bounds read or write, sanitizer and KASAN reports) always
+count; a bare segfault, SIGSEGV, SIGABRT, SIGBUS, overflow, null dereference or out-of-bounds
+index counts only when the record's free text anywhere (subject, summary, labels, links) also
+names untrusted input (malformed, crafted, attacker, untrusted, remote or user input, a large
+request, fuzzing) or an attack surface (TLS, a certificate, a decoder or parser, a codec, an image
+or compression library, a packet, http2 or grpc, a font, a protocol, malloc, an allocation or
+buffer size), so "SIGSEGV in tls handshake" is withheld and "segfault in worker" gets an issue. A
+label (stage, signal) that is itself a crash word is withheld. Names the
+org chose (the repo, the run id and job, the issue URL, and the record's own `owner/name` wherever
+it appears, as in a run-id subject or a pull request link) are not classified, nor are digests
+and hex runs. Text is matched after NFKC normalisation, removing zero-width and other format
 characters, splitting camelCase and turning `_`, `-`, `.`, `/`, `:`, `#` and `@` into spaces,
 so `test_jwt_not_checked` and `open-redirect` count. A security record's artifact holds only its id,
-kind, subject (or its digest), run and a `security` mark, so the store learns the mark and
-`failure link --mirror` on the store record never republishes it. Reporting an existing record
+kind, subject digest (`sha256:<16 hex>`, even for a commit), run and a `security` mark, so the store learns the mark and
+`failure link --mirror` on the store record never republishes it. The digest hides a prose
+subject, not a commit: anyone can hash the repo's public commits and find which one it is. Reporting an existing record
 again with `security: "true"` or security-looking text marks it security too. If a record only
 looks that way after its issue was opened, the issue's text is hidden and it is closed, and the
 step fails asking a repo admin to delete it: editing an issue does not remove the old text from
