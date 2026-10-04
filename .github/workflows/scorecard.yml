@@ -1,0 +1,56 @@
+# Results store v0 and scorecard v0 (V0-TST-02). Collects the result bundles that each repo's
+# builders kept as workflow artifacts into the store on this repo's `results` branch (write-once;
+# only ever adds files), then computes the scorecard from the store.
+name: scorecard
+on:
+  schedule:
+    - cron: "23 */6 * * *"   # off the hour: GitHub delays and drops on-the-hour schedules
+  workflow_dispatch:
+  push:
+    branches: [main]
+permissions:
+  contents: write            # push to the results branch of this repo only
+  actions: read              # list and download workflow artifacts
+concurrency:
+  group: scorecard           # one writer to the results branch at a time
+  cancel-in-progress: false
+jobs:
+  scorecard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - run: python -m pip install --quiet .
+      - name: open the store (results branch)
+        run: |
+          if git fetch --depth 1 origin results; then
+            git worktree add -B results .qq/store FETCH_HEAD
+          else
+            git worktree add --orphan -b results .qq/store
+          fi
+      # TODO(expert): read the repo list from infra-config repos.toml (through qqcfg) once it
+      # lists the infra repos too.
+      - name: collect result bundles
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          qqresults collect --store .qq/store
+          --repo quirq-ai/test-pipelines --repo quirq-ai/xo-space --repo quirq-ai/innernet
+      - name: compute the scorecard
+        run: |
+          qqresults scorecard --store .qq/store --days 7 \
+            --repo quirq-ai/xo-space --repo quirq-ai/innernet > .qq/store/scorecard.md
+          qqresults scorecard --store .qq/store --days 7 --json > .qq/store/scorecard.json
+          cat .qq/store/scorecard.md >> "$GITHUB_STEP_SUMMARY"
+      - name: save the store
+        working-directory: .qq/store
+        run: |
+          git add -A
+          if git diff --cached --quiet; then echo "nothing new"; exit 0; fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "results: collect at ${GITHUB_SHA::12} (run ${GITHUB_RUN_ID})"
+          git push origin results

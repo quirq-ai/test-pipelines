@@ -56,12 +56,34 @@ Records live in `src/qqresults/model.py` (schema `quirq-results/1`): `Change`, `
 ids are `<classname>::<name>`, which keeps pytest, vitest, jest-junit and gotestsum ids stable
 across runs. Everything that knows GitHub is in `backends/github.py`.
 
+## The results store and scorecard v0 (V0-TST-02)
+
+The store is a write-once tree of run bundles (`runs/<bundle>/`), kept on this repo's `results`
+branch. The `scorecard` workflow collects every `qq-results-*` artifact from the onboarded repos'
+runs into it, commits only new files, and writes `scorecard.md` and `scorecard.json` next to them
+(and to the run's summary). Importing a run that is already stored is a no-op; importing different
+bytes for the same run is an error.
+
+```sh
+git fetch origin results && git worktree add .qq/store FETCH_HEAD
+qqresults query runs --store .qq/store --repo quirq-ai/xo-space --kind postsubmit --failed
+qqresults query results --store .qq/store --run <run id> --unexpected
+qqresults query history --store .qq/store --test 'tests.test_greet::test_hello'
+qqresults scorecard --store .qq/store --days 7          # --json for machines
+qqresults collect --store .qq/store --repo quirq-ai/xo-space   # needs GITHUB_TOKEN
+```
+
+Scorecard v0 measures, per repo: gate time-to-green p50/p90 (once gate runs carry their
+queue-entry time, V0-GAT-04), main-red minutes per week, flake rate, pass rates of gate,
+post-submit and presubmit runs, and runs that stored no results. Every other plan §8 metric is
+listed as not measured, with the item that will measure it; nothing unmeasured shows as zero.
+
 ## v0 status
 
 | Item | What | PR | State |
 |---|---|---|---|
 | V0-TST-01 | Result schema and JUnit sink | #2 | in review |
-| V0-TST-02 | Results store v0 and scorecard v0 | | not started |
+| V0-TST-02 | Results store v0 and scorecard v0 | #3 | in review |
 | V0-TST-03 | Verdict: retry, then compare with base | | not started |
 | V0-TST-04 | Failure records with issue mirror | | not started |
 

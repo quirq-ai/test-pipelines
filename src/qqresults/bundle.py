@@ -21,6 +21,7 @@ from qqresults.model import Result, Run, Verdict
 RUN = "run.json"
 RESULTS = "results.jsonl"
 VERDICT = "verdict.json"
+FILES = (RUN, RESULTS, VERDICT)
 
 
 class BundleError(Error):
