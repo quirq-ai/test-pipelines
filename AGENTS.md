@@ -10,7 +10,8 @@ How an agent changes this repo safely. Read `README.md` first.
   runner. JUnit XML is the input; the adapters in `quirq-ai/recipes` produce it.
 - GitHub-specific code stays behind a `backend` field (`github` now, `launchpad` later).
 - Failures that look like security issues never go to a public issue.
-- Leave `.github/CODEOWNERS` and any `owners` list empty; suraj assigns people.
+- `.github/CODEOWNERS` names suraj (`@sharmasuraj0123`) as owner of the policy and trust paths,
+  including the code privileged workflows run; owner names are his call, so never change them. Leave any other `owners` list empty.
 - Mark a decision you cannot make with a one-line `TODO(suraj):` or `TODO(expert):`.
 - This repo is public: no secrets, tokens or internal hostnames.
 - Use other qq repos by pinned commit, never by copying their code.
