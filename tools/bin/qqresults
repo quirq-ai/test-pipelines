@@ -1,0 +1,5 @@
+#!/bin/sh
+# Run qqresults from this checkout's source, with nothing installed (audit S8: no build step, so
+# no unpinned setuptools). -P keeps the working directory off sys.path.
+exec python3 -P -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from qqresults.cli import main; sys.exit(main(sys.argv[1:]))' \
+  "$(cd "$(dirname "$0")/../../src" && pwd)" "$@"
