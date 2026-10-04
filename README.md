@@ -244,25 +244,32 @@ however little each says (a `TypeError` with the change is not an `Error` on bas
 type shared by every failure is the kind if it carries one. Only when a type is missing, or
 every failure has the same type and it says nothing (Rust libtest's `assert`), do the messages
 decide: the kind is the first word of the message's first line, after removing ANSI escape
-codes and a leading pytest `E` marker, and only if it looks like an exception class: an
+codes and a leading pytest `E` marker. Types and message words alike carry a kind only if they
+look like an exception class (audit M1: an allowlist, not a list of words to skip): an
 identifier or namespaced identifier (`a.b.C`, `a::C`) whose last part is CamelCase and ends in
 `Error`, `Exception`, `Failure`, `Fault` or `Panic` after at least one more letter, such as
-`FileNotFoundError:` (not `Error`, `Terror` or `parse_error`). **A failure with no
-class-like kind never exonerates**: an empty message (libtest writes none), a file path
+`FileNotFoundError:` (not `Error`, `Terror`, `parse_error` or node's `testCodeFailure`).
+**A failure with no class-like kind never exonerates**: an empty message (libtest writes none), a file path
 (`src/lib.rs:5:9:`), a test name, prose (`expected`, MSTest's `Test method X threw
 exception:`), a quoted word, `assert`, `thread` (`thread 'x' panicked at`), `Traceback`, jest's
 `thrown:` or `Timeout`. So a test body that reads a missing generated file on base (a FAIL in
 pytest) does not exonerate a change that makes it raise something else. Generic words carry no
 kind even when class-like: `Failed`, `Error`, and root classes such as `Exception` or
-`Throwable`, under any namespace. A type carries no kind when it is one of those, a runner
+`Throwable`, under any namespace. Neither do assertion classes, which runners raise for every
+failed check (`AssertionError`, `AssertionFailedError`, `ComparisonFailure`,
+`ExpectationFailedException`, `MultipleFailuresError`, and any whose last part contains
+`Assert`), as a type or as a message word: a bare `assert` that fails on base for one reason
+never exonerates one that fails with the change for another. A type carries no kind when it is
+one of those, is not class-like, is a runner
 category written for every failure whatever went wrong (audit N1: libtest's `assert` for an
 `assert_eq!` and for an unrelated `unwrap()` panic alike, and `timeout`; cargo-nextest's `test
 failure`, `test timeout` and `test abort`; `panicked`, `traceback`, `thrown:`, `abort`,
 `signal`), or contains whitespace (including joined types such as `A / B`). A `<failure>` that
 reports a timeout, an abort or a signal is a CRASH, like an `<error>`, so it never exonerates:
-one whose `type` has the word `timeout`, `abort`, `aborted`, `signal` or a signal name
-(libtest's `timeout`, nextest's `test timeout`), or one with no type, or a type that carries no
-kind, whose message's first line begins with such a report (`Timeout of 2000ms exceeded`,
+one whose `type` is not an exception class and has the word `timeout`, `abort`, `aborted`,
+`signal` or a signal name, split at camelCase humps too (libtest's `timeout`, nextest's `test
+timeout`, node's `testTimeoutFailure`), or one with no type, or a type that is not an exception
+class, whose message's first line begins with such a report (`Timeout of 2000ms exceeded`,
 pytest-timeout's `Failed: Timeout >1.0s`, jest's `thrown: "Exceeded timeout`, `timed out`,
 `Aborted`, `killed by signal 9`, `signal: 11, SIGSEGV`, `SIGSEGV`). A failure whose type is an
 exception class stays a FAIL whatever its message says (`timeout: expected 3 to equal 5` with

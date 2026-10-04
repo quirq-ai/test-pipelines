@@ -46,30 +46,56 @@ GENERIC_KINDS = frozenset({"failed", "fail", "failure", "error", "def", "[captur
 _TRAILING = ":.!?;,"
 
 
+# A kind is an exception class (audit M1): an identifier, or a namespaced one (`a.b.C`, `a::C`),
+# whose last part is CamelCase and ends in one of _CLASS_SUFFIXES with something before it
+# (`ValueError`, not `Error`, `Terror`, `parse_error` or `testCodeFailure`), with an optional
+# trailing colon. Anything else (a runner category, a file path, prose) carries no kind. So do the
+# assertion classes (_ASSERTION_CLASSES, and any whose last part contains `assert` in any case):
+# runners raise them for every failed check, so two say nothing about whether it is one failure.
+_CLASS_SUFFIXES = ("Error", "Exception", "Failure", "Fault", "Panic")
+_CLASS_LIKE = re.compile(r"\A(?:[^\W\d]\w*(?:\.|::))*[A-Z][A-Za-z0-9]*:?\Z")
+_ASSERTION_CLASSES = frozenset({"assertionerror", "assertionfailederror", "comparisonfailure",
+                                "expectationfailedexception", "multiplefailureserror",
+                                "expectationnotmeterror", "conditionnotsatisfiederror"})
+
+
+def _last_part(kind: str) -> str:
+    return re.split(r"\.|::", kind.rstrip(_TRAILING))[-1]
+
+
+def exception_class(kind: str) -> bool:
+    """A type or word that names an exception class (see _CLASS_LIKE), an assertion class too."""
+    last = _last_part(kind)
+    return (bool(_CLASS_LIKE.match(kind))
+            and any(last.endswith(x) and len(last) > len(x) for x in _CLASS_SUFFIXES))
+
+
 def informative_type(kind: str) -> bool:
-    """False for a kind that says nothing about the failure: no letters, a generic word, or
-    words separated by whitespace. A type is a single class name; one with a space is a runner
-    category (`test failure`, `test timeout`) or several types joined by the parser (`A / B`)."""
-    last = re.split(r"\.|::", kind.casefold().rstrip(_TRAILING))[-1]
-    return (any(c.isalpha() for c in kind) and not any(c.isspace() for c in kind)
-            and last not in GENERIC_KINDS)
+    """True only for an exception class (exception_class) that says what failed: not an
+    assertion class, and not a generic word (GENERIC_KINDS, such as the root `BaseException`).
+    A runner category (`assert`, `testCodeFailure`, `test failure`) carries no kind."""
+    last = _last_part(kind).casefold()
+    return (exception_class(kind) and last not in GENERIC_KINDS
+            and last not in _ASSERTION_CLASSES and "assert" not in last)
 
 
 # A <failure> that reports a timeout, an abort or a signal is a CRASH (model.Status: a timeout or
 # a dead process is not an assertion), whatever tag the runner chose, so it never exonerates
 # (audit N1). The rule is deliberately narrow, so an ordinary assertion that mentions one of
 # these words stays a FAIL:
-#   - the `type`, split into words at anything that is not a letter or digit and compared in any
-#     case, has one of _CRASH_TYPE_WORDS as a whole word (`timeout`, `test timeout`, `test
-#     abort`, `x.Timeout`; not `TimeoutError`, which is an exception class the test raised), or
-#   - the failure has no type, or one that carries no kind (informative_type: `assert`, `test
-#     failure`), and the first line of its message, in any case, after leading spaces, quotes
+#   - the `type` is not an exception class (exception_class) and, split into words at anything
+#     that is not a letter or digit and at camelCase humps and compared in any case, has one of
+#     _CRASH_TYPE_WORDS as a whole word (`timeout`, `test timeout`, `test abort`, `x.Timeout`,
+#     `testTimeoutFailure`; not `TimeoutError`, which is an exception class the test raised,
+#     unless its namespace has such a word: `timeout_decorator.TimeoutError`), or
+#   - the failure has no type, or one that is not an exception class (`assert`, `test failure`,
+#     `testCodeFailure`), and the first line of its message, in any case, after leading spaces, quotes
 #     and one generic prefix (`Failed:`, `thrown:`, `Error:`, `failure:`), begins with a
 #     timeout, abort or signal report: `Timeout`, `Timed out`, `Exceeded timeout`, `test timed
 #     out`, `abort`/`aborted`, `process aborted`, `killed by signal`, `terminated by signal`,
 #     `caught`/`received`/`fatal signal`, `signal <number>` followed by a signal name
 #     (`signal: 11, SIGSEGV`), or a signal name such as `SIGSEGV`.
-# A failure whose type is an exception class (`AssertionError`) is an assertion whatever its
+# A failure whose type is an exception class (`AssertionError`, `TimeoutError`) is an assertion whatever its
 # message says (`timeout: expected 3 to equal 5`, `Aborted transactions: 2 != 3`). A message
 # that begins with `timeout` used as a value (`timeout == 5`, `timeout is None`, `timeout in (1,
 # 2)`, `timeout.seconds`, `timeout[0]`, `timeout(...)`) stays a FAIL, as does `signal 5 != 3`;
@@ -97,11 +123,17 @@ _ESCAPES = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])|\[[0-9;]+m")
 
 def _reports_crash(child: ET.Element) -> bool:
     """A <failure> that reports a timeout, an abort or a signal (see _CRASH_TYPE_WORDS)."""
-    words = re.split(r"[^0-9a-z]+", (child.get("type") or "").casefold())
+    kind = " ".join((child.get("type") or "").split())
+    if exception_class(kind):
+        # An exception class (`TimeoutError` too) is an assertion, whatever the message says,
+        # unless its namespace names a timeout (`timeout_decorator.timeout_decorator.TimeoutError`).
+        space = " ".join(re.split(r"\.|::", kind.rstrip(_TRAILING))[:-1])
+        return bool(_CRASH_TYPE_WORDS.intersection(re.split(r"[^0-9a-z]+", space.casefold())))
+    # Not a class: a runner category, split into words at anything that is not a letter or digit
+    # and at camelCase humps (node's `testTimeoutFailure` is `test timeout failure`).
+    words = re.split(r"[^0-9a-z]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", kind).casefold())
     if _CRASH_TYPE_WORDS.intersection(words):
         return True
-    if informative_type(" ".join((child.get("type") or "").split())):
-        return False    # an exception class: an assertion, whatever the message says
     line = _ESCAPES.sub("", _message(child)).strip().split("\n", 1)[0]
     return bool(_CRASH_MESSAGE.match(line.strip()))
 

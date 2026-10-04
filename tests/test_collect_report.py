@@ -168,6 +168,35 @@ def test_collect_sorts_trust_refusals_from_errors(tmp_path):
     assert len(github.collect("o/x", FileStore(tmp_path), "", get=get)[2]) == 2
 
 
+def test_an_oversized_artifact_from_a_fork_is_a_refusal(tmp_path):
+    # AUDIT M2: origin is checked before size, so a fork's oversized artifact is refused, not an
+    # error that marks the collect incomplete; an oversized one from a trusted run stays an error.
+    from qqresults.store import FileStore
+    big = github.MAX_ARTIFACT_BYTES + 1
+    arts = {"artifacts": [
+        {"id": 1, "name": "qq-results-a", "size_in_bytes": big, "workflow_run": {"id": 7},
+         "archive_download_url": "https://api.example/a"},
+        {"id": 2, "name": "qq-results-b", "size_in_bytes": big, "workflow_run": {"id": 8},
+         "archive_download_url": "https://api.example/b"}]}
+    runs = {7: {"head_repository": {"full_name": "mallory/x"}, "path": ".github/workflows/qq-x.yml",
+                "run_attempt": 1},
+            8: {"head_repository": {"full_name": "o/x"}, "path": ".github/workflows/presubmit.yml",
+                "event": "push", "head_branch": "main", "head_sha": "a" * 40, "run_attempt": 1}}
+
+    def get(url, token):
+        if "/actions/artifacts?" in url:
+            return json.dumps(arts if "page=1" in url else {"artifacts": []}).encode()
+        if "/actions/runs/" in url:
+            return json.dumps(runs[int(url.rsplit("/", 1)[1])]).encode()
+        if "/compare/" in url or "/repos/o/x" == url.rsplit("api.github.com", 1)[-1]:
+            return json.dumps({"status": "identical", "default_branch": "main"}).encode()
+        raise AssertionError(url)
+    refused = []
+    _, _, errors = github.collect("o/x", FileStore(tmp_path), "", get=get, refused=refused)
+    assert len(refused) == 1 and "a fork's pull request" in refused[0]
+    assert len(errors) == 1 and "is not at most" in errors[0]
+
+
 def test_passes_over_one_repo_are_merged(tmp_path):
     report = tmp_path / "r.jsonl"
     report.write_text("\n".join(json.dumps(e) for e in [

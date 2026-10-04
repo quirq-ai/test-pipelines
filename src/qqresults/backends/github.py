@@ -651,11 +651,13 @@ def collect(repo: str, store, token: str, get=http_get, trust: Trust = Trust(),
     def take(art: dict, final: bool) -> None:
         nonlocal new, old
         try:
+            # Origin first (audit M2): an oversized artifact from an untrusted run is a refusal,
+            # not an error that marks the collect incomplete.
+            origin = _origin(repo, art, trust, token, get, runs, default_branch, in_default)
             size = _int(art.get("size_in_bytes"))
             if not 0 <= size <= MAX_ARTIFACT_BYTES:
                 raise GitHubAPIError(f"size {_short(art.get('size_in_bytes'))} is not at most "
                                      f"{MAX_ARTIFACT_BYTES} bytes")
-            origin = _origin(repo, art, trust, token, get, runs, default_branch, in_default)
             if _import_artifact(art, store, token, get, origin, trust, now, final):
                 new += 1
             else:
