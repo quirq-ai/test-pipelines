@@ -844,3 +844,17 @@ def test_a_digested_failure_record_must_still_have_an_id_of_its_kind(tmp_path, f
     st = FileStore(tmp_path / "store")
     new, _, errors = _collect_zips(st, "o/x", [(*art, 7)], [_demo_run()], DEMO)
     assert new == 0 and "the id does not match" in errors[0] and st.failures() == []
+
+
+def test_history_skips_a_stored_run_whose_results_do_not_read(tmp_path, capsys):
+    # AUDIT-S10: runs() skipped such a bundle, but history() raised on it and stopped the query.
+    st = FileStore(tmp_path)
+    st.put(make("good", finished="2026-10-04T10:00:00Z"))
+    path = bundle.write(make("bad", finished="2026-10-04T11:00:00Z"), st.runs_dir)
+    (path / "results.jsonl").chmod(0o644)
+    (path / "results.jsonl").write_text("{not json\n")
+    assert [run.id for run, _ in st.history("t::a")] == ["good"]
+    assert list(st.skipped) == [path.name] and "not readable" in st.skipped[path.name]
+    assert cli.main(["query", "history", "--store", str(tmp_path), "--test", "t::a"]) == 0
+    out = capsys.readouterr()
+    assert "good" in out.out and "warning:" in out.err and path.name in out.err

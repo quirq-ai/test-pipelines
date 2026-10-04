@@ -143,10 +143,19 @@ class FileStore:
         return self.bundle(run_id).results
 
     def history(self, test_id: str, flt: RunFilter = RunFilter()) -> list[tuple[Run, Result]]:
-        """Every stored result of one test, oldest run first."""
+        """Every stored result of one test, oldest run first.
+
+        A stored run whose results do not read cleanly is skipped and named in `skipped`, as
+        runs() does, so one bad bundle cannot stop the query.
+        """
         out = []
         for run, _ in self.runs(flt):
-            out.extend((run, r) for r in self.results(run.id) if r.test_id == test_id)
+            try:
+                results = self.results(run.id)
+            except Error as e:   # BundleError, or StoreError when the run is not where its id says
+                self._skip(self.runs_dir / bundle.dirname(run), e)
+                continue
+            out.extend((run, r) for r in results if r.test_id == test_id)
         return out
 
     def has(self, bundle_name: str) -> bool:
