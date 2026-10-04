@@ -27,18 +27,30 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
 from qqresults import __version__, backends, bundle, failures, policy, scorecard, sink, store
 from qqresults.errors import Error
-from qqresults.model import FailureKind, RunKind
+from qqresults.model import FailureKind, Run, RunKind
 
 
 def _run(args):
     backend = backends.load(args.backend)
     if args.backend == "github":
-        return backend.run_from_env(os.environ, kind=args.kind or "", name=args.name)
+        run = backend.run_from_env(os.environ, kind=args.kind or "", name=args.name)
+        if not args.commit or args.commit == run.commit:
+            return run
+        if not re.fullmatch(r"[0-9a-f]{40}", args.commit):
+            raise SystemExit("qqresults sink: --commit must be a full 40-hex lowercase commit, "
+                             f"not {args.commit!r}")
+        # A dispatched backfill tests another commit than GITHUB_SHA: the event's base and
+        # change describe GITHUB_SHA, so they are dropped rather than recorded wrongly, and the
+        # run is marked as a backfill, which the scorecard leaves out (it finished long after the
+        # commit landed, so it would misplace main-red time). It stays queryable.
+        return Run.from_dict({**run.to_dict(), "commit": args.commit, "base_commit": "",
+                              "change": None, "role": "backfill"})
     if not (args.repo and args.commit):
         raise SystemExit("qqresults sink: --backend local needs --repo and --commit")
     return backend.run_from_args(args.repo, args.commit, kind=args.kind or RunKind.LOCAL.value,
@@ -227,7 +239,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="override the run kind (default: from the backend)")
     s.add_argument("--name", default="", help="tells apart several sinks in one job")
     s.add_argument("--repo", help="local backend: owner/name")
-    s.add_argument("--commit", help="local backend: the commit tested")
+    s.add_argument("--commit", help="the commit tested (local backend: required; github: "
+                   "overrides GITHUB_SHA, 40 hex)")
     s.add_argument("--rerun", metavar="CMD",
                    help="retry failed tests with this shell command, then compare with base "
                         "(it writes JUnit to $QQ_JUNIT_DIR; $QQ_RETRY_TESTS lists the failed ids)")

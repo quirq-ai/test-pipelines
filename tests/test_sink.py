@@ -139,3 +139,28 @@ def test_gate_timing_sets_queued_at(tmp_path, value, expected):
     env = gh_env(tmp_path, "merge_group", {"merge_group": {"head_ref": "refs/heads/gh-readonly-queue/main/pr-1-x"}},
                  QQ_QUEUED_AT=value)
     assert github.run_from_env(env).queued_at == expected
+
+
+def test_a_dispatched_backfill_records_the_commit_it_tested(tmp_path, junit_dir, monkeypatch):
+    root = good_reports(tmp_path, junit_dir)
+    env = gh_env(tmp_path, "workflow_dispatch", {"inputs": {"commit": "a" * 40}})
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    base = ["sink", "--junit", "results/*.xml", "--root", str(root), "--out", str(tmp_path / "out"),
+            "--kind", "postsubmit"]
+    assert cli.main(base + ["--commit", "a" * 40]) == 0
+    b = bundle.read(next((tmp_path / "out").iterdir()))
+    assert (b.run.commit, b.run.kind, b.run.base_commit, b.run.role) == (
+        "a" * 40, "postsubmit", "", "backfill")
+    with pytest.raises(SystemExit, match="40-hex"):
+        cli.main(base + ["--commit", "main"])
+
+
+def test_commit_equal_to_github_sha_changes_nothing(tmp_path, monkeypatch):
+    env = gh_env(tmp_path, "push", {"before": "b" * 40, "repository": {"default_branch": "main"}},
+                 GITHUB_SHA="c" * 40)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    args = cli.build_parser().parse_args(["sink", "--junit", "x", "--out", "o", "--commit", "c" * 40])
+    run = cli._run(args)
+    assert (run.base_commit, run.role, run.kind) == ("b" * 40, "", "postsubmit")

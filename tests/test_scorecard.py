@@ -125,6 +125,16 @@ def test_a_gate_run_queued_after_it_finished_is_not_a_negative_wait(tmp_path):
     assert metric(card, "quirq-ai/xo-space", "Gate time-to-green").extra == {"p50": 15.0, "p90": 19.0}
 
 
+def test_backfilled_runs_are_left_out_of_the_scorecard(tmp_path):
+    from qqresults import bundle
+    from qqresults.model import Run
+    st = seeded(tmp_path)
+    before = scorecard.compute(st, SINCE, UNTIL).to_dict()
+    b = make("bf", commit="c7", finished="2026-10-04T12:00:00Z", fail=True)
+    st.put(bundle.Bundle(Run.from_dict({**b.run.to_dict(), "role": "backfill"}), b.results, b.verdict))
+    assert scorecard.compute(st, SINCE, UNTIL).to_dict() == before
+
+
 def _gate_job(job, finished, fail=False, attempt=1, queued="2026-10-04T09:00:00Z", run_no=77,
               **run):
     from qqresults import bundle, verdict
