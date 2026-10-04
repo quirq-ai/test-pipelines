@@ -311,14 +311,51 @@ def test_a_queue_entry_without_base_sha_is_not_compared(tmp_path, state):
     assert statuses(b) == {"t::add": "UNEXPECTED"} and retry.REBASE_QUEUE in b.verdict.reason
 
 
-def test_an_explicit_base_skips_the_queue_check(tmp_path, state):
+def test_an_explicit_base_does_not_skip_the_queue_check(tmp_path, state):
+    # `base: ${{ github.event.merge_group.base_sha }}` must not reopen the rebase-queue case
     repo, main = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")
     (repo / "other.txt").write_text("x")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "c2")
     path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
                         tmp_path / "out", rerun_cmd=CMD, base_commit=main)
-    assert statuses(b) == {"t::add": "EXONERATED"}
+    assert statuses(b) == {"t::add": "UNEXPECTED"} and retry.REBASE_QUEUE in b.verdict.reason
+
+
+def test_an_explicit_base_adds_to_the_runs_own_bases(tmp_path, state):
+    # The B3 trap through `base`: main is red, fix A is queued ahead, entry B breaks the test
+    # again. Passing main as the base must not replace the first parent (A, where it passes).
+    repo, main = repo_with(tmp_path, "t::add fail\n", "t::add pass\n")    # HEAD is fix A
+    queue_merge(repo, git(repo, "rev-parse", "HEAD"), "t::add fail\n")
+    path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
+                        tmp_path / "out", rerun_cmd=CMD, base_commit=main)
+    assert statuses(b) == {"t::add": "UNEXPECTED"} and "passes without it" in b.verdict.tests[0].reason
+
+
+def test_an_explicit_base_must_fail_too(tmp_path, state):
+    repo, main = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")
+    (repo / "cases.txt").write_text("t::add pass\n")      # a commit where the test passes
+    git(repo, "add", "-A")
+    green = git(repo, "commit-tree", git(repo, "write-tree"), "-p", main, "-m", "green")
+    git(repo, "reset", "-q", "--hard")
+    queue_merge(repo, git(repo, "rev-parse", "HEAD"), "t::add fail\n")
+    path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
+                        tmp_path / "out", rerun_cmd=CMD, base_commit=green)
+    assert statuses(b) == {"t::add": "UNEXPECTED"} and "passes without it" in b.verdict.tests[0].reason
+    assert [i.rsplit("/", 1)[1] for i in b.verdict.inputs][-2:] == ["base3", "base3-run2"]
+
+
+def test_a_presubmit_kind_on_a_queue_run_still_gets_the_queue_check(tmp_path, state):
+    # The auditor's R4 case with `kind: presubmit` overriding gate: the base is still <commit>^1
+    repo, main = repo_with(tmp_path, "t::add fail\n", "t::add pass\n")    # HEAD is fix A
+    (repo / "cases.txt").write_text("t::add fail\n")
+    git(repo, "commit", "-q", "-am", "c1")
+    (repo / "other.txt").write_text("x")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "c2")
+    run = Run.from_dict({**_queue_run(repo, tmp_path, main).to_dict(), "kind": "presubmit"})
+    path, b = sink.sink(run, ["results/*.xml"], repo, tmp_path / "out", rerun_cmd=CMD)
+    assert statuses(b) == {"t::add": "UNEXPECTED"} and retry.REBASE_QUEUE in b.verdict.reason
 
 
 def test_a_merge_commit_queue_in_a_shallow_checkout_fetches_the_parents(tmp_path, state):
@@ -337,7 +374,7 @@ def test_a_merge_commit_queue_in_a_shallow_checkout_fetches_the_parents(tmp_path
 def test_a_tested_commit_whose_parents_cannot_be_read_never_exonerates(tmp_path, state):
     repo, main = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")
     run = _queue_run(repo, tmp_path, main)
-    run = Run.from_dict({**run.to_dict(), "commit": "0" * 40})
+    run = Run.from_dict({**run.to_dict(), "commit": "0" * 40, "base_commit": "0" * 40 + "^1"})
     path, b = sink.sink(run, ["results/*.xml"], repo, tmp_path / "out", rerun_cmd=CMD)
     assert statuses(b) == {"t::add": "UNEXPECTED"}
     assert "cannot read the tested commit's parents" in b.verdict.reason
@@ -379,12 +416,30 @@ def test_a_crash_with_the_change_is_no_signal_against_a_failure_on_base(tmp_path
     assert b.verdict.tests[0].reason.startswith("no signal: FAIL without the change but CRASH with")
 
 
-def test_a_fixture_crash_from_a_missing_generated_file_cannot_hide_a_crashing_regression(
-        tmp_path):
-    # AUDIT-R5 reproduction, with pytest itself: the fixture reads gen/table.txt, a gitignored
-    # build output that only the change's checkout has, so on base it crashes (FileNotFoundError).
-    # The change breaks calc.load, so the same fixture crashes with it too. Before AUDIT-R5 the
-    # two crashes matched and the regression was exonerated.
+TABLE_IN_FIXTURE = (
+    "import pathlib\n\nimport pytest\n\nimport calc\n\n\n@pytest.fixture\n"
+    "def table():\n    return calc.load(pathlib.Path('gen/table.txt').read_text())\n\n\n"
+    "def test_lookup(table):\n    assert table['a'] == 1\n")
+TABLE_IN_BODY = (
+    "import pathlib\n\nimport calc\n\n\n"
+    "def test_lookup():\n    table = calc.load(pathlib.Path('gen/table.txt').read_text())\n"
+    "    assert table['a'] == 1\n")
+
+
+@pytest.mark.parametrize("test_file, status, reason", [
+    # The fixture reads the file: an error, so a CRASH on both sides (closed by AUDIT-R5).
+    (TABLE_IN_FIXTURE, "CRASH", "no signal: the base side crashed"),
+    # The test body reads it: pytest reports a <failure>, so a FAIL on both sides, but
+    # FileNotFoundError on base and ValueError with the change (the R5 review's repro).
+    (TABLE_IN_BODY, "FAIL", "no signal: fails differently without the change "
+                            "(FileNotFoundError: vs ValueError:)"),
+], ids=["in-fixture", "in-test-body"])
+def test_a_missing_generated_file_on_base_cannot_hide_a_regression(tmp_path, test_file, status,
+                                                                    reason):
+    # AUDIT-R5 reproduction, with pytest itself: the test reads gen/table.txt, a gitignored
+    # build output that only the change's checkout has, so on base it fails with
+    # FileNotFoundError. The change breaks calc.load, so the test fails with it too. Before
+    # AUDIT-R5 the two failures matched by status and the regression was exonerated.
     repo = tmp_path / "repo"
     (repo / "tests").mkdir(parents=True)
     git(repo, "init", "-q", "-b", "main")
@@ -393,10 +448,7 @@ def test_a_fixture_crash_from_a_missing_generated_file_cannot_hide_a_crashing_re
     (repo / ".gitignore").write_text("gen/\nresults/\n")
     (repo / "calc.py").write_text(
         "def load(text):\n    return {k: int(v) for k, v in (l.split('=') for l in text.split())}\n")
-    (repo / "tests" / "test_table.py").write_text(
-        "import pathlib\n\nimport pytest\n\nimport calc\n\n\n@pytest.fixture\n"
-        "def table():\n    return calc.load(pathlib.Path('gen/table.txt').read_text())\n\n\n"
-        "def test_lookup(table):\n    assert table['a'] == 1\n")
+    (repo / "tests" / "test_table.py").write_text(test_file)
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "base")
     base = git(repo, "rev-parse", "HEAD")
@@ -412,11 +464,12 @@ def test_a_fixture_crash_from_a_missing_generated_file_cannot_hide_a_crashing_re
     _, b = sink.sink(run, ["results/*.xml"], repo, tmp_path / "out",
                      rerun_cmd=f'{pytest_cmd} --junitxml="$QQ_JUNIT_DIR/rerun.xml"',
                      base_commit=base)
-    assert [r.status for r in b.results] == ["CRASH"]
+    assert [r.status for r in b.results] == [status]
     base_run = bundle.read(tmp_path / "out" / "qq-results-local_o_x_r1_base")
-    assert [r.status for r in base_run.results] == ["CRASH"]   # FileNotFoundError on base
+    assert [r.status for r in base_run.results] == [status]
+    assert "FileNotFoundError" in base_run.results[0].message
     assert statuses(b) == {"tests.test_table::test_lookup": "UNEXPECTED"} and not b.verdict.passed
-    assert b.verdict.tests[0].reason.startswith("no signal: the base side crashed")
+    assert b.verdict.tests[0].reason.startswith(reason)
 
 
 def test_without_retries_base_runs_once(tmp_path, state):
@@ -427,16 +480,17 @@ def test_without_retries_base_runs_once(tmp_path, state):
 
 def test_any_base_run_that_disagrees_blocks():
     run = Run(id="r", repo="o/x", kind="presubmit", commit="c")
-    fail = [Result(run_id="r", test_id="t::a", status="FAIL", expected=False)]
+    fail = [Result(run_id="r", test_id="t::a", status="FAIL", expected=False,
+                   message="AssertionError: planted")]
 
-    def child(role, suffix, status):
+    def child(role, suffix, status, message="AssertionError: planted"):
         c = retry.child_run(run, role, commit="b" * 40 if role == "base" else "")
         c = Run.from_dict({**c.to_dict(), "id": f"{c.id}{suffix}"})
-        rs = [Result(run_id=c.id, test_id="t::a", status=status, expected=False)]
+        rs = [Result(run_id=c.id, test_id="t::a", status=status, expected=False, message=message)]
         return bundle.Bundle(c, rs, retry.verdict.compute(c, rs))
 
-    def base(suffix, status):
-        return child("base", suffix, status)
+    def base(suffix, status, message="AssertionError: planted"):
+        return child("base", suffix, status, message)
 
     retries = [child("retry", "1", "FAIL")]
     same = retry.decide(run, fail, retries, [base("", "FAIL"), base("-run2", "FAIL")])
@@ -448,6 +502,18 @@ def test_any_base_run_that_disagrees_blocks():
                         [base("", "CRASH"), base("-run2", "CRASH")])
     assert not both.passed and both.tests[0].status == "UNEXPECTED"
     assert both.tests[0].reason.startswith("no signal: the base side crashed (CRASH without")
+    # AUDIT-R5 review: a FAIL of another kind on base, or one with no message, is no evidence
+    other = retry.decide(run, fail, retries, [base("", "FAIL"),
+                                              base("-run2", "FAIL", "FileNotFoundError: gen/x")])
+    assert not other.passed and other.tests[0].reason == (
+        "no signal: fails differently without the change "
+        "(AssertionError:/FileNotFoundError: vs AssertionError:)")
+    bare = retry.decide(run, fail, retries, [base("", "FAIL", ""), base("-run2", "FAIL", " \n")])
+    assert not bare.passed and bare.tests[0].reason.endswith("((no message) vs AssertionError:)")
+    # only the first word of the first line counts
+    alike = retry.decide(run, fail, retries, [base("", "FAIL", "  AssertionError: other text\nE  x"),
+                                              base("-run2", "FAIL")])
+    assert alike.passed and alike.tests[0].status == "EXONERATED"
     missing = retry.decide(run, fail, retries,
                            [base("", "FAIL"), bundle.Bundle(base("-run2", "FAIL").run, [], same)])
     assert not missing.passed and "no result without the change" in missing.tests[0].reason
