@@ -213,6 +213,7 @@ class Result(_Record):
     raw: str = ""                   # the original report element, truncated; "" unless the sink
                                     # was asked to keep it (--keep-raw-junit)
     metrics: dict[str, dict[str, Any]] = field(default_factory=dict)  # name -> {value, unit}; for bench
+    failure_type: str = ""          # the `type` of <failure>/<error> (junit.MAX_TYPE), when given
     schema: str = SCHEMA
 
     @property

@@ -12,8 +12,10 @@ that looks the same without the change, on every one of those runs, does not fai
       change did                                           its worktree may lack files the
                                                            change's checkout has
     CRASH with the change, FAIL on base       UNEXPECTED   no signal: a different failure
-    FAIL everywhere, messages of different    UNEXPECTED   no signal: fails differently
-      kinds, or an empty message
+    FAIL everywhere, failures of different    UNEXPECTED   no signal: fails differently
+      kinds
+    FAIL everywhere, a failure with no kind   UNEXPECTED   no signal: no kind to compare
+      (see below)
     no base result (a new test, no data)      UNEXPECTED   a missing signal never exonerates
 
 A single base run could exonerate a real regression: a test that is flaky on base happens to
@@ -24,11 +26,16 @@ import, a timeout) is never evidence on the base side, even when the change cras
 fixture that reads a generated file crashes on base because the worktree lacks the file, and
 would hide a change that makes the same fixture crash for a real reason. The same read inside
 the test body is a FAIL (pytest reports any exception there as a <failure>), so a FAIL must
-also look like the change's: the kind of a failure is the first word of its message's first
-line (an exception class such as `FileNotFoundError:`, or `assert`), and every failing result
-on both sides must have the same kind. This is a heuristic: it tells a missing file from a
-regression that raises something else, not two different failures of one kind (two plain
-`assert`s). An empty message has no kind and is never evidence. The first run at each base keeps its id
+also look like the change's: every failing result on both sides must have the same kind. The
+kind is the `type` attribute of the <failure> (an exception class, where the runner writes one) when
+every one of those results has one. Otherwise it is the first word of the message's first line
+(an exception class such as `FileNotFoundError:`, or `assert`), after removing ANSI escape codes
+and a leading pytest `E` marker. Some words carry no kind, and a failure with one is never
+evidence: an empty message, `def` (a traceback with no message), `[captured` (a message that
+was only captured output), a word with no letters, and generic words such as `Failed` or
+`Error` (runners that write the same message for every failure). This is a heuristic: it tells
+a missing file from a regression that raises something else, not two different failures of
+one kind (two plain `assert`s). The first run at each base keeps its id
 (`<run>/base`, `<run>/base2`); the extra runs are `<run>/base-run2`, `<run>/base2-run2` and so on.
 
 The rerun command comes from the caller (the adapter or builder), so this module never names a
@@ -85,6 +92,7 @@ a squash queue adds one commit whatever the PR holds, and the payload does not n
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -159,10 +167,29 @@ def _passed(test_id: str, results: list[Result]) -> bool:
         r.status == "PASS" for r in rs)
 
 
-def _kind(message: str) -> str:
-    """The first word of the message's first line: e.g. `FileNotFoundError:` or `assert`."""
-    words = message.strip().split("\n", 1)[0].split()
+# ANSI escape codes, with the ESC byte or without it (XML 1.0 cannot carry ESC, so a runner may
+# drop it and leave `[31m`).
+_ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])|\[[0-9;]+m")
+_E_MARKER = re.compile(r"E(?:\s+|$)")   # the `E   ` prefix some runners put on error lines
+# Words that say nothing about a failure's kind (see the module docstring): compared without a
+# trailing colon and ignoring case.
+_GENERIC = frozenset({"failed", "fail", "failure", "error"})
+_NOT_A_KIND = frozenset({"def", "[captured"})
+
+
+def _kind(r: Result, by_type: bool) -> str:
+    """The kind of a failure: its `type`, or the first word of its message's first line, e.g.
+    `FileNotFoundError:` or `assert` (see the module docstring)."""
+    if by_type:
+        return r.failure_type.strip()
+    line = _ANSI.sub("", r.message).strip().split("\n", 1)[0]
+    words = _E_MARKER.sub("", line.strip(), count=1).split()
     return words[0] if words else ""
+
+
+def _informative(kind: str) -> bool:
+    return (kind not in _NOT_A_KIND and any(c.isalpha() for c in kind)
+            and kind.rstrip(":").casefold() not in _GENERIC)
 
 
 def _kinds(kinds: set[str]) -> str:
@@ -188,10 +215,15 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
         # missing generated file, a fixture error) never exonerates, whatever the change did.
         # It is read only after the pass check below, so it never holds PASS or SKIP.
         crashed = sorted(on_base - {Status.FAIL.value})
-        # The kind of each failure, with and without the change (see the module docstring).
-        kind_on_change = {_kind(r.message) for b in [results] + [b.results for b in retries]
-                          for r in b if r.test_id == t and not r.expected}
-        kind_on_base = {_kind(r.message) for rs in per_base for r in rs}
+        # The kind of each failure, with and without the change (see the module docstring): its
+        # type when every one has a type, else the first word of its message.
+        failing = [r for b in [results] + [b.results for b in retries]
+                   for r in b if r.test_id == t and not r.expected]
+        failing_on_base = [r for rs in per_base for r in rs]
+        by_type = all(r.failure_type.strip() for r in failing + failing_on_base)
+        kind_on_change = {_kind(r, by_type) for r in failing}
+        kind_on_base = {_kind(r, by_type) for r in failing_on_base}
+        no_kind = not all(map(_informative, kind_on_change | kind_on_base))
         if not_retried:
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, f"not retried: {not_retried}"))
         elif passed_on:
@@ -207,8 +239,11 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, (
                 f"no signal: {'/'.join(sorted(on_base))} without the change but "
                 f"{'/'.join(sorted(on_change))} with it, so the base failure may not be this one")))
-        elif bases and not base_error and all(per_base) and (
-                "" in kind_on_change | kind_on_base or len(kind_on_change | kind_on_base) != 1):
+        elif bases and not base_error and all(per_base) and no_kind:
+            tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, (
+                f"no signal: no kind to compare, the failure says nothing about what failed "
+                f"({_kinds(kind_on_base)} vs {_kinds(kind_on_change)})")))
+        elif bases and not base_error and all(per_base) and len(kind_on_change | kind_on_base) != 1:
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, (
                 f"no signal: fails differently without the change "
                 f"({_kinds(kind_on_base)} vs {_kinds(kind_on_change)})")))

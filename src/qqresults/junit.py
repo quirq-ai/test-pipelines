@@ -27,6 +27,7 @@ from qqresults.model import Result, Status
 MAX_MESSAGE = 1_000     # characters of a failure or skip message kept on the normalized Result
 MAX_MESSAGE_LINES = 20  # and lines of it, so a long traceback keeps only its head
 MAX_RAW = 16_000        # characters of the original <testcase> element kept as raw, opt-in only
+MAX_TYPE = 200          # characters of the `type` attribute of <failure>/<error> kept
 
 _CAPTURED = re.compile(r"<(system-out|system-err)\b[^>]*?(?:/>|>.*?(?:</\1\s*>|$))",
                        re.DOTALL | re.IGNORECASE)
@@ -82,13 +83,22 @@ def _message(child: ET.Element) -> str:
     return message
 
 
-def _outcome(case: ET.Element) -> tuple[Status, str]:
-    """The worst outcome among the case's children, with every message of that kind kept."""
+def _failure_type(children: list[ET.Element]) -> str:
+    """The `type` attribute of <failure>/<error> (an exception class, where the runner writes
+    one), or "" when none has it. Several different types are kept in order, joined by " / "."""
+    types = dict.fromkeys(" ".join((c.get("type") or "").split()) for c in children)
+    return " / ".join(t for t in types if t)[:MAX_TYPE].strip()
+
+
+def _outcome(case: ET.Element) -> tuple[Status, str, str]:
+    """The worst outcome among the case's children, with every message of that kind kept, and
+    the failure type (for a FAIL or CRASH only)."""
     for tag, status in (("error", Status.CRASH), ("failure", Status.FAIL), ("skipped", Status.SKIP)):
         children = case.findall(tag)
         if children:
-            return status, _cap_message("\n\n".join(_message(c) for c in children))
-    return Status.PASS, ""
+            return (status, _cap_message("\n\n".join(_message(c) for c in children)),
+                    "" if status is Status.SKIP else _failure_type(children))
+    return Status.PASS, "", ""
 
 
 def _cases(element: ET.Element, suite: str):
@@ -123,7 +133,7 @@ def parse(data: bytes, run_id: str, source: str = "", keep_raw: bool = False) ->
         test_id = f"{prefix}::{name}" if prefix else name
         if not test_id:
             raise JUnitError(f"{source or 'report'}: a <testcase> has no name")
-        status, message = _outcome(case)
+        status, message, failure_type = _outcome(case)
         results.append(Result(
             run_id=run_id,
             test_id=test_id,
@@ -131,6 +141,7 @@ def parse(data: bytes, run_id: str, source: str = "", keep_raw: bool = False) ->
             expected=status in (Status.PASS, Status.SKIP),
             duration_s=_duration(case.get("time")),
             message=message,
+            failure_type=failure_type,
             file=case.get("file") or "",
             source=source,
             raw=_truncate(ET.tostring(case, encoding="unicode"), MAX_RAW) if keep_raw else "",

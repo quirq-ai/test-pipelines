@@ -59,6 +59,30 @@ def test_a_bundle_with_raw_from_an_older_sink_still_imports(tmp_path):
     assert cli.main(["import", "--store", str(tmp_path / "store"), str(src)]) == 0   # a no-op
 
 
+def test_a_bundle_without_failure_type_from_an_older_sink_still_imports(tmp_path):
+    b = make("r1", fail=True)
+    src = bundle.write(b, tmp_path / "sink")
+    lines = [json.loads(line) for line in (src / bundle.RESULTS).read_text().splitlines()]
+    for line in lines:
+        del line["failure_type"]
+    (src / bundle.RESULTS).chmod(0o644)
+    (src / bundle.RESULTS).write_text("".join(json.dumps(line) + "\n" for line in lines))
+    st = FileStore(tmp_path / "store")
+    assert st.import_dir(src)
+    assert [r.failure_type for r in st.results("r1")] == ["", ""]
+    assert "failure_type" not in (st.runs_dir / src.name / bundle.RESULTS).read_text()
+
+
+def test_import_refuses_a_failure_type_that_is_not_a_string(tmp_path):
+    b = make("r1", fail=True)
+    src = bundle.write(b, tmp_path / "sink")
+    line = {**json.loads((src / bundle.RESULTS).read_text().splitlines()[1]), "failure_type": 3}
+    (src / bundle.RESULTS).chmod(0o644)
+    (src / bundle.RESULTS).write_text(json.dumps(line) + "\n")
+    with pytest.raises(bundle.BundleError, match="Result.failure_type must be a string"):
+        FileStore(tmp_path / "store").import_dir(src)
+
+
 @pytest.mark.parametrize("metric", [
     {"value": True, "unit": "s"},                 # a bool is not a number
     {"value": "1.5", "unit": "s"},
