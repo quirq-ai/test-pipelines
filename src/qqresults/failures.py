@@ -58,7 +58,7 @@ LINK_FIELDS = VALUE_LINKS + MARKS          # every field a link file may have
 # Words that are security terms in themselves match alone; words that are just as common in
 # ordinary failures (crash, panic, heap, leak, certificate, escalated, "not verified", overflow,
 # injection, token, auth, jwt, sandbox, privileged, access control, cors) match only in a security
-# phrase, so a CrashLoopBackOff, a Go panic, a Java heap OOM, a goroutine leak, an expired
+# phrase, so a CrashLoopBackOff, a Go panic, a heap OOM, a goroutine leak, an expired
 # certificate, a stack overflow in a recursion test, a dependency injection container, a token
 # bucket or an auth service timeout still gets its public issue.
 #
