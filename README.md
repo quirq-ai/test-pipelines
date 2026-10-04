@@ -208,11 +208,18 @@ messages of the same kind, is EXONERATED, and every other failure is UNEXPECTED 
 change: one that passes on any base run, one that crashes on any base run (a JUnit error, such
 as a fixture that reads a generated file the base worktree lacks; a crash on base is no signal,
 even when the change crashes too), one that crashes with the change but fails an assertion on
-base, one that fails differently there, and one with no base result, such as a new test. The
-kind of a failure is the first word of its message's first line, such as `FileNotFoundError:`
-or `assert`, so a test body that reads a missing generated file on base (a FAIL in pytest) does
-not exonerate a change that makes it raise something else; an empty message never exonerates.
-This is a heuristic and cannot tell two failures of one kind apart. The retry and
+base, one that fails differently there, one whose failure has no kind (below), and one with no
+base result, such as a new test. The kind of a failure is the `type` attribute of its JUnit
+`<failure>` (an exception class, as Surefire writes it) when every failure on both sides has
+one; otherwise it is the first word of its message's first line, such as `FileNotFoundError:`
+or `assert`, after removing ANSI escape codes and a leading pytest `E` marker. So a test body
+that reads a missing generated file on base (a FAIL in pytest) does not exonerate a change that
+makes it raise something else. A failure whose kind says nothing never exonerates: an empty
+message, `def` (a traceback with no message), `[captured` (a message that was only captured
+output), a word with no letters, or a generic word such as `Failed` or `Error` (in any case, with
+any trailing punctuation), or a root class such as `Exception` or `Throwable`, which some
+runners write for every failure. This is a heuristic and cannot tell two failures of one kind
+apart. The retry and
 base runs are stored too, linked to the run by `parent` and listed in the verdict's `inputs`.
 The base side runs in the same job, so the rerun command must test the code in its working
 directory. If the tests import installed code (an editable install, a build outside the tree),
