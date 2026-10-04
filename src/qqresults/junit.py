@@ -28,7 +28,7 @@ MAX_MESSAGE = 1_000     # characters of a failure or skip message kept on the no
 MAX_MESSAGE_LINES = 20  # and lines of it, so a long traceback keeps only its head
 MAX_RAW = 16_000        # characters of the original <testcase> element kept as raw, opt-in only
 
-_CAPTURED = re.compile(r"<(system-out|system-err)\b[^>]{0,200}?(?:/>|>.*?(?:</\1\s*>|$))",
+_CAPTURED = re.compile(r"<(system-out|system-err)\b[^>]*?(?:/>|>.*?(?:</\1\s*>|$))",
                        re.DOTALL | re.IGNORECASE)
 
 

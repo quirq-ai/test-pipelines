@@ -134,3 +134,11 @@ def test_a_huge_message_full_of_unclosed_markup_is_capped_quickly():
     start = time.monotonic()
     (r,) = junit.parse(data, "r")
     assert time.monotonic() - start < 2 and len(r.message) < 1_100
+
+
+def test_pasted_captured_output_with_long_attributes_is_still_cut():
+    body = "a" * 10 + '<system-out x="' + "y" * 300 + '">SECRET</system-out>'
+    data = (b'<testsuite name="s"><testcase name="a"><failure><![CDATA[' + body.encode()
+            + b']]></failure></testcase></testsuite>')
+    (r,) = junit.parse(data, "r")
+    assert "SECRET" not in r.message
