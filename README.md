@@ -155,8 +155,8 @@ proves the done-when against the real API with a planted held canary.
 |---|---|---|---|
 | V0-TST-01 | Result schema and JUnit sink | #2 | merged |
 | V0-TST-02 | Results store v0 and scorecard v0 | #3 | merged |
-| V0-TST-03 | Verdict: retry, then compare with base | #4 | in review |
-| V0-TST-04 | Failure records with issue mirror | #5 | in review |
+| V0-TST-03 | Verdict: retry, then compare with base | #4 | merged |
+| V0-TST-04 | Failure records with issue mirror | #6 | in review |
 
 ## Working here
 
