@@ -19,6 +19,7 @@ import zipfile
 from collections.abc import Mapping
 from pathlib import Path
 
+from qqresults import bundle
 from qqresults.errors import Error
 from qqresults.model import Change, Run, RunKind
 
@@ -97,7 +98,19 @@ def run_from_env(env: Mapping[str, str], kind: str = "", name: str = "") -> Run:
         finished_at=dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         executor="github-actions",
         job_status=env.get("QQ_JOB_STATUS", ""),   # the sink action passes ${{ job.status }}
+        queued_at=_rfc3339_utc(env.get("QQ_QUEUED_AT", "")),   # set by quirq-ai/gate/timing
     )
+
+
+def _rfc3339_utc(text: str) -> str:
+    """text as RFC 3339 UTC ("...Z"), or "" when it is missing or not a timestamp with a zone."""
+    try:
+        t = dt.datetime.fromisoformat(text.strip().upper().replace("Z", "+00:00"))
+    except ValueError:
+        return ""
+    if t.tzinfo is None:
+        return ""
+    return t.astimezone(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # --- collecting bundles into the store ---------------------------------------------------------
@@ -184,7 +197,27 @@ def _import_artifact(repo: str, art: dict, store, token: str, get) -> bool:
             d for d in root.iterdir() if (d / "run.json").is_file())
         if not dirs:
             raise GitHubAPIError("no results bundle inside")
+        for d in dirs:            # all of them, before importing any
+            _check_origin(repo, d)
         return any([store.import_dir(d) for d in dirs])
+
+
+def _check_origin(repo: str, path: Path) -> None:
+    """One repo's workflows must not add or hide runs the scorecard counts for another.
+
+    The run id must be one this repo's jobs produce (run_from_env), so it cannot take another
+    repo's id first and make the write-once store skip the real run. A run may name another
+    repo's code only as kind "other" (perf runs do). Repo names compare exactly, as GitHub
+    reports them, so one repo's metrics are never split across spellings.
+    """
+    run = bundle.read(path).run
+    if not (isinstance(run.id, str) and isinstance(run.repo, str) and isinstance(run.kind, str)):
+        raise GitHubAPIError("run.json: id, repo and kind must be strings")
+    if not run.id.startswith(f"github/{repo}/"):
+        raise GitHubAPIError(f"run {run.id} was found in {repo} but is not one of its runs")
+    if run.repo != repo and run.kind != RunKind.OTHER.value:
+        raise GitHubAPIError(f"run {run.id} is for {run.repo} but was found in {repo}; "
+                             "only kind 'other' may name another repo")
 
 
 def collect(repo: str, store, token: str, get=http_get) -> tuple[int, int, list[str]]:

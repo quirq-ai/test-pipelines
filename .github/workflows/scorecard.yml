@@ -39,6 +39,7 @@ jobs:
         run: >-
           qqresults collect --store .qq/store
           --repo quirq-ai/test-pipelines --repo quirq-ai/xo-space --repo quirq-ai/innernet
+          --repo quirq-ai/perf
       - name: compute the scorecard
         if: always()
         run: |

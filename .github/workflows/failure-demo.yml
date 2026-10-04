@@ -65,9 +65,12 @@ jobs:
           test -n "$FIRST_ISSUE" && test "$FIRST_ISSUE" = "$SECOND_ISSUE"
           test "$SECOND_CREATED" = "false"
           issues=$(gh api --paginate "repos/$GITHUB_REPOSITORY/issues?labels=qq-failure&state=all&per_page=100" \
-                     --jq "[.[] | select(.body | contains(\"<!-- qq-failure: $ID -->\"))] | length" \
+                     --jq "[.[] | select((.body // \"\" | startswith(\"<!-- qq-failure: $ID -->\"))
+                                         and .state_reason != \"duplicate\")] | length" \
                    | awk '{s+=$1} END {print s}')
-          echo "issues with the record's marker: $issues"
+          # The issue list can lag a create, so two runners (or one runner's two calls) may both
+          # open one; the later is closed as a duplicate and does not count.
+          echo "issues with the record's marker (not closed as duplicate): $issues"
           test "$issues" = "1"
           python -m pip install --quiet .
           qqresults collect --store "$RUNNER_TEMP/store" --repo "$GITHUB_REPOSITORY"

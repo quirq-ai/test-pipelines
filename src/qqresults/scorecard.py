@@ -85,14 +85,20 @@ def job_key(run: Run) -> str:
 
 def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
     m = Metric("Gate time-to-green", "P1: p50 under 15 min, p90 under 30 min", unit="min")
-    minutes = [(parse_time(r.finished_at) - parse_time(r.queued_at)).total_seconds() / 60
-               for r, _ in runs if r.kind == RunKind.GATE and r.queued_at and r.finished_at]
+    waits = [(parse_time(r.finished_at) - parse_time(r.queued_at)).total_seconds() / 60
+             for r, _ in runs if r.kind == RunKind.GATE and r.queued_at and r.finished_at]
+    minutes = [w for w in waits if w >= 0]   # a clock or input error is not a negative wait
+    dropped = len(waits) - len(minutes)
+    skipped = f"; {dropped} run(s) queued after they finished, skipped" if dropped else ""
     if not minutes:
-        m.waiting_on = "V0-GAT-04 records queue-entry time on gate runs"
+        if dropped:
+            m.detail = skipped.lstrip("; ")
+        else:
+            m.waiting_on = "V0-GAT-04 records queue-entry time on gate runs"
         return m
     m.value = round(_percentile(sorted(minutes), 50), 1)
     m.extra = {"p50": m.value, "p90": round(_percentile(sorted(minutes), 90), 1)}
-    m.detail = f"p50 {m.value} / p90 {m.extra['p90']} over {len(minutes)} gate runs"
+    m.detail = f"p50 {m.value} / p90 {m.extra['p90']} over {len(minutes)} gate runs{skipped}"
     return m
 
 
@@ -188,10 +194,11 @@ def failures_recorded(states) -> Metric:
 
 def missing_results(runs: list[tuple[Run, Verdict]]) -> Metric:
     m = Metric("Runs with no test results", "0", unit="runs")
-    m.value = sum(1 for r, v in runs if not (r.results_found and v.counts)
-                  and r.job_status != "cancelled")
-    m.detail = (f"of {len(runs)} stored runs; a repo with no test reports (only a typecheck, say) "
-                "shows up here, not as red")
+    m.value = sum(1 for r, v in runs if r.kind in VERIFYING
+                  and not (r.results_found and v.counts) and r.job_status != "cancelled")
+    verifying = sum(1 for r, _ in runs if r.kind in VERIFYING)
+    m.detail = (f"of {verifying} presubmit, gate and post-submit runs; a repo with no test "
+                "reports (only a typecheck, say) shows up here, not as red")
     return m
 
 
