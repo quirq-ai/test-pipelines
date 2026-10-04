@@ -5,14 +5,15 @@
 #     with:
 #       kind: canary-held
 #       subject: ${{ steps.build.outputs.digest }}   # what failed; the same subject is the same record
-#       summary: "Canary held: /health probe failed"
+#       summary: "Canary held: /health probe failed"    # kept in the record, not shown publicly
 #       stage: probe
 #       signal: health
 #
 # The record id comes from kind, repo and subject, so reporting the same event twice opens one
 # record and one issue. Security-looking failures are never mirrored to a public issue and never
-# uploaded as a (public) artifact. Needs `issues: write` on the job's token. The record is kept as a workflow artifact that
-# the results store collects.
+# uploaded as a (public) artifact. Otherwise the issue and the uploaded artifact carry structured
+# fields only; the summary and other free text appear only with `public-summary: "true"`. Needs
+# `issues: write` on the job's token. The artifact is what the results store collects.
 name: qq failure record
 description: Open a quirq infra failure record and mirror it to one labelled issue.
 inputs:
@@ -31,6 +32,7 @@ inputs:
   signal: {description: The health signal or test that fired., required: false, default: ""}
   operation: {description: Key of the operation that held or rolled it back., required: false, default: ""}
   security: {description: Set to "true" to never mirror it publicly., required: false, default: "false"}
+  public-summary: {description: Set to "true" to show the summary in the issue and artifact., required: false, default: "false"}
   issue-repo:
     description: Where the issue goes (default this repository).
     required: false
@@ -61,6 +63,7 @@ runs:
         QQ_SIGNAL: ${{ inputs.signal }}
         QQ_OPERATION: ${{ inputs.operation }}
         QQ_SECURITY: ${{ inputs.security }}
+        QQ_PUBLIC_SUMMARY: ${{ inputs.public-summary }}
         QQ_ISSUE_REPO: ${{ inputs.issue-repo }}
       run: |
         set -euo pipefail
@@ -82,15 +85,18 @@ runs:
           [ -z "$value" ] || args+=("--${pair%%:*}" "$value")
         done
         [ "$QQ_SECURITY" != "true" ] || args+=(--security)
+        [ "$QQ_PUBLIC_SUMMARY" != "true" ] || args+=(--public-summary)
         dir="$RUNNER_TEMP/qq-failures"   # shared by every call in the job, so a repeat finds the record
         echo "dir=$dir" >> "$GITHUB_OUTPUT"
-        "$venv/bin/qqresults" failure open --dir "$dir" "${args[@]}"
+        "$venv/bin/qqresults" failure open --dir "$dir" --public-copy "$RUNNER_TEMP/qq-failures-public" \
+          "${args[@]}"
     # A security-looking record stays on the runner: this repo's artifacts and results branch
-    # are public. TODO(suraj): where such records are kept instead.
+    # are public. TODO(suraj): where such records are kept instead. Any other record is uploaded
+    # as its public copy (structured fields only), never as the record itself.
     - uses: actions/upload-artifact@v7
-      if: steps.open.outputs.security != 'true'
+      if: steps.open.outputs.security != 'true' && steps.open.outputs.upload != ''
       with:
         name: ${{ steps.open.outputs.name }}-${{ github.run_id }}-${{ github.run_attempt }}
-        path: ${{ steps.open.outputs.dir }}
+        path: ${{ steps.open.outputs.upload }}
         overwrite: true
         if-no-files-found: error

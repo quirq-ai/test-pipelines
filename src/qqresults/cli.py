@@ -19,7 +19,8 @@
     qqresults failure list --dir DIR
         Failure records (V0-TST-04): one per held canary, rollback or auto-revert, mirrored
         to one labelled GitHub issue (token from GITHUB_TOKEN). DIR is a store's failures/
-        directory or a scratch directory that the backend keeps.
+        directory or a scratch directory that the backend keeps. The issue and --public-copy
+        carry structured fields only; the summary needs --public-summary.
 """
 from __future__ import annotations
 
@@ -28,6 +29,7 @@ import datetime as dt
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -178,16 +180,22 @@ def _mirror(state: failures.State, repo: str) -> failures.State:
     return failures.read(state.path)
 
 
-def _report(state: failures.State, created: bool | None, gh_output: str | None) -> None:
+def _report(state: failures.State, created: bool | None, args) -> None:
     f = state.current
+    upload = ""
+    if args.public_copy:
+        if state.security:   # never uploaded; drop a copy made before it looked that way
+            shutil.rmtree(Path(args.public_copy) / state.path.name, ignore_errors=True)
+        else:
+            upload = str(failures.public_copy(state, Path(args.public_copy)))
     verb = "" if created is None else ("opened " if created else "already open: ")
     print(f"{verb}{f.id} ({f.kind}, {f.repo}) at {state.path}")
     print("closed" if state.closed else "open; missing " + ", ".join(state.missing))
-    if gh_output:
-        with open(gh_output, "a", encoding="utf-8") as out:
+    if args.github_output:
+        with open(args.github_output, "a", encoding="utf-8") as out:
             out.write(f"id={f.id}\ndir={state.path}\nname={state.path.name}\n"
                       f"issue={state.links.get('issue', '')}\ncreated={str(bool(created)).lower()}\n"
-                      f"security={str(state.security).lower()}\n")
+                      f"security={str(state.security).lower()}\nupload={upload}\n")
 
 
 FAILURE_FIELDS = ("channel", "build_digest", "last_good", "first_bad", "stage", "signal",
@@ -200,9 +208,12 @@ def cmd_failure(args) -> int:
         fields = {k: getattr(args, k) for k in FAILURE_FIELDS if getattr(args, k)}
         f = failures.new(args.kind, args.repo, args.subject, security=args.security, **fields)
         state, created = failures.open_record(f, parent)
+        if args.public_summary:
+            failures.mark(state.path, "public_summary")
+            state = failures.read(state.path)
         if args.mirror:
             state = _mirror(state, args.mirror)
-        _report(state, created, args.github_output)
+        _report(state, created, args)
     elif args.action == "link":
         path = parent / failures.dirname(args.id)
         failures.read(path)  # fails clearly if the record is not here
@@ -210,10 +221,13 @@ def cmd_failure(args) -> int:
             value = getattr(args, field, None)
             if value:
                 failures.add_link(path, field, value)
+        for name in failures.MARKS:
+            if getattr(args, name):
+                failures.mark(path, name)
         state = failures.read(path)
         if args.mirror:
             state = _mirror(state, args.mirror)
-        _report(state, None, args.github_output)
+        _report(state, None, args)
     else:
         for d in sorted(parent.iterdir()) if parent.is_dir() else []:
             if (d / failures.RECORD).is_file():
@@ -307,7 +321,11 @@ def build_parser() -> argparse.ArgumentParser:
     for name in FAILURE_FIELDS:
         fa.add_argument("--" + name.replace("_", "-"), dest=name)
     fa.add_argument("--security", action="store_true",
-                    help="open: security-looking; kept but never mirrored to a public issue")
+                    help="security-looking; kept but never mirrored to a public issue")
+    fa.add_argument("--public-summary", action="store_true",
+                    help="show the summary in the public issue and upload (default: withheld)")
+    fa.add_argument("--public-copy", metavar="DIR",
+                    help="write the record's public view under DIR, for upload")
     for name in failures.LINK_FIELDS:
         if name != "operation":
             fa.add_argument("--" + name.replace("_", "-"), dest=name, help="link")

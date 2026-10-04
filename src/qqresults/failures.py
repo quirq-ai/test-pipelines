@@ -9,6 +9,10 @@ It closes only when culprit, fix and covering test are all linked (postmortem.to
     <dir>/failure.json                 the Failure, write-once
     <dir>/links/<time>-<field>.json    {"field", "value", "at"}, each write-once
 
+Free text (the summary, and any value that is not a commit, digest or URL) stays in the record.
+What goes public (the issue, and the copy uploaded as an artifact) is public_view(): structured
+fields only, plus the summary when the caller opted in with a public_summary mark.
+
 The same layout is a failure bundle (kept by the backend, e.g. as a workflow artifact) and its
 place in the store (`<store>/failures/<dir>`).
 """
@@ -30,6 +34,9 @@ from qqresults.model import Failure, FailureKind, canonical_json
 RECORD = "failure.json"
 LINKS = "links"
 LINK_FIELDS = Failure.LINKS + ("issue",)
+# Marks are links whose value is "true": security (re-reported or flagged later as security)
+# and public_summary (the caller opted in to showing the summary publicly).
+MARKS = ("security", "public_summary")
 
 # Words that make a failure look like a security issue. Such records are kept, but never mirrored
 # to a public issue. TODO(suraj): where security-looking failures go instead (a private advisory,
@@ -41,7 +48,10 @@ SECURITY_WORDS = re.compile(
     r"sanitizer|\basan\b|\bmsan\b|\bubsan\b|heap|traversal|\bdos\b|redos|denial of service|"
     r"deserializ|memory corruption|arbitrary code|\bsqli\b|api[ _-]?key|ssh[ _-]?key|\bauthz\b|"
     r"passwd|attacker|\bpii\b|\bghsa-|double free|certificate|open redirect|malicious|"
-    r"access control|sensitive data", re.IGNORECASE)
+    r"access control|sensitive data|segv|segfault|sigabrt|sigbus|stack smash|\buaf\b|"
+    r"use after free|\boob\b|out of bounds|over-?read|\bxxe\b|prototype pollution|\bjwt|"
+    r"\bcors\b|toctou|crash|panic|authentication|authorization|\bidor\b|\bssti\b|\bcwe-|"
+    r"spoof|impersonat|smuggl|without login|reachable without", re.IGNORECASE)
 # Errs towards withholding: "memory leak" or "tokenizer" match too, and only cost a public issue.
 # Fuzz findings are treated as security-looking by default (postmortem.toml fuzz-security-crash).
 SECURITY_KINDS = {FailureKind.FUZZ.value}
@@ -71,7 +81,7 @@ def dirname(fid: str) -> str:
 
 def looks_security_related(f: Failure, links: dict[str, str] | None = None) -> bool:
     """True when the record or any link reads like a security issue. Errs towards True."""
-    if f.security or f.kind in SECURITY_KINDS:
+    if f.security or f.kind in SECURITY_KINDS or (links or {}).get("security"):
         return True
     text = " ".join([v for v in f.to_dict().values() if isinstance(v, str)]
                     + list((links or {}).values()))
@@ -108,6 +118,10 @@ class State:
         return looks_security_related(self.record, self.links)
 
     @property
+    def public_summary(self) -> bool:
+        return bool(self.links.get("public_summary"))
+
+    @property
     def missing(self) -> list[str]:
         cur = self.current
         return [n for n in Failure.NEEDED_TO_CLOSE if not getattr(cur, n)]
@@ -123,21 +137,27 @@ def _write_once(path: Path, text: str) -> None:
 
 
 def open_record(f: Failure, parent: Path) -> tuple[State, bool]:
-    """Write the record under parent unless it exists. Returns (state, created)."""
+    """Write the record under parent unless it exists. Returns (state, created).
+
+    The record is write-once, so a repeat report that is (or reads as) security-related is kept
+    as a security mark; the State then turns security and the mirror withdraws any public issue.
+    """
     path = parent / dirname(f.id)
-    if (path / RECORD).is_file():
-        return read(path), False
-    path.mkdir(parents=True, exist_ok=True)
-    (path / LINKS).mkdir(exist_ok=True)
-    try:
-        _write_once(path / RECORD, f.to_json() + "\n")
-    except FileExistsError:
-        return read(path), False
-    return read(path), True
+    if not (path / RECORD).is_file():
+        path.mkdir(parents=True, exist_ok=True)
+        (path / LINKS).mkdir(exist_ok=True)
+        try:
+            _write_once(path / RECORD, f.to_json() + "\n")
+            return read(path), True
+        except FileExistsError:
+            pass
+    if looks_security_related(f):
+        mark(path, "security")
+    return read(path), False
 
 
 def add_link(path: Path, field: str, value: str) -> None:
-    if field not in LINK_FIELDS:
+    if field not in LINK_FIELDS + MARKS:
         raise FailureError(f"cannot link {field!r}; links are {', '.join(LINK_FIELDS)}")
     if not value:
         raise FailureError(f"link {field}: empty value")
@@ -146,6 +166,12 @@ def add_link(path: Path, field: str, value: str) -> None:
     digest = hashlib.sha256(body.encode()).hexdigest()[:8]
     (path / LINKS).mkdir(exist_ok=True)
     _write_once(path / LINKS / f"{at.replace(':', '')}-{field}-{digest}.json", body + "\n")
+
+
+def mark(path: Path, name: str) -> None:
+    """Set a mark (see MARKS) unless it is set already."""
+    if not read(path).links.get(name):
+        add_link(path, name, "true")
 
 
 def read(path: Path) -> State:
@@ -185,8 +211,48 @@ def import_dir(src: Path, parent: Path) -> bool:
     return added
 
 
+# Values shown as they are: a commit, a digest, a URL, owner/repo@commit, owner/repo#n or the
+# action's own run id. Anything else may be free text, which could describe a vulnerability.
+_TOKEN = re.compile(r"[0-9a-f]{7,64}|\w+:[0-9a-f]+|https://[^\s`|<>]+|"
+                    r"[\w.-]+/[\w.-]+(@[0-9a-f]{7,64}|#\d+)|github/[\w.-]+/[\w.-]+/\d+/\d+/[\w.-]+",
+                    re.IGNORECASE)
+WITHHELD = "withheld"
+
+
+def _public(v: str) -> str:
+    return v if not v or _TOKEN.fullmatch(v) else WITHHELD
+
+
+def public_view(f: Failure, public_summary: bool = False) -> Failure:
+    """The failure as it may be shown publicly: free text is withheld, a free-text subject is
+    replaced by its digest, and the summary is dropped unless the caller opted in."""
+    subject = f.subject if _TOKEN.fullmatch(f.subject) else (
+        "sha256:" + hashlib.sha256(f.subject.encode()).hexdigest()[:16])
+    return dataclasses.replace(f, subject=subject, summary=f.summary if public_summary else "",
+                               run_id=_public(f.run_id),
+                               **{k: _public(getattr(f, k)) for k in Failure.LINKS})
+
+
+def public_copy(state: State, parent: Path) -> Path:
+    """Write the public view of a record, with its links, as a bundle under parent to upload.
+
+    Rewritten on every call (it is derived, not a record). Never call it for a security record.
+    """
+    dest = parent / state.path.name
+    shutil.rmtree(dest, ignore_errors=True)
+    (dest / LINKS).mkdir(parents=True)
+    (dest / RECORD).write_text(public_view(state.record, state.public_summary).to_json() + "\n",
+                               encoding="utf-8")
+    for p in sorted((state.path / LINKS).glob("*.json")):
+        link = json.loads(p.read_text(encoding="utf-8"))
+        if link["field"] not in MARKS + ("issue",):
+            link["value"] = _public(link["value"])
+        (dest / LINKS / p.name).write_text(canonical_json(link) + "\n", encoding="utf-8")
+    return dest
+
+
 def issue_body(state: State) -> str:
-    f = state.current
+    f = public_view(state.current, state.public_summary)
     rows = [("Kind", f.kind), ("Repo", f.repo), ("Subject", f.subject), ("Opened", f.opened_at),
             ("Channel", f.channel), ("Build digest", f.build_digest), ("Last good", f.last_good),
             ("First bad", f.first_bad), ("Stage", f.stage), ("Signal", f.signal),
@@ -200,10 +266,12 @@ def issue_body(state: State) -> str:
               else "open until " + ", ".join(m.replace("_", " ") for m in state.missing)
               + " are linked")
     summary = f.summary.replace("`", "'")
+    summary = (f"```text\n{summary}\n```\n\n" if summary
+               else "The summary and other free text stay in the record.\n\n")
     return (f"{marker(f.id)}\n"
             f"Failure record `{f.id}` from quirq infra (test-pipelines, plan §5.10). "
             f"This issue mirrors the record; the record is the source of truth.\n\n"
-            f"```text\n{summary}\n```\n\n| Field | Value |\n|---|---|\n{table}\n\n"
+            f"{summary}| Field | Value |\n|---|---|\n{table}\n\n"
             f"Status: {status}.\n")
 
 
@@ -217,6 +285,8 @@ WITHHELD_BODY = ("The failure record mirrored here was later found to look secur
                  "admin. TODO(suraj): where such records are tracked.\n")
 
 
-def issue_title(f: Failure) -> str:
-    what = f.summary.splitlines()[0][:80] if f.summary.strip() else f.subject[:40]
+def issue_title(state: State) -> str:
+    f = public_view(state.current, state.public_summary)
+    what = (f.summary.splitlines()[0][:80] if f.summary.strip()
+            else " ".join(filter(None, (f.stage, f.signal, f.subject[:40]))))
     return f"[qq {f.kind}] {f.repo}: {what}"

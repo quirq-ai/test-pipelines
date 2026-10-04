@@ -320,7 +320,7 @@ def mirror_issue(state, repo: str, token: str, call=None) -> tuple[str, bool]:
                                 "its text is hidden and closed but stays in the edit history. "
                                 "A repo admin must delete the issue.")
         return "", False
-    title, body = failures.issue_title(f), failures.issue_body(state)
+    title, body = failures.issue_title(state), failures.issue_body(state)
     if existing:
         _patch(repo, existing[0], {"title": title, "body": body,
                                    "state": "closed" if state.closed else "open"}, token, call)

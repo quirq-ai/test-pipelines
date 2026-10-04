@@ -136,7 +136,7 @@ Every held canary, canary rollback and auto-revert opens one write-once `Failure
   with:
     kind: canary-held                                 # canary-held | canary-rollback | auto-revert | red-run | fuzz
     subject: ${{ steps.build.outputs.digest }}        # same kind, repo and subject: same record
-    summary: "Canary held: /health probe failed"
+    summary: "Canary held: /health probe failed"     # stays in the record unless public-summary: "true"
     stage: probe
     signal: health
 ```
@@ -151,13 +151,25 @@ qqresults failure link <id> --dir <store>/failures --culprit <change> --fix <cha
 ```
 
 A record closes only when culprit, fix and covering test are linked (infra-config
-`postmortem.toml` `record_needs`), and the scorecard reports the share that are. Security-looking
-records (flagged, or matching words such as "overflow" or "credential") are kept but never
-mirrored to a public issue, and their failure artifact is not uploaded. If a record only looks
-that way after its issue was opened, the issue's text is hidden and it is closed, and the step
-fails asking a repo admin to delete it: editing an issue does not remove the old text from its
-history or from emails already sent. The record itself may already be in a public artifact by
-then. TODO(suraj): where those go instead. The `failure-demo` workflow
+`postmortem.toml` `record_needs`), and the scorecard reports the share that are.
+
+Free text is never public without the opt-in. The issue title and body, and the failure artifact
+(which the results store collects onto the public results branch), carry structured fields only:
+kind, repo, the subject (or its digest when it is not a commit, digest or URL), stage, signal,
+channel, build digest, last good and first bad, and links that are commit SHAs, digests or URLs.
+The summary, and any other value that may be free text, stays in the local record and shows as
+`withheld` publicly. Pass `public-summary: "true"` to the action (or `--public-summary` to
+`qqresults failure open`/`link`) to show the summary; the artifact is a public copy written by
+`--public-copy`, never the record itself.
+
+The security classifier errs towards withholding: records flagged `security`, of kind `fuzz`, or
+matching words such as "overflow", "credential", "segfault", "crash" or "without login" are kept
+but never mirrored to a public issue, and their failure artifact is not uploaded, even with the
+opt-in. Reporting an existing record again with `security: "true"` or security-looking text marks
+it security too. If a record only looks that way after its issue was opened, the issue's text is
+hidden and it is closed, and the step fails asking a repo admin to delete it: editing an issue
+does not remove the old text from its history or from emails already sent. The public copy of the
+record may already be in an artifact by then. TODO(suraj): where those go instead. The `failure-demo` workflow
 proves the done-when against the real API with a planted held canary.
 
 ## v0 status
