@@ -1,22 +1,35 @@
 """Retry, then compare with base (plan §3 P5, flakes.toml [verdict]); V0-TST-03.
 
 Failed tests are rerun with the change (`retry_failed` times). Tests that still fail are run
-without the change, at the base commit, `retry_failed + 1` times. Only a failure that fails the
-same way without the change, on every one of those runs, does not fail it:
+without the change, at the base commit, `retry_failed + 1` times. Only an assertion failure
+that looks the same without the change, on every one of those runs, does not fail it:
 
     passed on a retry                         FLAKY        does not fail the change
-    failed on retries, and on every base run  EXONERATED   does not fail the change
-      with the same status as with the change
+    FAIL on retries and on every base run,    EXONERATED   does not fail the change
+      every message of the same kind
     failed on retries, passed on any base run UNEXPECTED   fails the change (flaky on base too)
-    a different status on base (e.g. CRASH    UNEXPECTED   no signal: the base side may lack
-      without the change, FAIL with it)                    files the change's checkout has
+    CRASH on any base run, whatever the       UNEXPECTED   no signal: the base side crashed, and
+      change did                                           its worktree may lack files the
+                                                           change's checkout has
+    CRASH with the change, FAIL on base       UNEXPECTED   no signal: a different failure
+    FAIL everywhere, messages of different    UNEXPECTED   no signal: fails differently
+      kinds, or an empty message
     no base result (a new test, no data)      UNEXPECTED   a missing signal never exonerates
 
 A single base run could exonerate a real regression: a test that is flaky on base happens to
 fail there, or crashes there because the base worktree lacks gitignored or generated files or
-submodules. So the base side runs as often as the change side did, and only the same failure
-every time counts. The first run at each base keeps its id (`<run>/base`, `<run>/base2`); the
-extra runs are `<run>/base-run2`, `<run>/base2-run2` and so on.
+submodules. So the base side runs as often as the change side did, and only a FAIL, every time,
+of the same kind as with the change, counts. A CRASH (a JUnit <error>: setup, a fixture, an
+import, a timeout) is never evidence on the base side, even when the change crashes too: a
+fixture that reads a generated file crashes on base because the worktree lacks the file, and
+would hide a change that makes the same fixture crash for a real reason. The same read inside
+the test body is a FAIL (pytest reports any exception there as a <failure>), so a FAIL must
+also look like the change's: the kind of a failure is the first word of its message's first
+line (an exception class such as `FileNotFoundError:`, or `assert`), and every failing result
+on both sides must have the same kind. This is a heuristic: it tells a missing file from a
+regression that raises something else, not two different failures of one kind (two plain
+`assert`s). An empty message has no kind and is never evidence. The first run at each base keeps its id
+(`<run>/base`, `<run>/base2`); the extra runs are `<run>/base-run2`, `<run>/base2-run2` and so on.
 
 The rerun command comes from the caller (the adapter or builder), so this module never names a
 test runner. It runs through the shell with:
@@ -46,11 +59,28 @@ fail there too: a failure is exonerated only if it fails at every base. That kee
 closed: an entry queued ahead that fixes the test (base_sha fails, the first parent passes), and a
 rebase queue testing a PR's last commit (the first parent is the PR's own earlier commit, which
 fails; base_sha passes).
-One case stays open: in a rebase queue where an entry ahead fixes the test and the PR's own
-earlier commit breaks it again, both bases fail, so the failure is exonerated. Neither base is
-"the entries ahead without this PR"; that tree is the queue commit minus all of the PR's commits.
+One case is not closed by that: in a rebase queue where an entry ahead fixes the test and the
+PR's own earlier commit breaks it again, both bases fail. Neither base is "the entries ahead
+without this PR"; that tree is the queue commit minus all of the PR's commits. So a run whose
+base is its tested commit's first parent is compared with base only when that commit shows the
+queue cannot be rebasing a multi-commit PR:
+
+    two or more parents (a merge-commit queue,    compared; the first parent is the entries ahead
+      or a pull request's merge ref)
+    one parent, which is base_sha (squash or      compared; the parent is the entries ahead (none)
+      rebase of one commit, nothing queued ahead)
+    one parent that is not base_sha, or no        not compared: still-failing tests stay
+      base_sha (rebase queue; also a squash         UNEXPECTED ("rebase-method queue: base not
+      queue with entries ahead, which looks         derivable")
+      the same)
+
+The check applies to any run whose base is `<commit>^1` (what the GitHub backend records for a
+pull request or a queue entry), whatever its kind. An explicit base (the caller's `base`) is
+one more base the failure must also fail at; it never replaces the run's own bases or skips
+this check.
 TODO(expert): derive that base (the PR's commit count, from the queue branch's pr-<n> ref) once
-the org's merge queue and its merge method are decided (ORG-03).
+the org's merge queue and its merge method are decided (ORG-03). The count alone is not enough:
+a squash queue adds one commit whatever the PR holds, and the payload does not name the method.
 """
 from __future__ import annotations
 
@@ -63,10 +93,12 @@ from pathlib import Path
 
 from qqresults import bundle, junit, verdict
 from qqresults.errors import Error
-from qqresults.model import CaseVerdict, Result, Run, Verdict, VerdictStatus
+from qqresults.model import CaseVerdict, Result, Run, Status, Verdict, VerdictStatus
 from qqresults.policy import Policy
 
 Runner = Callable[[str, Path, dict[str, str]], int | None]   # None counts as 0
+
+REBASE_QUEUE = "rebase-method queue: base not derivable (TODO(expert), ORG-03)"
 
 
 class RetryError(Error):
@@ -127,8 +159,19 @@ def _passed(test_id: str, results: list[Result]) -> bool:
         r.status == "PASS" for r in rs)
 
 
+def _kind(message: str) -> str:
+    """The first word of the message's first line: e.g. `FileNotFoundError:` or `assert`."""
+    words = message.strip().split("\n", 1)[0].split()
+    return words[0] if words else ""
+
+
+def _kinds(kinds: set[str]) -> str:
+    return "/".join(sorted(k or "(no message)" for k in kinds))
+
+
 def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
-           bases: list[bundle.Bundle], base_error: str = "", not_retried: str = "") -> Verdict:
+           bases: list[bundle.Bundle], base_error: str = "", not_retried: str = "",
+           not_compared: str = "") -> Verdict:
     first = verdict.compute(run, results)
     if not results or not run.results_found:
         return first
@@ -141,6 +184,14 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
         on_change = {r.status for b in [results] + [b.results for b in retries]
                      for r in b if r.test_id == t and not r.expected}
         on_base = {r.status for rs in per_base for r in rs}
+        # Only an assertion failure is evidence; any other failing status on base (a CRASH: a
+        # missing generated file, a fixture error) never exonerates, whatever the change did.
+        # It is read only after the pass check below, so it never holds PASS or SKIP.
+        crashed = sorted(on_base - {Status.FAIL.value})
+        # The kind of each failure, with and without the change (see the module docstring).
+        kind_on_change = {_kind(r.message) for b in [results] + [b.results for b in retries]
+                          for r in b if r.test_id == t and not r.expected}
+        kind_on_base = {_kind(r.message) for rs in per_base for r in rs}
         if not_retried:
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, f"not retried: {not_retried}"))
         elif passed_on:
@@ -148,21 +199,31 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
         elif any(rs and any(r.expected for r in rs) for rs in per_base):
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value,
                                      "fails with the change and passes without it"))
-        elif bases and not base_error and all(per_base) and (
-                len(on_change) != 1 or on_base != on_change):
+        elif bases and not base_error and crashed:
+            tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, (
+                f"no signal: the base side crashed ({'/'.join(crashed)} without the change), "
+                "and a crash there may come from the base worktree, not the code")))
+        elif bases and not base_error and all(per_base) and on_change != {Status.FAIL.value}:
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, (
                 f"no signal: {'/'.join(sorted(on_base))} without the change but "
                 f"{'/'.join(sorted(on_change))} with it, so the base failure may not be this one")))
+        elif bases and not base_error and all(per_base) and (
+                "" in kind_on_change | kind_on_base or len(kind_on_change | kind_on_base) != 1):
+            tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, (
+                f"no signal: fails differently without the change "
+                f"({_kinds(kind_on_base)} vs {_kinds(kind_on_change)})")))
         elif bases and not base_error and all(per_base):
             at = ", ".join(dict.fromkeys(b.run.commit[:12] for b in bases))
             tests.append(CaseVerdict(t, VerdictStatus.EXONERATED.value, (
-                f"also fails without the change, at {at}: {next(iter(on_base))} "
+                f"also fails without the change, at {at}: {Status.FAIL.value} "
                 f"on all {len(bases)} base run(s)")))
         elif bases and not base_error:
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value,
                                      "no result without the change (a new test, or no signal)"))
         else:
-            why = f"could not run without the change: {base_error}" if base_error else "not compared with base"
+            why = (f"could not run without the change: {base_error}" if base_error else
+                   f"not compared with base: {not_compared}" if not_compared else
+                   "not compared with base")
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, f"still fails on retry; {why}"))
     counts = dict(first.counts)
     counts.pop(VerdictStatus.UNEXPECTED.value, None)
@@ -174,6 +235,8 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
         reason = f"{reason}; base comparison failed: {base_error}".lstrip("; ")
     if not_retried:
         reason = f"{reason}; not retried: {not_retried}".lstrip("; ")
+    if not_compared:
+        reason = f"{reason}; not compared with base: {not_compared}".lstrip("; ")
     return Verdict(run_id=run.id, passed=unexpected == 0, counts=dict(sorted(counts.items())),
                    tests=tests, reason=reason,
                    inputs=[b.run.id for b in retries + bases])
@@ -209,9 +272,17 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
         if not remaining:
             break
     bases: list[bundle.Bundle] = []
-    base_error = ""
-    if remaining and policy.compare_with_base:
-        commits = [base_commit] if base_commit else candidate_bases(run)
+    base_error = not_compared = ""
+    # Decided by the shape of the base, not the run's kind, which a caller can override.
+    if remaining and policy.compare_with_base and run.base_commit == f"{run.commit}^1":
+        try:
+            if not queue_base_derivable(run, cwd):
+                not_compared = REBASE_QUEUE
+        except RetryError as e:              # cannot tell: never exonerate without knowing
+            base_error = f"cannot read the tested commit's parents: {e}"
+    if remaining and policy.compare_with_base and not (base_error or not_compared):
+        # An explicit base is one more base, never a replacement for the run's own.
+        commits = list(dict.fromkeys(candidate_bases(run) + ([base_commit] if base_commit else [])))
         if not commits:
             base_error = "no base commit known"
         for n, commit in enumerate(commits, 1):
@@ -223,7 +294,30 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
             except RetryError as e:   # keep the run and its retries; never exonerate without data
                 base_error = str(e)
                 break
-    return Rechecked(decide(run, results, retries, bases, base_error), retries, bases)
+    return Rechecked(decide(run, results, retries, bases, base_error, not_compared=not_compared),
+                     retries, bases)
+
+
+def queue_base_derivable(run: Run, cwd: Path) -> bool:
+    """Whether the tested commit's first parent is the tree without the change: the tested
+    commit is a merge (a pull request's merge ref, or a merge-commit queue), or its one parent
+    is base_sha (nothing queued ahead, one commit added). Anything else may be a rebase queue
+    (see the module docstring)."""
+    # Assumes any commit with two or more parents is a merge-commit queue entry (or a PR merge
+    # ref) whose first parent is the entries ahead. A rebase queue never yields one: GitHub's
+    # rebase method flattens a PR's merge commits, so its entries are all single-parent.
+    # TODO(expert): read the queue's merge_method from GET /repos/{o}/{r}/rules/branches/
+    # {base_ref} (the merge_queue rule). For SQUASH or MERGE, ^1 is the entries ahead, so a
+    # squash entry with entries ahead could be compared again (ORG-03).
+    try:
+        git(cwd, "cat-file", "-e", f"{run.commit}^1^{{commit}}")
+    except RetryError:   # a shallow checkout: fetch the commit with its parents
+        git(cwd, "fetch", "--quiet", "--depth", "2", "origin", run.commit)
+    parents = git(cwd, "rev-list", "--parents", "-n", "1", run.commit).split()[1:]
+    if not parents:
+        raise RetryError(f"{run.commit[:12]} has no parents")
+    target = run.change.base_sha if run.change else ""
+    return len(parents) > 1 or (bool(target) and parents[0] == (_resolve(cwd, target) or target))
 
 
 def candidate_bases(run: Run) -> list[str]:

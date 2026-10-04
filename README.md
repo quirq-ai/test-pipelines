@@ -198,10 +198,16 @@ Failed tests are rerun with the change (`retry_failed` times, default 1, at most
 than `max_failures_to_retry` failures (default 20) the change is treated as broken and nothing is
 retried. Those that still fail
 are rerun at the base commit, in a git worktree, `retry_failed + 1` times. A test that passes on
-a retry is FLAKY, one that fails on every base run with the same status as with the change is
-EXONERATED, and every other failure is UNEXPECTED and fails the change: one that passes on any
-base run, one that fails differently there (a CRASH on base against a FAIL with the change is no
-signal), and one with no base result, such as a new test. The retry and
+a retry is FLAKY, one that fails an assertion (FAIL) on every retry and on every base run, with
+messages of the same kind, is EXONERATED, and every other failure is UNEXPECTED and fails the
+change: one that passes on any base run, one that crashes on any base run (a JUnit error, such
+as a fixture that reads a generated file the base worktree lacks; a crash on base is no signal,
+even when the change crashes too), one that crashes with the change but fails an assertion on
+base, one that fails differently there, and one with no base result, such as a new test. The
+kind of a failure is the first word of its message's first line, such as `FileNotFoundError:`
+or `assert`, so a test body that reads a missing generated file on base (a FAIL in pytest) does
+not exonerate a change that makes it raise something else; an empty message never exonerates.
+This is a heuristic and cannot tell two failures of one kind apart. The retry and
 base runs are stored too, linked to the run by `parent` and listed in the verdict's `inputs`.
 The base side runs in the same job, so the rerun command must test the code in its working
 directory. If the tests import installed code (an editable install, a build outside the tree),
@@ -212,8 +218,20 @@ exonerated; if `setup` fails to restore the change, the step fails. The base is 
 commit without this change: for a pull request or a merge-queue entry, the tested merge commit's
 first parent; for a push, the commit before it. When the target branch's commit (base_sha)
 differs, the test must also fail there: a failure is exonerated only if it fails at every base.
-So neither a fix queued ahead nor a rebase queue (whose first parent is the PR's own earlier
-commit) can exonerate a regression. The rerun command comes from the builder, so the core never names a runner;
+That stops a fix queued ahead from exonerating a regression in a merge-commit queue, and a
+rebase queue's PR whose earlier commit broke the test while main passes. It does not cover a
+rebase queue where an entry ahead fixes the test and the PR's own earlier commit breaks it
+again: both bases fail, and the real base (the entries ahead without any of the PR's commits)
+is not derivable from the event. So a run whose base is its tested commit's first parent (a
+pull request or merge-queue entry, whatever its `kind`) is compared with base only when that
+commit is a merge (a pull request's merge ref, or a merge-commit queue) or has one parent that
+is base_sha (a squash, or a one-commit rebase, with nothing queued ahead). Any other queue
+entry, one parent that is not base_sha, which includes a squash queue with entries ahead, is
+not compared, and its still-failing tests stay UNEXPECTED ("rebase-method queue: base not
+derivable"). An explicit `base` is one more base the failure must also fail at: it never
+replaces the run's own bases or skips this check. TODO(expert): derive the base from the PR's
+commits, or read the queue's merge method from the branch rules, once the org's merge queue
+and merge method are decided (ORG-03). The rerun command comes from the builder, so the core never names a runner;
 `$QQ_RETRY_TESTS` lists the failed test ids for a command that can select them. CI proves the
 done-when with `tools/planted_demo.sh`: the planted failure is exonerated, and changes that break
 a test or the code under it still block. "Through the gate" waits for the merge queue (V0-ORG-03).

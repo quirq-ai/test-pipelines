@@ -52,8 +52,11 @@ inputs:
     default: ""
   base:
     description: >-
-      The only base for rerun. Default: the tested commit without the change (a PR or queue
-      entry's first parent, a push's before) and also the target branch's commit, both must fail.
+      One more base for rerun; a failure must fail at it as well as at the run's own bases (the
+      tested commit without the change: a PR or queue entry's first parent, a push's before; and
+      the target branch's commit). It never replaces them. A queue entry whose tested commit is
+      neither a merge nor a child of the target branch's commit may be from a rebase queue and
+      is not compared, with or without this input (README).
     required: false
     default: ""
   infra-config:
