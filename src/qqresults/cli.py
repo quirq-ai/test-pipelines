@@ -4,16 +4,25 @@
         Normalize this job's JUnit reports into one write-once run bundle under DIR.
     qqresults show BUNDLE_DIR [--json]
         Print a bundle's verdict.
+    qqresults import --store DIR BUNDLE_DIR...
+        Add sink bundles to the results store (write-once).
+    qqresults collect --store DIR --repo OWNER/NAME...
+        Add every bundle the repos' GitHub workflow runs kept (token from GITHUB_TOKEN).
+    qqresults query runs|results|history --store DIR [filters] [--json]
+        Read the store.
+    qqresults scorecard --store DIR [--days N] [--json]
+        Plan §8's metrics from the store.
 """
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import sys
 from pathlib import Path
 
-from qqresults import __version__, backends, bundle, sink
+from qqresults import __version__, backends, bundle, scorecard, sink, store
 from qqresults.errors import Error
 from qqresults.model import RunKind
 
@@ -52,6 +61,82 @@ def cmd_show(args) -> int:
     return 0
 
 
+def cmd_import(args) -> int:
+    st = store.open_store(args.store)
+    for path in args.bundles:
+        new = st.import_dir(Path(path))
+        print(f"{'stored' if new else 'already stored'}: {Path(path).name}")
+    return 0
+
+
+def cmd_collect(args) -> int:
+    gh = backends.load("github")
+    st = store.open_store(args.store)
+    token = os.environ.get("GITHUB_TOKEN", "")
+    failed = False
+    for repo in args.repo:
+        try:
+            new, old, errors = gh.collect(repo, st, token)
+        except Error as e:   # one repo failing to list must not hide the others
+            new, old, errors = 0, 0, [f"{repo}: {e}"]
+        print(f"{repo}: {new} new, {old} already stored, {len(errors)} skipped")
+        for e in errors:
+            print(f"qqresults: warning: {e}", file=sys.stderr)
+        failed |= bool(errors)
+    # A bad artifact is skipped with a warning so it cannot block every later collection.
+    return 1 if failed and args.strict else 0
+
+
+def _utc(text: str) -> str:
+    try:
+        return scorecard.fmt_time(scorecard.parse_time(text))
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not an RFC 3339 time: {text!r}") from None
+
+
+def _filter(args) -> store.RunFilter:
+    return store.RunFilter(repo=args.repo or "", kind=args.kind or "", commit=args.commit or "",
+                           branch=args.branch or "", change=args.change, since=args.since or "",
+                           failed=True if args.failed else None)
+
+
+def cmd_query(args) -> int:
+    st = store.open_store(args.store)
+    if args.what == "runs":
+        for r, v in st.runs(_filter(args)):
+            if args.json:
+                print(json.dumps({"run": r.to_dict(), "verdict": v.to_dict()}, sort_keys=True))
+            else:
+                print(f"{r.finished_at}  {'PASS' if v.passed else 'FAIL'}  {r.kind:<10} {r.repo} "
+                      f"{r.commit[:12]}  {r.id}")
+    elif args.what == "results":
+        if not args.run:
+            raise SystemExit("qqresults query results: --run is required")
+        for r in st.results(args.run):
+            if args.unexpected and r.expected:
+                continue
+            print(r.to_json() if args.json else f"{r.status:<6} {r.test_id}")
+    else:
+        if not args.test:
+            raise SystemExit("qqresults query history: --test is required")
+        for run, r in st.history(args.test, _filter(args)):
+            print(json.dumps({"run": run.to_dict(), "result": r.to_dict()}, sort_keys=True)
+                  if args.json
+                  else f"{run.finished_at}  {r.status:<6} {run.kind:<10} {run.commit[:12]}  {run.id}")
+    return 0
+
+
+def cmd_scorecard(args) -> int:
+    until = dt.datetime.now(dt.UTC)
+    card = scorecard.compute(store.open_store(args.store), until - dt.timedelta(days=args.days),
+                             until, repos=args.repo)
+    if args.json:
+        print(json.dumps(card.to_dict(), indent=2, sort_keys=True))
+    else:
+        print(scorecard.to_markdown(card), end="")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="qqresults", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -77,6 +162,40 @@ def build_parser() -> argparse.ArgumentParser:
     sh.add_argument("bundle")
     sh.add_argument("--json", action="store_true")
     sh.set_defaults(func=cmd_show)
+
+    im = sub.add_parser("import", help="add sink bundles to the results store")
+    im.add_argument("--store", required=True)
+    im.add_argument("bundles", nargs="+")
+    im.set_defaults(func=cmd_import)
+
+    co = sub.add_parser("collect", help="add the bundles GitHub kept as workflow artifacts")
+    co.add_argument("--store", required=True)
+    co.add_argument("--repo", action="append", required=True, metavar="OWNER/NAME")
+    co.add_argument("--strict", action="store_true", help="exit 1 if any artifact was skipped")
+    co.set_defaults(func=cmd_collect)
+
+    q = sub.add_parser("query", help="read the results store")
+    q.add_argument("what", choices=["runs", "results", "history"])
+    q.add_argument("--store", required=True)
+    q.add_argument("--repo")
+    q.add_argument("--kind", choices=[k.value for k in RunKind])
+    q.add_argument("--commit", help="a commit or its prefix")
+    q.add_argument("--branch")
+    q.add_argument("--change", type=int, help="a PR number")
+    q.add_argument("--since", type=_utc, help="RFC 3339 time, e.g. 2026-10-01T00:00:00Z")
+    q.add_argument("--failed", action="store_true", help="runs: only failed ones")
+    q.add_argument("--run", help="results: the run id")
+    q.add_argument("--unexpected", action="store_true", help="results: only unexpected ones")
+    q.add_argument("--test", help="history: the test id")
+    q.add_argument("--json", action="store_true")
+    q.set_defaults(func=cmd_query)
+
+    sc = sub.add_parser("scorecard", help="plan §8's metrics from the store")
+    sc.add_argument("--store", required=True)
+    sc.add_argument("--days", type=int, default=7)
+    sc.add_argument("--repo", action="append", help="also list a repo with no runs yet")
+    sc.add_argument("--json", action="store_true")
+    sc.set_defaults(func=cmd_scorecard)
     return p
 
 

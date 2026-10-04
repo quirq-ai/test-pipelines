@@ -46,6 +46,7 @@ runs:
         QQ_JUNIT: ${{ inputs.junit }}
         QQ_NAME: ${{ inputs.name }}
         QQ_KIND: ${{ inputs.kind }}
+        QQ_JOB_STATUS: ${{ job.status }}
       run: |
         set -euo pipefail
         python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || {

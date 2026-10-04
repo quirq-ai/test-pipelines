@@ -3,12 +3,19 @@
 Variables used (all set by Actions): GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_RUN_ATTEMPT,
 GITHUB_JOB, GITHUB_WORKFLOW, GITHUB_SHA, GITHUB_REF_NAME, GITHUB_EVENT_NAME, GITHUB_EVENT_PATH,
 GITHUB_SERVER_URL. No token is needed to describe a run.
+
+`collect` reads the result bundles that the sink kept as workflow artifacts, through the REST API.
 """
 from __future__ import annotations
 
 import datetime as dt
+import io
 import json
 import re
+import tempfile
+import urllib.error
+import urllib.request
+import zipfile
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -89,4 +96,97 @@ def run_from_env(env: Mapping[str, str], kind: str = "", name: str = "") -> Run:
         url=f"{server}/{repo}/actions/runs/{env['GITHUB_RUN_ID']}/attempts/{attempt}",
         finished_at=dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         executor="github-actions",
+        job_status=env.get("QQ_JOB_STATUS", ""),   # the sink action passes ${{ job.status }}
     )
+
+
+# --- collecting bundles into the store ---------------------------------------------------------
+
+API = "https://api.github.com"
+ARTIFACT_PREFIX = "qq-results-"
+
+
+class GitHubAPIError(Error):
+    pass
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _request(url: str, token: str, accept: str = "application/vnd.github+json") -> tuple[int, dict, bytes]:
+    """GET url with the token, without following redirects. Returns (status, headers, body)."""
+    headers = {"Accept": accept, "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "qqresults"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    opener = urllib.request.build_opener(_NoRedirect)
+    try:
+        with opener.open(urllib.request.Request(url, headers=headers), timeout=60) as resp:
+            return resp.status, dict(resp.headers), resp.read()
+    except urllib.error.HTTPError as e:
+        if e.code in (301, 302, 303, 307, 308):
+            return e.code, dict(e.headers), b""
+        raise GitHubAPIError(f"GET {url}: HTTP {e.code} {e.reason}") from None
+    except urllib.error.URLError as e:
+        raise GitHubAPIError(f"GET {url}: {e.reason}") from None
+
+
+def http_get(url: str, token: str) -> bytes:
+    """GET a GitHub URL, following a redirect to storage without sending the token there."""
+    status, headers, body = _request(url, token)
+    if status in (301, 302, 303, 307, 308):
+        location = headers.get("Location") or headers.get("location")
+        if not location:
+            raise GitHubAPIError(f"GET {url}: redirect without a Location")
+        status, _, body = _request(location, "", accept="*/*")
+    return body
+
+
+def list_result_artifacts(repo: str, token: str, get=http_get, max_pages: int = 20) -> list[dict]:
+    """The repo's unexpired qq-results-* artifacts, newest first."""
+    found = []
+    for page in range(1, max_pages + 1):
+        data = json.loads(get(f"{API}/repos/{repo}/actions/artifacts?per_page=100&page={page}", token))
+        artifacts = data.get("artifacts", [])
+        found.extend(a for a in artifacts
+                     if a.get("name", "").startswith(ARTIFACT_PREFIX) and not a.get("expired"))
+        if len(artifacts) < 100:
+            break
+    return found
+
+
+def _import_artifact(repo: str, art: dict, store, token: str, get) -> bool:
+    data = get(art["archive_download_url"], token)
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                if any(n.startswith("/") or ".." in n.split("/") for n in z.namelist()):
+                    raise GitHubAPIError("unsafe path in zip")
+                z.extractall(tmp)
+        except zipfile.BadZipFile:
+            raise GitHubAPIError("not a zip archive") from None
+        return store.import_dir(Path(tmp))
+
+
+def collect(repo: str, store, token: str, get=http_get) -> tuple[int, int, list[str]]:
+    """Import every result bundle the repo's workflow runs kept.
+
+    Returns (new, already stored, errors). One bad artifact is reported and skipped, so it does
+    not hide the others. A public repo's artifacts can be read with any token, including another
+    repo's GITHUB_TOKEN.
+    """
+    new = old = 0
+    errors = []
+    for art in list_result_artifacts(repo, token, get):
+        if store.has(art["name"]):
+            old += 1
+            continue
+        try:
+            if _import_artifact(repo, art, store, token, get):
+                new += 1
+            else:
+                old += 1
+        except Error as e:
+            errors.append(f"{repo} artifact {art.get('name')}: {e}")
+    return new, old, errors
