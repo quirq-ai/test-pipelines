@@ -260,7 +260,7 @@ failed check (`AssertionError`, `AssertionFailedError`, `ComparisonFailure`,
 `ExpectationFailedException`, `MultipleFailuresError`, and any whose last part contains
 `Assert`), as a type or as a message word: a bare `assert` that fails on base for one reason
 never exonerates one that fails with the change for another. A type carries no kind when it is
-one of those, is not class-like, a runner
+one of those, is not class-like, is a runner
 category written for every failure whatever went wrong (audit N1: libtest's `assert` for an
 `assert_eq!` and for an unrelated `unwrap()` panic alike, and `timeout`; cargo-nextest's `test
 failure`, `test timeout` and `test abort`; `panicked`, `traceback`, `thrown:`, `abort`,

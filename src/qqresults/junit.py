@@ -55,7 +55,8 @@ _TRAILING = ":.!?;,"
 _CLASS_SUFFIXES = ("Error", "Exception", "Failure", "Fault", "Panic")
 _CLASS_LIKE = re.compile(r"\A(?:[^\W\d]\w*(?:\.|::))*[A-Z][A-Za-z0-9]*:?\Z")
 _ASSERTION_CLASSES = frozenset({"assertionerror", "assertionfailederror", "comparisonfailure",
-                                "expectationfailedexception", "multiplefailureserror"})
+                                "expectationfailedexception", "multiplefailureserror",
+                                "expectationnotmeterror", "conditionnotsatisfiederror"})
 
 
 def _last_part(kind: str) -> str:
@@ -85,7 +86,8 @@ def informative_type(kind: str) -> bool:
 #   - the `type` is not an exception class (exception_class) and, split into words at anything
 #     that is not a letter or digit and at camelCase humps and compared in any case, has one of
 #     _CRASH_TYPE_WORDS as a whole word (`timeout`, `test timeout`, `test abort`, `x.Timeout`,
-#     `testTimeoutFailure`; not `TimeoutError`, which is an exception class the test raised), or
+#     `testTimeoutFailure`; not `TimeoutError`, which is an exception class the test raised,
+#     unless its namespace has such a word: `timeout_decorator.TimeoutError`), or
 #   - the failure has no type, or one that is not an exception class (`assert`, `test failure`,
 #     `testCodeFailure`), and the first line of its message, in any case, after leading spaces, quotes
 #     and one generic prefix (`Failed:`, `thrown:`, `Error:`, `failure:`), begins with a
@@ -123,7 +125,10 @@ def _reports_crash(child: ET.Element) -> bool:
     """A <failure> that reports a timeout, an abort or a signal (see _CRASH_TYPE_WORDS)."""
     kind = " ".join((child.get("type") or "").split())
     if exception_class(kind):
-        return False    # an exception class (`TimeoutError` too): an assertion, whatever the message says
+        # An exception class (`TimeoutError` too) is an assertion, whatever the message says,
+        # unless its namespace names a timeout (`timeout_decorator.timeout_decorator.TimeoutError`).
+        space = " ".join(re.split(r"\.|::", kind.rstrip(_TRAILING))[:-1])
+        return bool(_CRASH_TYPE_WORDS.intersection(re.split(r"[^0-9a-z]+", space.casefold())))
     # Not a class: a runner category, split into words at anything that is not a letter or digit
     # and at camelCase humps (node's `testTimeoutFailure` is `test timeout failure`).
     words = re.split(r"[^0-9a-z]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", kind).casefold())

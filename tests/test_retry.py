@@ -754,6 +754,8 @@ def test_a_class_like_message_word_is_a_kind(word):
     "AssertionError", "builtins.AssertionError", "org.opentest4j.AssertionFailedError",
     "junit.framework.ComparisonFailure", "PHPUnit.Framework.ExpectationFailedException",
     "org.opentest4j.MultipleFailuresError", "SoftAssertionError", "testCodeFailure",
+    "RSpec::Expectations::ExpectationNotMetError",
+    "org.spockframework.runtime.ConditionNotSatisfiedError",
     "hookFailed", "Timeout", "x", "expected", "assert", "test failure",
 ])
 def test_a_type_that_is_not_an_informative_class_is_no_kind(kind):

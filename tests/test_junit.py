@@ -197,12 +197,14 @@ def _failure_status(attrs: str, text: str = "") -> str:
     ('type="testTimeoutFailure" message="test timed out after 50ms"', ""),
     ('type="testTimeoutFailure"', ""),
     ('type="hookFailed" message="Timeout"', ""),
+    ('type="requests.exceptions.ReadTimeout"', ""),       # not a class name: split at humps
+    ('type="timeout_decorator.timeout_decorator.TimeoutError"', ""),   # namespace says timeout
 ], ids=["libtest-timeout", "nextest-timeout", "nextest-abort", "TIMEOUT", "namespaced",
         "sig-type", "jest", "pytest-timeout", "mocha", "bare", "timed-out", "test-timed-out",
         "aborted-text", "process-aborted", "killed", "fatal-signal", "signal-number", "sig-name",
         "quoted", "ansi", "assert-type-timed-out", "category-type-timeout",
         "generic-type-aborted", "node-timeout", "node-timeout-no-message",
-        "node-hook-timeout"])
+        "node-hook-timeout", "ReadTimeout", "timeout-namespace"])
 def test_a_failure_that_reports_a_timeout_abort_or_signal_is_a_crash(attrs, text):
     assert _failure_status(attrs, text) == Status.CRASH
 
