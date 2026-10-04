@@ -84,35 +84,52 @@ def job_key(run: Run) -> str:
 
 
 def workflow_key(run: Run) -> str:
-    """The workflow run (one merge-group entry) a GitHub job belongs to; else the run itself."""
+    """The GitHub workflow run (one merge-group entry, all attempts) a job belongs to; else the
+    run itself."""
     parts = run.id.split("/")
-    if run.backend == "github" and len(parts) >= 6:
-        return "/".join(parts[:5])           # github/<owner>/<repo>/<run>/<attempt>
+    if run.backend == "github" and len(parts) >= 6 and parts[4] == str(run.attempt):
+        return "/".join(parts[:4])           # github/<owner>/<repo>/<run>
     return run.id
 
 
 def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
     """Queue entry to a green verdict, one sample per gate workflow run.
 
-    A gate with several jobs that each run a sink is green only when all are, at the last one's
-    finish. Red gate runs are not counted: they never reached green.
+    All attempts of a run are one sample: "re-run failed jobs" makes an attempt that holds only
+    the re-run jobs, and the wait counts from the first queue entry. A run is green when the
+    latest attempt of each of its jobs is (red() as everywhere else; a job that says nothing,
+    such as a cancelled one, is ignored), at the last of those jobs' finish. Red runs never
+    reached green and are not counted.
     """
     m = Metric("Gate time-to-green", "P1: p50 under 15 min, p90 under 30 min", unit="min")
     groups: dict[str, list[tuple[Run, Verdict]]] = {}
     for r, v in runs:
-        if r.kind == RunKind.GATE and r.queued_at and r.finished_at:
+        if r.kind == RunKind.GATE:
             groups.setdefault(workflow_key(r), []).append((r, v))
-    waits, red = [], 0
+    waits, red_runs, untimed = [], 0, 0
     for jobs in groups.values():
-        if not all(v.passed for _, v in jobs):
-            red += 1
+        latest: dict[str, tuple[Run, Verdict]] = {}
+        for r, v in jobs:
+            k = job_key(r)
+            if k not in latest or (r.attempt, r.finished_at) > (latest[k][0].attempt,
+                                                                latest[k][0].finished_at):
+                latest[k] = (r, v)
+        states = [red(r, v) for r, v in latest.values()]
+        if any(states):
+            red_runs += 1
             continue
-        queued = min(parse_time(r.queued_at) for r, _ in jobs)
-        finished = max(parse_time(r.finished_at) for r, _ in jobs)
-        waits.append((finished - queued).total_seconds() / 60)
+        if not any(s is False for s in states):
+            continue                          # no job said anything
+        queued = [parse_time(r.queued_at) for r, _ in jobs if r.queued_at]
+        finished = [parse_time(r.finished_at) for (r, v), s in zip(latest.values(), states)
+                    if s is False and r.finished_at]
+        if not queued or not finished:
+            untimed += 1
+            continue
+        waits.append((max(finished) - min(queued)).total_seconds() / 60)
     minutes = [w for w in waits if w >= 0]   # a clock or input error is not a negative wait
     dropped = len(waits) - len(minutes)
-    notes = ([f"{red} red gate run(s) not counted"] if red else []) + (
+    notes = ([f"{red_runs} red gate run(s) not counted"] if red_runs else []) + (
         [f"{dropped} run(s) queued after they finished, skipped"] if dropped else [])
     if not minutes:
         if notes:
@@ -122,12 +139,8 @@ def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
         return m
     m.value = round(_percentile(sorted(minutes), 50), 1)
     m.extra = {"p50": m.value, "p90": round(_percentile(sorted(minutes), 90), 1)}
-    m.detail = "; ".join([f"p50 {m.value} / p90 {m.extra['p90']} over {len(minutes)} green gate runs",
-                          *notes])
-    return m
-    m.value = round(_percentile(sorted(minutes), 50), 1)
-    m.extra = {"p50": m.value, "p90": round(_percentile(sorted(minutes), 90), 1)}
-    m.detail = f"p50 {m.value} / p90 {m.extra['p90']} over {len(minutes)} gate runs{skipped}"
+    m.detail = "; ".join([f"p50 {m.value} / p90 {m.extra['p90']} over {len(minutes)} green "
+                          f"gate run{'s' if len(minutes) != 1 else ''}", *notes])
     return m
 
 
@@ -296,7 +309,7 @@ def to_markdown(card: Scorecard) -> str:
         lines += [f"## {repo}", "", "| Metric | Value | Target | Detail |", "|---|---|---|---|"]
         for m in metrics:
             value = f"{m.value:g} {m.unit}".strip() if m.measured else "not measured"
-            detail = m.detail if m.measured else f"waiting on {m.waiting_on}"
+            detail = m.detail if m.measured or not m.waiting_on else f"waiting on {m.waiting_on}"
             lines.append(f"| {m.name} | {value} | {m.target} | {detail} |")
         lines.append("")
     lines += ["## Not measured yet", "", "| Metric | Target | Waiting on |", "|---|---|---|"]

@@ -77,8 +77,9 @@ qqresults collect --store .qq/store --repo quirq-ai/xo-space   # needs GITHUB_TO
 ```
 
 Scorecard v0 measures, per repo: gate time-to-green p50/p90 (gate runs carry their queue-entry
-time once `quirq-ai/gate/timing` exports `QQ_QUEUED_AT` before the sink, V0-GAT-04; one sample per green gate workflow run, at its last job's finish,
-so red runs and runs without a queue time are not counted), main-red minutes per week, flake rate, pass rates of gate,
+time once `quirq-ai/gate/timing` exports `QQ_QUEUED_AT` before the sink, V0-GAT-04; one sample per green gate workflow run, from its first queue entry to the last
+finish of the latest attempt of each job, so a re-run counts its whole wait and red runs are
+not counted), main-red minutes per week, flake rate, pass rates of gate,
 post-submit and presubmit runs, and runs that stored no results. A run with test results is red
 when its verdict failed; one without (a repo whose only check is a typecheck, or a job that
 broke before its tests) is red only when the job itself failed, and a cancelled job, such as one
