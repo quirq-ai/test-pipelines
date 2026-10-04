@@ -83,19 +83,48 @@ def job_key(run: Run) -> str:
     return run.id
 
 
+def workflow_key(run: Run) -> str:
+    """The workflow run (one merge-group entry) a GitHub job belongs to; else the run itself."""
+    parts = run.id.split("/")
+    if run.backend == "github" and len(parts) >= 6:
+        return "/".join(parts[:5])           # github/<owner>/<repo>/<run>/<attempt>
+    return run.id
+
+
 def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
+    """Queue entry to a green verdict, one sample per gate workflow run.
+
+    A gate with several jobs that each run a sink is green only when all are, at the last one's
+    finish. Red gate runs are not counted: they never reached green.
+    """
     m = Metric("Gate time-to-green", "P1: p50 under 15 min, p90 under 30 min", unit="min")
-    waits = [(parse_time(r.finished_at) - parse_time(r.queued_at)).total_seconds() / 60
-             for r, _ in runs if r.kind == RunKind.GATE and r.queued_at and r.finished_at]
+    groups: dict[str, list[tuple[Run, Verdict]]] = {}
+    for r, v in runs:
+        if r.kind == RunKind.GATE and r.queued_at and r.finished_at:
+            groups.setdefault(workflow_key(r), []).append((r, v))
+    waits, red = [], 0
+    for jobs in groups.values():
+        if not all(v.passed for _, v in jobs):
+            red += 1
+            continue
+        queued = min(parse_time(r.queued_at) for r, _ in jobs)
+        finished = max(parse_time(r.finished_at) for r, _ in jobs)
+        waits.append((finished - queued).total_seconds() / 60)
     minutes = [w for w in waits if w >= 0]   # a clock or input error is not a negative wait
     dropped = len(waits) - len(minutes)
-    skipped = f"; {dropped} run(s) queued after they finished, skipped" if dropped else ""
+    notes = ([f"{red} red gate run(s) not counted"] if red else []) + (
+        [f"{dropped} run(s) queued after they finished, skipped"] if dropped else [])
     if not minutes:
-        if dropped:
-            m.detail = skipped.lstrip("; ")
+        if notes:
+            m.detail = "; ".join(notes)
         else:
             m.waiting_on = "V0-GAT-04 records queue-entry time on gate runs"
         return m
+    m.value = round(_percentile(sorted(minutes), 50), 1)
+    m.extra = {"p50": m.value, "p90": round(_percentile(sorted(minutes), 90), 1)}
+    m.detail = "; ".join([f"p50 {m.value} / p90 {m.extra['p90']} over {len(minutes)} green gate runs",
+                          *notes])
+    return m
     m.value = round(_percentile(sorted(minutes), 50), 1)
     m.extra = {"p50": m.value, "p90": round(_percentile(sorted(minutes), 90), 1)}
     m.detail = f"p50 {m.value} / p90 {m.extra['p90']} over {len(minutes)} gate runs{skipped}"

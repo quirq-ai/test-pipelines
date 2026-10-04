@@ -123,3 +123,27 @@ def test_a_gate_run_queued_after_it_finished_is_not_a_negative_wait(tmp_path):
                 queued="2026-10-04T11:00:00Z"))
     card = scorecard.compute(st, SINCE, UNTIL)
     assert metric(card, "quirq-ai/xo-space", "Gate time-to-green").extra == {"p50": 15.0, "p90": 19.0}
+
+
+def _gate_job(job, finished, fail=False):
+    from qqresults.model import Run
+    b = make(f"github/quirq-ai/xo-space/77/1/{job}", kind="gate", commit="m7", finished=finished,
+             queued="2026-10-04T09:00:00Z", fail=fail)
+    run = Run.from_dict({**b.run.to_dict(), "backend": "github", "attempt": 1})
+    return type(b)(run, b.results, b.verdict)
+
+
+def test_a_gate_with_several_jobs_is_one_sample_at_its_last_finish(tmp_path):
+    st = FileStore(tmp_path)
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z"))
+    st.put(_gate_job("test", "2026-10-04T09:30:00Z"))
+    m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Gate time-to-green")
+    assert m.value == 30.0 and "over 1 green gate runs" in m.detail
+
+
+def test_a_red_gate_run_is_not_time_to_green(tmp_path):
+    st = FileStore(tmp_path)
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z"))
+    st.put(_gate_job("test", "2026-10-04T09:30:00Z", fail=True))
+    m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Gate time-to-green")
+    assert not m.measured and m.detail == "1 red gate run(s) not counted"
