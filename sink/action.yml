@@ -51,7 +51,9 @@ inputs:
     required: false
     default: ""
   base:
-    description: The base commit for rerun (default the run's base, from the event).
+    description: >-
+      The only base for rerun. Default: the tested commit without the change (a PR or queue
+      entry's first parent, a push's before) and also the target branch's commit, both must fail.
     required: false
     default: ""
   infra-config:
@@ -92,10 +94,11 @@ runs:
         set -euo pipefail
         python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || {
           echo "::error::qq result sink needs Python 3.11 or newer as python3 (actions/setup-python)"; exit 1; }
-        venv="$RUNNER_TEMP/qqresults-venv"
-        [ -x "$venv/bin/qqresults" ] || {
-          python3 -m venv "$venv"
-          "$venv/bin/python" -m pip install --quiet --disable-pip-version-check "$GITHUB_ACTION_PATH/.."
+        # Run from this action's own source (no dependencies): nothing is fetched from PyPI, and
+        # sys.path is set inside the process so the tests the sink reruns do not inherit it.
+        qqresults() {
+          python3 -P -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from qqresults.cli import main; sys.exit(main(sys.argv[1:]))' \
+            "$GITHUB_ACTION_PATH/../src" "$@"
         }
         args=()
         while IFS= read -r glob; do
@@ -111,8 +114,8 @@ runs:
         [ -z "$QQ_INFRA_CONFIG" ] || args+=(--infra-config "$QQ_INFRA_CONFIG")
         out=$(mktemp -d "$RUNNER_TEMP/qq-results.XXXXXX")
         echo "out=$out" >> "$GITHUB_OUTPUT"
-        "$venv/bin/qqresults" sink "${args[@]}" --root "$GITHUB_WORKSPACE" --out "$out"
-    - uses: actions/upload-artifact@v7
+        qqresults sink "${args[@]}" --root "$GITHUB_WORKSPACE" --out "$out"
+    - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
       if: always() && steps.sink.outputs.name != ''
       with:
         name: ${{ steps.sink.outputs.name }}
