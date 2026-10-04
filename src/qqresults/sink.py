@@ -5,13 +5,21 @@ import glob
 from pathlib import Path
 
 from qqresults import bundle, junit, verdict
+from qqresults.errors import Error
 from qqresults.model import Result, Run
+
+
+class SinkError(Error):
+    pass
 
 
 def find_reports(patterns: list[str], root: Path) -> list[Path]:
     """Every file matching any pattern (relative to root, `**` allowed), sorted, without repeats."""
     found: set[Path] = set()
     for pattern in patterns:
+        if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
+            raise SinkError(f"report glob {pattern!r} must be relative to the workspace, "
+                            "without '..'")
         for match in glob.glob(pattern, root_dir=root, recursive=True):
             path = root / match
             if path.is_file():

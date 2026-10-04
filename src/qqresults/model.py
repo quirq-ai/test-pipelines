@@ -95,7 +95,7 @@ class Run(_Record):
     repo: str
     kind: str                       # a RunKind
     commit: str                     # the commit that was tested (for the gate: the merge result)
-    backend: str = "github"         # "github" now, "launchpad" later
+    backend: str = ""               # which backend described the run; see backends/
     base_commit: str = ""           # the base it was merged onto, when known
     branch: str = ""
     change: Change | None = None

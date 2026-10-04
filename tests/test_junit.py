@@ -73,3 +73,19 @@ def test_long_messages_are_truncated():
     data = b'<testsuite name="s"><testcase name="a"><failure message="' + b"x" * 10_000 + b'"/></testcase></testsuite>'
     (r,) = junit.parse(data, "r")
     assert len(r.message) < 4_100 and r.message.endswith("characters truncated]")
+
+
+@pytest.mark.parametrize("time, expected", [("1.5", 1.5), ("1,5", None), ("nan", None),
+                                            ("inf", None), ("-1", None), ("", None)])
+def test_durations(time, expected):
+    (r,) = junit.parse(f'<testsuite name="s"><testcase name="a" time="{time}"/></testsuite>'.encode(), "r")
+    assert r.duration_s == expected
+
+
+def test_every_message_is_kept_and_error_wins():
+    data = b"""<testsuite name="s"><testcase name="a"><failure message="one"/>
+        <failure message="two"/><error message="boom"/></testcase></testsuite>"""
+    (r,) = junit.parse(data, "r")
+    assert r.status == "CRASH" and r.message == "boom"
+    (r,) = junit.parse(data.replace(b'<error message="boom"/>', b""), "r")
+    assert r.message == "one\n\ntwo"

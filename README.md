@@ -32,6 +32,7 @@ Add the sink after the test steps of any builder, pinned by commit:
   if: always()
   with:
     junit: .qq/out/junit/*.xml     # one glob per line
+    name: ${{ strategy.job-index }} # only under a matrix, so each leg's run is distinct
 ```
 
 It normalizes every JUnit report into `Result` records, computes the run's `Verdict`, and keeps the
@@ -39,7 +40,9 @@ bundle (`run.json`, `results.jsonl`, `verdict.json`) as a workflow artifact name
 `qq-results-<run id>`. The run kind comes from the event: `merge_group` is `gate`,
 `pull_request` is `presubmit`, a push to the default branch is `postsubmit`. A job with no reports
 still stores a run, marked as having no results and failing, because a missing signal is not a
-pass. Failing tests never fail the sink step; a report that is not JUnit XML does.
+pass, and so does a report with no test cases. Failing tests never fail the sink step; a report
+that is not JUnit XML does. Within one run a test with any unexpected result is UNEXPECTED: a
+repeated id is not a retry, so only V0-TST-03's explicit retries make a test FLAKY.
 
 The same thing from a shell:
 

@@ -17,7 +17,9 @@ inputs:
     description: Report globs relative to the workspace, one per line (** allowed).
     required: true
   name:
-    description: Tells apart several sinks in one job.
+    description: >-
+      Tells apart several sinks in one job. Required under a matrix, where every leg shares the
+      job id: pass the matrix values or strategy.job-index, or the artifact names collide.
     required: false
     default: ""
   kind:
@@ -46,6 +48,8 @@ runs:
         QQ_KIND: ${{ inputs.kind }}
       run: |
         set -euo pipefail
+        python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || {
+          echo "::error::qq result sink needs Python 3.11 or newer as python3 (actions/setup-python)"; exit 1; }
         venv="$RUNNER_TEMP/qqresults-venv"
         python3 -m venv "$venv"
         "$venv/bin/python" -m pip install --quiet --disable-pip-version-check "$GITHUB_ACTION_PATH/.."

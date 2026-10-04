@@ -6,11 +6,12 @@ suites nested in suites, and `<testcase>` elements with an optional `<failure>`,
 `<classname>::<name>` when a classname exists, else `<suite>::<name>`, else the name alone.
 
 The parser is the standard library's, which never fetches external entities; with Expat 2.4.1 or
-newer (what current CPython builds use) it also refuses entity-expansion bombs (billion laughs). TODO(expert): add size limits per report
+newer (what current Python builds use) it also refuses entity-expansion bombs (billion laughs). TODO(expert): add size limits per report
 if adapters start emitting very large reports.
 """
 from __future__ import annotations
 
+import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -32,23 +33,30 @@ def _truncate(text: str, limit: int) -> str:
 
 
 def _duration(value: str | None) -> float | None:
-    if not value:
-        return None
+    """Seconds, or None when absent or not a finite non-negative number."""
     try:
-        return round(float(value.replace(",", "")), 6)
+        seconds = float(value) if value else None
     except ValueError:
         return None
+    if seconds is None or not math.isfinite(seconds) or seconds < 0:
+        return None
+    return round(seconds, 6)
+
+
+def _message(child: ET.Element) -> str:
+    message = child.get("message") or ""
+    text = (child.text or "").strip()
+    if text and text != message:
+        message = f"{message}\n{text}" if message else text
+    return message
 
 
 def _outcome(case: ET.Element) -> tuple[Status, str]:
-    for tag, status in (("failure", Status.FAIL), ("error", Status.CRASH), ("skipped", Status.SKIP)):
-        child = case.find(tag)
-        if child is not None:
-            message = child.get("message") or ""
-            text = (child.text or "").strip()
-            if text and text != message:
-                message = f"{message}\n{text}" if message else text
-            return status, _truncate(message, MAX_MESSAGE)
+    """The worst outcome among the case's children, with every message of that kind kept."""
+    for tag, status in (("error", Status.CRASH), ("failure", Status.FAIL), ("skipped", Status.SKIP)):
+        children = case.findall(tag)
+        if children:
+            return status, _truncate("\n\n".join(_message(c) for c in children), MAX_MESSAGE)
     return Status.PASS, ""
 
 

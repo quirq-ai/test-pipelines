@@ -110,3 +110,20 @@ def test_records_round_trip_and_ignore_unknown_fields():
     run = Run(id="r", repo="o/x", kind="gate", commit="c")
     data = {**run.to_dict(), "added_in_v2": 1}
     assert Run.from_dict(data) == run
+
+
+@pytest.mark.parametrize("pattern", ["/etc/*.xml", "../*.xml", "results/../../x.xml"])
+def test_globs_stay_inside_the_workspace(tmp_path, pattern):
+    run = local.run_from_args("o/x", "c", run_id="r1")
+    with pytest.raises(sink.SinkError, match="relative to the workspace"):
+        sink.sink(run, [pattern], tmp_path, tmp_path / "out")
+
+
+def test_unreadable_bundle_line_is_a_bundle_error(tmp_path, junit_dir):
+    root = good_reports(tmp_path, junit_dir)
+    path, _ = sink.sink(local.run_from_args("o/x", "c", run_id="r1"), ["results/*.xml"], root,
+                        tmp_path / "out")
+    (path / "results.jsonl").chmod(0o644)
+    (path / "results.jsonl").write_text("[1, 2]\n")
+    with pytest.raises(bundle.BundleError):
+        bundle.read(path)

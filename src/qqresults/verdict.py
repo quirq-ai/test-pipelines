@@ -1,8 +1,10 @@
 """Verdicts, computed mechanically from Results (plan §5.4). Nobody types a verdict.
 
-A test's results within one run decide its status: all expected is EXPECTED, all unexpected is
-UNEXPECTED, and a mix (it failed, then passed with the same inputs) is FLAKY. A run passes when
-it found results and no test is UNEXPECTED.
+Within one run, a test with any unexpected result is UNEXPECTED, else EXPECTED. A test id can
+repeat inside one run for reasons other than a retry (two suites with the same names, a teardown
+error reported next to the call), so repeats never make a test FLAKY on their own; FLAKY and
+EXONERATED come only from explicit retries and base runs (V0-TST-03). A run passes when it has
+results and no test is UNEXPECTED.
 """
 from __future__ import annotations
 
@@ -22,17 +24,16 @@ def by_test(results: Iterable[Result]) -> dict[str, list[Result]]:
 def test_status(results: list[Result]) -> VerdictStatus:
     if all(r.expected for r in results):
         return VerdictStatus.EXPECTED
-    if any(r.expected for r in results):
-        return VerdictStatus.FLAKY
     return VerdictStatus.UNEXPECTED
 
 
 def compute(run: Run, results: Iterable[Result]) -> Verdict:
+    results = list(results)
     statuses = {test: test_status(rs) for test, rs in sorted(by_test(results).items())}
     counts = Counter(s.value for s in statuses.values())
     tests = [CaseVerdict(test_id=t, status=s.value) for t, s in statuses.items()
              if s is not VerdictStatus.EXPECTED]
-    if not run.results_found:
+    if not run.results_found or not results:
         return Verdict(run_id=run.id, passed=False, counts=dict(counts), tests=tests,
                        reason="no test results were found; a missing signal is not a pass")
     unexpected = counts.get(VerdictStatus.UNEXPECTED.value, 0)
