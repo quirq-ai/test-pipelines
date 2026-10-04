@@ -1017,3 +1017,10 @@ def test_a_rate_limited_403_names_the_rate_limit(monkeypatch):
                         opener_raising({"X-RateLimit-Remaining": "4000"}))
     with pytest.raises(github.GitHubAPIError, match=r"HTTP 403 Forbidden$"):
         github._request("https://api.github.com/x", "t")
+    # A reset value that is no timestamp still gives the API error, never a crash.
+    for reset in ("99999999999999999999", "\u00b2"):
+        monkeypatch.setattr(github.urllib.request, "build_opener",
+                            opener_raising({"X-RateLimit-Remaining": "0",
+                                            "X-RateLimit-Reset": reset}))
+        with pytest.raises(github.GitHubAPIError, match=r"HTTP 403 Forbidden \(rate limited"):
+            github._request("https://api.github.com/x", "t")

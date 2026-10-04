@@ -193,12 +193,16 @@ def _rate_limited(headers) -> str:
     if remaining != "0" and not retry:
         return ""
     when = (f"; retry after {retry} s" if retry
-            else f"; resets at {_utc(reset)}" if reset and reset.isdigit() else "")
+            else f"; resets at {_utc(reset)}" if reset and reset.isascii() and reset.isdigit()
+            else "")
     return f" (rate limited{when})"
 
 
 def _utc(epoch: str) -> str:
-    return dt.datetime.fromtimestamp(int(epoch), dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        return dt.datetime.fromtimestamp(int(epoch), dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OverflowError, ValueError, OSError):   # out of range: show GitHub's value as is
+        return epoch
 
 
 def http_get(url: str, token: str) -> bytes:
