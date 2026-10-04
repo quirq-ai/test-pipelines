@@ -37,6 +37,9 @@ Add the sink after the test steps of any builder, pinned by commit:
 
 A dispatched run that checks out another commit than `GITHUB_SHA` (a backfill) passes
 `commit: ${{ inputs.commit || github.sha }}` and `kind: postsubmit`; the commit must be 40 hex.
+A run whose commit differs from `GITHUB_SHA` is stored with role `backfill`: queryable, but left
+out of the scorecard, since it finished long after its commit landed. One job that backfills
+several commits needs a different `name` per commit (results are write-once per run id).
 
 It normalizes every JUnit report into `Result` records, computes the run's `Verdict`, and keeps the
 bundle (`run.json`, `results.jsonl`, `verdict.json`, in a directory) as a workflow artifact named

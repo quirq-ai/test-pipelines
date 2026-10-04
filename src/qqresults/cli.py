@@ -40,14 +40,17 @@ def _run(args):
     backend = backends.load(args.backend)
     if args.backend == "github":
         run = backend.run_from_env(os.environ, kind=args.kind or "", name=args.name)
-        if not args.commit:
+        if not args.commit or args.commit == run.commit:
             return run
         if not re.fullmatch(r"[0-9a-f]{40}", args.commit):
-            raise SystemExit(f"qqresults sink: --commit must be a full 40-hex commit, not {args.commit!r}")
-        # A dispatched backfill tests another commit than GITHUB_SHA; the event's base and
-        # change describe GITHUB_SHA, so they are dropped rather than recorded wrongly.
+            raise SystemExit("qqresults sink: --commit must be a full 40-hex lowercase commit, "
+                             f"not {args.commit!r}")
+        # A dispatched backfill tests another commit than GITHUB_SHA: the event's base and
+        # change describe GITHUB_SHA, so they are dropped rather than recorded wrongly, and the
+        # run is marked as a backfill, which the scorecard leaves out (it finished long after the
+        # commit landed, so it would misplace main-red time). It stays queryable.
         return Run.from_dict({**run.to_dict(), "commit": args.commit, "base_commit": "",
-                              "change": None})
+                              "change": None, "role": "backfill"})
     if not (args.repo and args.commit):
         raise SystemExit("qqresults sink: --backend local needs --repo and --commit")
     return backend.run_from_args(args.repo, args.commit, kind=args.kind or RunKind.LOCAL.value,

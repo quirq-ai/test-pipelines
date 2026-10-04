@@ -228,7 +228,8 @@ def compute(store: FileStore, since: dt.datetime, until: dt.datetime,
             repos: list[str] | None = None) -> Scorecard:
     runs = [(r, v) for r, v in store.runs(RunFilter(since=fmt_time(since)))
             if r.finished_at <= fmt_time(until) and r.kind != RunKind.LOCAL
-            and not r.parent]   # retry and base runs count through their parent's verdict
+            and not r.parent    # retry and base runs count through their parent's verdict
+            and r.role != "backfill"]   # finished long after its commit landed
     by_repo: dict[str, list[tuple[Run, Verdict]]] = defaultdict(list)
     for r, v in runs:
         by_repo[r.repo].append((r, v))
