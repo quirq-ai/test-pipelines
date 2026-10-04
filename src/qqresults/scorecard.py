@@ -106,10 +106,12 @@ def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
     for r, v in runs:
         if r.kind == RunKind.GATE:
             groups.setdefault(workflow_key(r), []).append((r, v))
-    waits, red_runs, untimed = [], 0, 0
+    waits, red_runs, untimed, silent = [], 0, 0, 0
     for jobs in groups.values():
         latest: dict[str, tuple[Run, Verdict]] = {}
         for r, v in jobs:
+            if red(r, v) is None:             # a cancelled retry does not hide a red attempt
+                continue
             k = job_key(r)
             if k not in latest or (r.attempt, r.finished_at) > (latest[k][0].attempt,
                                                                 latest[k][0].finished_at):
@@ -118,8 +120,9 @@ def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
         if any(states):
             red_runs += 1
             continue
-        if not any(s is False for s in states):
-            continue                          # no job said anything
+        if not states:
+            silent += 1                       # every job cancelled or unknown
+            continue
         queued = [parse_time(r.queued_at) for r, _ in jobs if r.queued_at]
         finished = [parse_time(r.finished_at) for (r, v), s in zip(latest.values(), states)
                     if s is False and r.finished_at]
@@ -129,12 +132,14 @@ def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
         waits.append((max(finished) - min(queued)).total_seconds() / 60)
     minutes = [w for w in waits if w >= 0]   # a clock or input error is not a negative wait
     dropped = len(waits) - len(minutes)
-    notes = ([f"{red_runs} red gate run(s) not counted"] if red_runs else []) + (
-        [f"{dropped} run(s) queued after they finished, skipped"] if dropped else [])
+    notes = [note for n, note in [
+        (red_runs, f"{red_runs} red gate run(s) not counted"),
+        (untimed, f"{untimed} green run(s) without a queue time"),
+        (silent, f"{silent} run(s) with no verdict (cancelled)"),
+        (dropped, f"{dropped} run(s) queued after they finished, skipped")] if n]
     if not minutes:
-        if notes:
-            m.detail = "; ".join(notes)
-        else:
+        m.detail = "; ".join(notes)
+        if untimed or not notes:
             m.waiting_on = "V0-GAT-04 records queue-entry time on gate runs"
         return m
     m.value = round(_percentile(sorted(minutes), 50), 1)

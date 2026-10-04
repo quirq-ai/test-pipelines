@@ -125,10 +125,11 @@ def test_a_gate_run_queued_after_it_finished_is_not_a_negative_wait(tmp_path):
     assert metric(card, "quirq-ai/xo-space", "Gate time-to-green").extra == {"p50": 15.0, "p90": 19.0}
 
 
-def _gate_job(job, finished, fail=False, attempt=1, queued="2026-10-04T09:00:00Z", **run):
+def _gate_job(job, finished, fail=False, attempt=1, queued="2026-10-04T09:00:00Z", run_no=77,
+              **run):
     from qqresults import bundle, verdict
     from qqresults.model import Run
-    b = make(f"github/quirq-ai/xo-space/77/{attempt}/{job}", kind="gate", commit="m7",
+    b = make(f"github/quirq-ai/xo-space/{run_no}/{attempt}/{job}", kind="gate", commit="m7",
              finished=finished, queued=queued, fail=fail)
     r = Run.from_dict({**b.run.to_dict(), "backend": "github", "attempt": attempt, **run})
     results = b.results if r.results_found else []
@@ -179,3 +180,20 @@ def test_a_rerun_counts_from_the_first_queue_entry_to_green(tmp_path):
     st.put(_gate_job("test", "2026-10-04T10:30:00Z", attempt=2, queued="2026-10-04T10:00:00Z"))
     m = gate(st)
     assert m.value == 90.0 and "red" not in m.detail
+
+
+def test_a_cancelled_retry_does_not_hide_a_red_attempt(tmp_path):
+    st = FileStore(tmp_path)
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z"))
+    st.put(_gate_job("test", "2026-10-04T09:30:00Z", fail=True))
+    st.put(_gate_job("test", "2026-10-04T10:00:00Z", attempt=2, results_found=False,
+                     job_status="cancelled"))
+    assert not gate(st).measured and "1 red" in gate(st).detail
+
+
+def test_green_runs_without_a_queue_time_are_noted(tmp_path):
+    st = FileStore(tmp_path)
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z"))
+    st.put(_gate_job("lint", "2026-10-04T09:05:00Z", queued="", run_no=78))
+    m = gate(st)
+    assert m.value == 5.0 and "1 green run(s) without a queue time" in m.detail
