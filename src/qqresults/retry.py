@@ -294,6 +294,9 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
             base_commit: str = "", runner: Runner = shell, setup: str = "",
             keep_raw: bool = False) -> Rechecked:
     """Retry the failed tests, then compare the still-failing ones with base."""
+    if base_commit and not re.fullmatch(r"[0-9a-f]{40}", base_commit):   # a name can be shadowed
+        raise RetryError(f"base must be a full 40-hex lowercase commit id, not {base_commit!r}: "
+                         "a branch or tag name is fetched by name, and a tag can shadow a branch")
     retries: list[bundle.Bundle] = []
     failing = [c.test_id for c in verdict.compute(run, results).tests
                if c.status == VerdictStatus.UNEXPECTED.value]

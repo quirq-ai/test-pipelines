@@ -241,7 +241,8 @@ is base_sha (a squash, or a one-commit rebase, with nothing queued ahead). Any o
 entry, one parent that is not base_sha, which includes a squash queue with entries ahead, is
 not compared, and its still-failing tests stay UNEXPECTED ("rebase-method queue: base not
 derivable"). An explicit `base` is one more base the failure must also fail at: it never
-replaces the run's own bases or skips this check. TODO(expert): derive the base from the PR's
+replaces the run's own bases or skips this check. It must be a full 40-hex commit id: a branch or
+tag name is refused, since a tag can shadow a branch of the same name. TODO(expert): derive the base from the PR's
 commits, or read the queue's merge method from the branch rules, once the org's merge queue
 and merge method are decided (ORG-03). The rerun command comes from the builder, so the core never names a runner;
 `$QQ_RETRY_TESTS` lists the failed test ids for a command that can select them. CI proves the

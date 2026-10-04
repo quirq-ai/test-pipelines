@@ -65,6 +65,10 @@ def _run(args):
 
 
 def cmd_sink(args) -> int:
+    if args.base and not re.fullmatch(r"[0-9a-f]{40}", args.base):
+        raise SystemExit("qqresults sink: --base must be a full 40-hex lowercase commit, not "
+                         f"{args.base!r} (a branch or tag name is fetched by name; a tag can "
+                         "shadow a branch)")
     run = _run(args)
     pol = policy.from_infra_config(Path(args.infra_config)) if args.infra_config else policy.Policy()
     if args.retries is not None:
@@ -301,8 +305,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--rerun", metavar="CMD",
                    help="retry failed tests with this shell command, then compare with base "
                         "(it writes JUnit to $QQ_JUNIT_DIR; $QQ_RETRY_TESTS lists the failed ids)")
-    s.add_argument("--base", help="one more base commit for --rerun; a failure must also fail "
-                                  "at the run's own bases")
+    s.add_argument("--base", help="one more base commit for --rerun, as a full 40-hex commit id; "
+                                  "a failure must also fail at the run's own bases")
     s.add_argument("--setup", metavar="CMD",
                    help="prepares a checkout for --rerun: runs in the base worktree before its "
                         "tests and in the change's checkout after ($QQ_SIDE says which)")
