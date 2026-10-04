@@ -57,12 +57,16 @@
           "quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-37224607298-1-efceef99: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of '7ddedbcb9255410bab7d4c9221740d54cb1293ab' on 'gate-guard'",
           "quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-link-37224607298-1-ec1d7c28: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of '7ddedbcb9255410bab7d4c9221740d54cb1293ab' on 'gate-guard'",
           "quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-37227348341-1-83b1258b: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of '89540364d05ea684076622afb68d5bb6db40c22d' on 'audit-n2-n7'",
-          "quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-link-37227348341-1-a0e2fa61: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of '89540364d05ea684076622afb68d5bb6db40c22d' on 'audit-n2-n7'"
+          "quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-link-37227348341-1-a0e2fa61: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of '89540364d05ea684076622afb68d5bb6db40c22d' on 'audit-n2-n7'",
+          "quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-37228876114-1-522ef43f: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of 'dd38e884ff1c0557dd97ff2439a74c879ecb4b49' on 'audit-m1-m2'",
+          "quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-link-37228876114-1-19799e1c: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of 'dd38e884ff1c0557dd97ff2439a74c879ecb4b49' on 'audit-m1-m2'",
+          "quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-37229144998-1-fbd4f4cf: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of 'd8a4b2e5697fd489bf62de0decbca1b8e7c8cc95' on 'audit-m1-m2'",
+          "quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-link-37229144998-1-0fffb4c7: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of 'd8a4b2e5697fd489bf62de0decbca1b8e7c8cc95' on 'audit-m1-m2'"
         ],
         "refused": 0,
         "refused_reasons": [],
         "repo": "quirq-ai/test-pipelines",
-        "skipped": 33
+        "skipped": 37
       },
       {
         "finished": true,
@@ -75,7 +79,7 @@
       }
     ]
   },
-  "generated_at": "2026-10-04T19:18:12Z",
+  "generated_at": "2026-10-04T19:44:06Z",
   "not_measured": [
     {
       "detail": "",
@@ -317,7 +321,7 @@
         "waiting_on": "V0-GAT-04 records queue-entry time on gate runs"
       },
       {
-        "detail": "25 post-submit commits",
+        "detail": "26 post-submit commits",
         "extra": {},
         "name": "Main-red time",
         "target": "under 60 min/week",
@@ -326,7 +330,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 95 runs passed only on retry",
+        "detail": "0 of 98 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -344,7 +348,7 @@
         "waiting_on": "gate runs in the store"
       },
       {
-        "detail": "25 of 25 postsubmit runs passed",
+        "detail": "26 of 26 postsubmit runs passed",
         "extra": {},
         "name": "Post-submit runs passed",
         "target": "measured",
@@ -353,7 +357,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "71 of 71 presubmit runs passed",
+        "detail": "73 of 73 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
@@ -362,7 +366,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "of 96 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 99 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -455,7 +459,7 @@
       }
     ]
   },
-  "since": "2026-09-27T19:18:12Z",
+  "since": "2026-09-27T19:44:06Z",
   "skipped": 0,
-  "until": "2026-10-04T19:18:12Z"
+  "until": "2026-10-04T19:44:06Z"
 }
