@@ -135,7 +135,7 @@ def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
     notes = [note for n, note in [
         (red_runs, f"{red_runs} red gate run(s) not counted"),
         (untimed, f"{untimed} green run(s) without a queue time"),
-        (silent, f"{silent} run(s) with no verdict (cancelled)"),
+        (silent, f"{silent} run(s) with no verdict (cancelled or unknown)"),
         (dropped, f"{dropped} run(s) queued after they finished, skipped")] if n]
     if not minutes:
         m.detail = "; ".join(notes)
@@ -314,7 +314,8 @@ def to_markdown(card: Scorecard) -> str:
         lines += [f"## {repo}", "", "| Metric | Value | Target | Detail |", "|---|---|---|---|"]
         for m in metrics:
             value = f"{m.value:g} {m.unit}".strip() if m.measured else "not measured"
-            detail = m.detail if m.measured or not m.waiting_on else f"waiting on {m.waiting_on}"
+            detail = m.detail if m.measured else "; ".join(
+                filter(None, [m.detail, m.waiting_on and f"waiting on {m.waiting_on}"]))
             lines.append(f"| {m.name} | {value} | {m.target} | {detail} |")
         lines.append("")
     lines += ["## Not measured yet", "", "| Metric | Target | Waiting on |", "|---|---|---|"]
