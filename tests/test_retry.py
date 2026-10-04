@@ -180,3 +180,17 @@ def test_a_failed_restore_fails_the_step(tmp_path, state):
         retry.recheck(run, sink.junit.parse_file(repo / "results/junit.xml", run.id),
                       CMD, repo, Policy(), base, setup='[ "$QQ_SIDE" = base ]')
     assert len(git(repo, "worktree", "list").splitlines()) == 1   # the base worktree is gone
+
+
+@pytest.mark.parametrize("n", [-1, 4])
+def test_retries_are_bounded(n):
+    from qqresults.policy import PolicyError
+    with pytest.raises(PolicyError, match="retry_failed"):
+        Policy(retry_failed=n)
+
+
+def test_too_many_failures_are_not_retried(tmp_path):
+    run = Run(id="r", repo="o/x", kind="presubmit", commit="c")
+    results = [Result(run_id="r", test_id=f"t::{i}", status="FAIL", expected=False) for i in range(3)]
+    checked = retry.recheck(run, results, "exit 1", tmp_path, Policy(max_failures_to_retry=2))
+    assert not checked.verdict.passed and not checked.retries and "max_failures_to_retry" in checked.verdict.reason

@@ -105,11 +105,13 @@ Give the sink a rerun command and let its verdict decide the check:
     junit: results/*.xml
     rerun: python -m pytest --junitxml="$QQ_JUNIT_DIR/rerun.xml"
     setup: python -m pip install -e .     # only if tests import installed code (see below)
-    infra-config: .qq/infra-config    # retry_failed and compare_with_base from flakes.toml
+    infra-config: .qq/infra-config    # [verdict] from flakes.toml
     fail-on-verdict: "true"
 ```
 
-Failed tests are rerun with the change (`retry_failed` times, default 1). Those that still fail
+Failed tests are rerun with the change (`retry_failed` times, default 1, at most 3); with more
+than `max_failures_to_retry` failures (default 20) the change is treated as broken and nothing is
+retried. Those that still fail
 are rerun at the base commit, in a git worktree. A test that passes on a retry is FLAKY, one
 that also fails on base is EXONERATED, and only a failure that passes without the change (or
 that has no base result, such as a new test) is UNEXPECTED and fails the change. The retry and

@@ -158,6 +158,10 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
                if c.status == VerdictStatus.UNEXPECTED.value]
     if not failing:
         return Rechecked(decide(run, results, [], None), [], None)
+    if len(failing) > policy.max_failures_to_retry:   # a broken change: fail fast
+        return Rechecked(decide(run, results, [], None,
+                                f"{len(failing)} failures, over max_failures_to_retry "
+                                f"({policy.max_failures_to_retry}); not retried"), [], None)
     remaining = list(failing)
     for n in range(1, policy.retry_failed + 1):
         child = child_run(run, "retry", n)
