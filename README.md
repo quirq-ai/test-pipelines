@@ -264,20 +264,24 @@ whose free text (summary, subject, labels, link values) matches security terms s
 "buffer overflow", "credential", "use-after-free", "remote code execution" or "without login" are
 kept but never mirrored to a public issue, even with the opt-in. Words common in ordinary failures
 (crash, panic, heap, leak, certificate, escalated, "not verified", overflow, injection, token,
-auth, sandbox, privileged, access control, CORS) count only in a security phrase ("heap buffer
-overflow", "SQL injection", "credential leak", "auth bypass", "sandbox escape", "CORS any
-origin", "certificate verification disabled", "signature not verified"). Memory-safety findings
-(use-after-free, double free, heap or stack buffer overflow, sanitizer and KASAN reports) always
-count; a bare segfault, SIGSEGV, SIGABRT, out-of-bounds, null dereference or integer overflow
-counts only next to an untrusted-input word (malformed, crafted, attacker, untrusted, remote,
-fuzz), so "segfault in worker" gets an issue and "segfault on crafted input" does not. Names the
+auth, JWT, sandbox, privileged, access control, CORS) count only in a security phrase ("heap
+buffer overflow", "SQL injection", "credential leak", "auth bypass", "missing authorization
+check", "sandbox escape", "container breakout", "CORS any origin", "certificate verification
+disabled", "JWT signature not verified"). Memory-safety findings (use-after-free, double free,
+heap or stack buffer overflow, out-of-bounds read or write, sanitizer and KASAN reports) always
+count; a bare segfault, SIGSEGV, SIGABRT, SIGBUS, overflow, null dereference or out-of-bounds
+index counts only when the same field also names untrusted input (malformed, crafted, attacker,
+untrusted, remote input, fuzzing) or an attack surface (TLS, a certificate, a decoder or parser,
+a codec, a packet, an image, a font, a protocol, an allocation size), so "SIGSEGV in tls
+handshake" is withheld and "segfault in worker" gets an issue. Names the
 org chose (the repo, the run id and job, the issue URL, and the record's own `owner/name` wherever
 it appears, as in a run-id subject or a pull request link) are not classified, nor are digests
 and hex runs. Text is matched after NFKC normalisation, removing zero-width and other format
 characters, splitting camelCase and turning `_`, `-`, `.`, `/`, `:`, `#` and `@` into spaces,
 so `test_jwt_not_checked` and `open-redirect` count. A security record's artifact holds only its id,
 kind, subject digest (`sha256:<16 hex>`, even for a commit), run and a `security` mark, so the store learns the mark and
-`failure link --mirror` on the store record never republishes it. Reporting an existing record
+`failure link --mirror` on the store record never republishes it. The digest hides a prose
+subject, not a commit: anyone can hash the repo's public commits and find which one it is. Reporting an existing record
 again with `security: "true"` or security-looking text marks it security too. If a record only
 looks that way after its issue was opened, the issue's text is hidden and it is closed, and the
 step fails asking a repo admin to delete it: editing an issue does not remove the old text from

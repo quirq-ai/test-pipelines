@@ -51,21 +51,25 @@ LINK_FIELDS = VALUE_LINKS + MARKS          # every field a link file may have
 #
 # Words that are security terms in themselves match alone; words that are just as common in
 # ordinary failures (crash, panic, heap, leak, certificate, escalated, "not verified", overflow,
-# injection, token, auth, sandbox, privileged, access control, cors) match only in a security
+# injection, token, auth, jwt, sandbox, privileged, access control, cors) match only in a security
 # phrase, so a CrashLoopBackOff, a Go panic, a Java heap OOM, a goroutine leak, an expired
 # certificate, a stack overflow in a recursion test, a dependency injection container, a token
 # bucket or an auth service timeout still gets its public issue.
 #
-# Memory-safety findings (use-after-free, double free, heap/stack buffer overflow, sanitizer and
-# KASAN reports) match alone. A bare crash signal or bound error (segfault, SIGSEGV, SIGABRT,
-# out-of-bounds, null dereference, integer overflow) is an ordinary crash unless the text also
-# names untrusted input (UNTRUSTED_INPUT: malformed, crafted, attacker, untrusted, remote, fuzz).
+# Memory-safety findings (use-after-free, double free, heap/stack buffer overflow, out-of-bounds
+# read or write, sanitizer and KASAN reports) match alone. A bare crash signal or bound error
+# (CRASH_WORDS: segfault, SIGSEGV, SIGABRT, SIGBUS, overflow, null dereference, out-of-bounds
+# index) is an ordinary crash unless the same field also names untrusted input (UNTRUSTED_INPUT:
+# malformed, crafted, attacker, untrusted, remote input, fuzzing) or an attack surface
+# (ATTACK_SURFACE: tls, a certificate, a decoder or parser, a codec, a packet, an image, a font,
+# a protocol, an allocation size), so "SIGSEGV in tls handshake" is withheld and "segfault in
+# worker" is not.
 _SECRETS = r"(?:credential|token|secret|pass\s*word|passwd|api\s*key|ssh\s*key|private\s*key|key|pii|data)s?"
 _EXPOSED_THINGS = (r"(?:env(?:ironment)?(?:\s*var\w*)?|keys?|secrets?|endpoints?|credentials?|"
                    r"tokens?)\b")
 _PHRASES = (
     r"secur", r"vulnerab", r"\bcve\b", r"\bcve\s*\d{4}", r"exploit", r"use\s*after\s*free",
-    r"buffer\s*over\s*(?:flow|run)", r"(?:out\s*of\s*bounds|\boob)\s*writ",
+    r"buffer\s*over\s*(?:flow|run)", r"(?:out\s*of\s*bounds|\boob)\s*(?:read|writ|access|load|store)",
     r"(?:sql|nosql|command|cmd|os\s*command|shell|code|template|ldap|xpath|header|crlf|log|"
     r"prompt|html|script|xml)\s*inject", r"\bsqli\b", r"injection\s*attack",
     r"credential", r"secret", r"pass\s*word", r"private\s*key", r"sandbox\s*(?:escape|breakout|bypass)",
@@ -81,11 +85,20 @@ _PHRASES = (
     r"remote\s*code\s*exec", r"api\s*key", r"ssh\s*key", r"passwd", r"\baws\s*(?:secret\s*)?(?:access\s*)?keys?\b",
     r"\bkeys?\s*(?:was\s*|were\s*)?(?:committed|pushed|checked\s*in)",
     r"attacker", r"\bpii\b", r"\bghsa\b", r"double\s*free", r"open\s*redirect", r"malicious",
-    r"(?:broken|improper|missing)\s*access\s*control", r"sensitive\s*data", r"sigbus",
+    r"(?:broken|improper|missing)\s*access\s*control", r"sensitive\s*data",
     r"sigill", r"stack\s*smash", r"\buaf\b", r"over\s*read", r"\bxxe\b",
     r"xml\s*external\s*entit", r"zip\s*slip",
     r"unsigned\s*(?:update|package|artifact|image|binar)", r"verify\s*=?\s*false",
-    r"insecure\s*skip\s*verify", r"prototype\s*pollution", r"\bjwt", r"toctou",
+    r"insecure\s*skip\s*verify", r"prototype\s*pollution", r"toctou",
+    r"\bjwt\b.{0,40}?(?:\bnone\b|\balg\b|not\s*(?:verified|checked|validated)|forg|signature|"
+    r"secret|leak|unsigned|tamper)", r"(?:forged|unsigned|tampered)\s*jwt",
+    r"\b(?:missing|no|broken|lacks?|without)\s*(?:authn?\b|authz\b|authenticat\w*|authoriz\w*|"
+    r"access\s*control|auth\s*check)",
+    r"(?:authoriz\w*|authenticat\w*|\bauth[nz]?|access\s*control|auth\s*check)\s*(?:is\s*)?"
+    r"(?:missing|absent|not\s*enforced|bypass\w*)",
+    r"container\s*(?:escape|break\s*out)",
+    r"(?:token|credential|password|secret|api\s*key|cookie)s?\s*(?:\w+\s*){0,2}?(?:over|via|in)\s*"
+    r"(?:plain\s*)?(?:http\b|plain\s*text|clear\s*text)",
     r"\balg\s*=?\s*[\"']?none\b", r"\bcors\b.{0,30}?(?:any|all|every|wildcard|arbitrary|reflect\w*|"
     r"null|\*)\s*origin", r"\bcors\s*misconfig", r"\bidor\b", r"\bssti\b", r"\bcwe\b", r"spoof",
     r"impersonat", r"smuggl", r"without\s*(?:login|auth|password|a\s*session)",
@@ -106,10 +119,16 @@ _PHRASES = (
     r"enforced|verified|validated)",
 )
 SECURITY_WORDS = re.compile("|".join(_PHRASES))
-# Ordinary crash signals that count only next to UNTRUSTED_INPUT (see above).
-CRASH_WORDS = re.compile(r"segv|segfault|sigabrt|out\s*of\s*bounds|\boob\b|over\s*flow|"
+# Ordinary crash signals that count only next to UNTRUSTED_INPUT or ATTACK_SURFACE (see above).
+CRASH_WORDS = re.compile(r"segv|segfault|sigabrt|sigbus|out\s*of\s*bounds|\boob\b|over\s*flow|"
                          r"null\s*(?:pointer|ptr)\s*deref")
-UNTRUSTED_INPUT = re.compile(r"malformed|crafted|attacker|untrusted|remote|fuzz")
+UNTRUSTED_INPUT = re.compile(
+    r"malformed|crafted|attacker|untrusted|remote\s*(?:input|request|peer|attacker)|"
+    r"from\s*the\s*network|\bfuzz(?:er|ers|ing|ed)?\b")
+ATTACK_SURFACE = re.compile(
+    r"\b(?:tls|ssl|handshake|libssl|openssl|boringssl|x509|certs?|certificates?|decod\w*|"
+    r"pars(?:e|er|ers|ing)|codecs?|deserializ\w*|packets?|libxml\w*|images?|fonts?|media|"
+    r"protocols?|alloc\w*)\b")
 
 
 def security_text(text: str) -> str:
@@ -123,12 +142,20 @@ def security_text(text: str) -> str:
 
 
 def reads_as_security(text: str) -> bool:
+    """True when text matches SECURITY_WORDS, or one field of it (fields are joined by " | ")
+    pairs a crash word with untrusted input or an attack surface."""
     text = security_text(text)
-    return bool(SECURITY_WORDS.search(text)
-                or (CRASH_WORDS.search(text) and UNTRUSTED_INPUT.search(text)))
+    return bool(SECURITY_WORDS.search(text) or any(
+        CRASH_WORDS.search(part) and (UNTRUSTED_INPUT.search(part) or ATTACK_SURFACE.search(part))
+        for part in text.split("|")))
 
 
 _HEX = re.compile(r"\b(?:sha(?:1|256|512):)?[0-9a-f]{7,}\b", re.IGNORECASE)
+
+
+def free_text_reads_as_security(text: str, repo: str) -> bool:
+    """reads_as_security for free text of a record of repo, without its own names (below)."""
+    return reads_as_security(_without_own_names(text, repo))
 
 
 def _without_own_names(text: str, repo: str) -> str:
@@ -181,7 +208,7 @@ def looks_security_related(f: Failure, links: dict[str, str] | None = None) -> b
     org_chosen = {"id", "kind", "repo", "run_id", "opened_at", "schema"}
     text = [v for k, v in f.to_dict().items() if k not in org_chosen and isinstance(v, str)]
     text += [str(v) for k, v in (links or {}).items() if k not in MARKS + ("issue",)]
-    return reads_as_security(_without_own_names(" | ".join(text), f.repo))
+    return free_text_reads_as_security(" | ".join(text), f.repo)
 
 
 def new(kind: str, repo: str, subject: str, **fields) -> Failure:

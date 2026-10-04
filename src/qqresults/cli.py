@@ -241,7 +241,7 @@ def cmd_failure(args) -> int:
                 continue
             # --dir is usually a store's failures/, which is public: only what the public filter
             # allows is written there. Security-looking text still marks the record security.
-            if failures.reads_as_security(value):
+            if failures.free_text_reads_as_security(value, repo):
                 failures.mark(path, "security")
             shown = failures.public_value(value, repo, field)
             if shown != value:

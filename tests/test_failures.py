@@ -269,10 +269,8 @@ def test_common_security_phrasing_is_withheld(text):
 
 
 @pytest.mark.parametrize("text", [
-    # A bare segfault, SIGABRT or out-of-bounds is an ordinary crash; next to untrusted input it
-    # is a security finding (test_ordinary_crashes_are_security_only_on_untrusted_input).
-    "Canary held: SIGSEGV on crafted tls handshake", "segfault in decoder on malformed input",
-    "SIGABRT in libssl from untrusted cert", "UAF in renderer", "OOB read in parser on fuzz input", "buffer over-read", "stack smashing detected",
+    "Canary held: SIGSEGV in tls handshake", "segfault in decoder", "SIGABRT in libssl",
+    "UAF in renderer", "OOB read in parser", "buffer over-read", "stack smashing detected",
     "XXE in importer", "prototype pollution", "JWT signature not checked",
     "CORS allows any origin", "admin page reachable without login"])
 def test_audit_phrasing_is_withheld(text):
@@ -301,8 +299,7 @@ def test_free_text_is_public_only_with_the_opt_in(tmp_path):
     assert "Canary held" in (copy / "failure.json").read_text()
 
 
-@pytest.mark.parametrize("again", [{"security": True},
-                                   {"summary": "segfault in decoder on crafted input"}])
+@pytest.mark.parametrize("again", [{"security": True}, {"summary": "segfault in decoder"}])
 def test_reporting_again_as_security_withdraws_the_issue(tmp_path, again):
     gh = FakeGitHub()
     state, _ = held(tmp_path)
@@ -491,7 +488,7 @@ def test_cli_link_stores_only_public_values(tmp_path, capsys):
 
 @pytest.mark.parametrize("signal", [
     "test_jwt_signature_not_checked", "test_cors_any_origin", "test_xxe_importer",
-    "test_uaf_renderer", "test_oob_write", "test_sqli_search", "stack-smashing-detected",
+    "test_uaf_renderer", "test_oob_read", "test_sqli_search", "stack-smashing-detected",
     "prototype-pollution", "admin-page-reachable-without-login", "denial-of-service",
     "private-key-in-logs", "open-redirect", "double-free-in-decoder", "openRedirectOnLogin",
     "JwtNotChecked"])
@@ -688,11 +685,13 @@ def test_round_four_security_phrases_are_caught(text):
 
 @pytest.mark.parametrize("text", [
     "stack overflow in recursion test", "integer overflow in counter", "segfault in worker",
-    "SIGABRT in test runner", "out of bounds index in parser",
+    "SIGABRT in test runner", "out of bounds index in table view",
     "null pointer dereference in handler", "dependency injection container failed",
     "token bucket rate limiter flaky", "tokenizer test failed", "auth service timeout",
     "OAuth callback 502", "sandbox image pull failed", "privileged container required",
-    "access control list sync failed", "cors preflight returns 404", "build overflowed disk"])
+    "access control list sync failed", "cors preflight returns 404", "build overflowed disk",
+    "segfault in remote cache worker", "fuzzy match test failed", "JWT expired",
+    "jwt test flaky", "no author field in changelog", "authorization header test timed out"])
 def test_ordinary_crashes_and_names_are_not_security(text):
     assert not failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
 
@@ -701,6 +700,7 @@ def test_ordinary_crashes_and_names_are_not_security(text):
     "buffer overflow in parser", "heap overflow in decoder", "stack-buffer-overflow in codec",
     "heap-buffer-overflow", "AddressSanitizer: SEGV", "KASAN: use-after-free", "UAF",
     "double free", "use after free", "out-of-bounds write", "OOB write in encoder",
+    "OOB read", "heap out-of-bounds read", "out of bounds read in table view",
     "SQL injection", "command injection", "code injection", "template injection",
     "LDAP injection", "XPath injection", "header injection", "log injection",
     "prompt injection", "auth bypass", "sandbox escape", "CORS any origin",
@@ -712,7 +712,12 @@ def test_memory_safety_and_security_phrases_still_match(text):
 @pytest.mark.parametrize("text", [
     "segfault in worker on malformed input", "SIGSEGV parsing crafted file",
     "SIGABRT on untrusted payload", "out of bounds index from attacker input",
-    "null pointer dereference on remote request", "integer overflow found by fuzz run"])
+    "null pointer dereference on remote request", "integer overflow found by fuzz run",
+    "SIGBUS while fuzzing", "segfault on packet from the network",
+    # or next to an attack surface
+    "SIGSEGV in tls handshake", "segfault in decoder", "SIGABRT in libssl",
+    "integer overflow in allocation size", "null pointer dereference in x509 parser",
+    "stack overflow parsing nested json", "SIGSEGV in image codec", "segfault in font loader"])
 def test_ordinary_crashes_are_security_only_on_untrusted_input(text):
     assert failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
 
@@ -732,3 +737,26 @@ def test_a_security_copy_digests_its_subject_and_collect_accepts_it(tmp_path):
     assert _collect(st, {f"{failures.dirname(f.id)}-1-1-a": _zip(copy)})[2] == []
     (stored,) = st.failures()
     assert stored.security and stored.record.subject == pub.subject
+
+
+@pytest.mark.parametrize("text", [
+    "authorization missing on admin route", "missing authorization check", "authz missing on /admin",
+    "no authentication on admin api", "admin API has no auth", "broken authentication",
+    "access control missing", "privileged container escape", "container breakout",
+    "auth token sent over http", "password sent in plaintext", "JWT signature not verified",
+    "forged JWT accepted", "jwt alg none"])
+def test_missing_auth_escapes_and_weak_jwt_are_caught(text):
+    assert failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
+
+
+def test_cli_link_classifies_without_the_own_repo(tmp_path):
+    f = failures.new("canary-held", "acme/secret-store", "c0ffee0")
+    assert not f.security
+    state, _ = failures.open_record(f, tmp_path)
+    assert cli.main(["failure", "link", f.id, "--dir", str(tmp_path),
+                     "--fix", "https://github.com/acme/secret-store/pull/5"]) == 0
+    st = failures.read(state.path)
+    assert not st.security and st.links["fix"] == "https://github.com/acme/secret-store/pull/5"
+    assert cli.main(["failure", "link", f.id, "--dir", str(tmp_path),
+                     "--culprit", "https://github.com/acme/secret-leak/pull/5"]) == 0
+    assert failures.read(state.path).security
