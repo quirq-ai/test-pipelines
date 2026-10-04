@@ -269,8 +269,10 @@ def test_common_security_phrasing_is_withheld(text):
 
 
 @pytest.mark.parametrize("text", [
-    "Canary held: SIGSEGV in tls handshake", "segfault in decoder", "SIGABRT in libssl",
-    "UAF in renderer", "OOB read in parser", "buffer over-read", "stack smashing detected",
+    # A bare segfault, SIGABRT or out-of-bounds is an ordinary crash; next to untrusted input it
+    # is a security finding (test_ordinary_crashes_are_security_only_on_untrusted_input).
+    "Canary held: SIGSEGV on crafted tls handshake", "segfault in decoder on malformed input",
+    "SIGABRT in libssl from untrusted cert", "UAF in renderer", "OOB read in parser on fuzz input", "buffer over-read", "stack smashing detected",
     "XXE in importer", "prototype pollution", "JWT signature not checked",
     "CORS allows any origin", "admin page reachable without login"])
 def test_audit_phrasing_is_withheld(text):
@@ -299,7 +301,8 @@ def test_free_text_is_public_only_with_the_opt_in(tmp_path):
     assert "Canary held" in (copy / "failure.json").read_text()
 
 
-@pytest.mark.parametrize("again", [{"security": True}, {"summary": "segfault in decoder"}])
+@pytest.mark.parametrize("again", [{"security": True},
+                                   {"summary": "segfault in decoder on crafted input"}])
 def test_reporting_again_as_security_withdraws_the_issue(tmp_path, again):
     gh = FakeGitHub()
     state, _ = held(tmp_path)
@@ -488,7 +491,7 @@ def test_cli_link_stores_only_public_values(tmp_path, capsys):
 
 @pytest.mark.parametrize("signal", [
     "test_jwt_signature_not_checked", "test_cors_any_origin", "test_xxe_importer",
-    "test_uaf_renderer", "test_oob_read", "test_sqli_search", "stack-smashing-detected",
+    "test_uaf_renderer", "test_oob_write", "test_sqli_search", "stack-smashing-detected",
     "prototype-pollution", "admin-page-reachable-without-login", "denial-of-service",
     "private-key-in-logs", "open-redirect", "double-free-in-decoder", "openRedirectOnLogin",
     "JwtNotChecked"])
@@ -624,7 +627,7 @@ def test_ordinary_failures_still_get_an_issue(text):
 @pytest.mark.parametrize("text", [
     "remote code execution in uploader", "zip slip in extractor", "unsigned update accepted",
     "SIGILL in decoder", "KASAN: slab-out-of-bounds", "XML external entity in importer",
-    "null pointer dereference in parser", "requests.get(url, verify=False)",
+    "requests.get(url, verify=False)",
     "privilege escalation via setuid", "credential leak in logs", "leaked the API key",
     "certificate verification disabled", "signature not verified", "auth not required on /admin",
     "heap buffer overflow", "o​pen redirect", "ｏpen redirect"])
@@ -639,4 +642,93 @@ def test_an_org_chosen_repo_name_is_neither_classified_nor_withheld(tmp_path):
     pub = failures.public_view(f)
     assert pub.repo == "quirq-ai/auth-gateway" and pub.run_id == f.run_id
     assert failures.public_value("quirq-ai/auth-gateway@c0ffee0", f.repo) == "quirq-ai/auth-gateway@c0ffee0"
-    assert failures.public_value("quirq-ai/token-store@c0ffee0", f.repo) == failures.WITHHELD
+    assert failures.public_value("quirq-ai/exploit-store@c0ffee0", f.repo) == failures.WITHHELD
+
+
+@pytest.mark.parametrize("repo", ["acme/auth-gateway", "acme/secret-store"])
+@pytest.mark.parametrize("where", [
+    {"subject": "github/{repo}/1/1/build"},
+    {"links": {"fix": "https://github.com/{repo}/pull/5"}},
+    {"links": {"culprit": "{repo}@c0ffee0"}},
+    {"links": {"covering_test": "https://github.com/{REPO}/commit/c0ffee0"}},
+    {"subject": "sha256:" + "a" * 64, "links": {"culprit": "deadbeefcafe0123"}}])
+def test_the_own_repo_digests_and_hex_are_not_classified(repo, where):
+    def fill(v):
+        return v.replace("{repo}", repo).replace("{REPO}", repo.upper())
+    f = failures.new("red-run", repo, fill(where.get("subject", "c0ffee0")))
+    assert not f.security
+    links = {k: fill(v) for k, v in where.get("links", {}).items()}
+    assert not failures.looks_security_related(f, links)
+
+
+@pytest.mark.parametrize("links", [
+    {"fix": "https://github.com/acme/auth-gateway-exploit/pull/5"},
+    {"culprit": "acme/auth-gateway leaked the API key"},
+    {"fix": "acme/other-auth-gateway: sandbox escape"}])
+def test_text_around_the_own_repo_is_still_classified(links):
+    f = failures.new("red-run", "acme/auth-gateway", "c0ffee0")
+    assert failures.new("red-run", "acme/auth-gateway", "github/other/secret-store/1/1/b").security
+    assert failures.looks_security_related(f, links)
+
+
+@pytest.mark.parametrize("text", [
+    "cross-site scripting in comments", "Cross Site Scripting", "cross-site request forgery",
+    "signature verification skipped", "certificate validation disabled", "TLS check bypassed",
+    "token verification bypass", "host validation skipped", "hostname verification disabled",
+    "leaked env vars", "leaked environment variables", "debug endpoint exposed",
+    "exposed credentials", "secret key exposed", "key leaked in build output",
+    "env vars leaked in logs", "account takeover via reset link", "session fixation on login",
+    "data exfiltration", "backdoor in dependency", "malware in package",
+    "MITM on update channel", "man-in-the-middle", "CVE-2026-12345", "cve 2026 1",
+    "access key committed", "AWS key in repo", "alg=none accepted", "log4shell",
+    "Log4Shell probe", "heartbleed", "clickjacking on settings"])
+def test_round_four_security_phrases_are_caught(text):
+    assert failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
+
+
+@pytest.mark.parametrize("text", [
+    "stack overflow in recursion test", "integer overflow in counter", "segfault in worker",
+    "SIGABRT in test runner", "out of bounds index in parser",
+    "null pointer dereference in handler", "dependency injection container failed",
+    "token bucket rate limiter flaky", "tokenizer test failed", "auth service timeout",
+    "OAuth callback 502", "sandbox image pull failed", "privileged container required",
+    "access control list sync failed", "cors preflight returns 404", "build overflowed disk"])
+def test_ordinary_crashes_and_names_are_not_security(text):
+    assert not failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
+
+
+@pytest.mark.parametrize("text", [
+    "buffer overflow in parser", "heap overflow in decoder", "stack-buffer-overflow in codec",
+    "heap-buffer-overflow", "AddressSanitizer: SEGV", "KASAN: use-after-free", "UAF",
+    "double free", "use after free", "out-of-bounds write", "OOB write in encoder",
+    "SQL injection", "command injection", "code injection", "template injection",
+    "LDAP injection", "XPath injection", "header injection", "log injection",
+    "prompt injection", "auth bypass", "sandbox escape", "CORS any origin",
+    "CORS misconfiguration", "broken access control", "privilege escalation"])
+def test_memory_safety_and_security_phrases_still_match(text):
+    assert failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
+
+
+@pytest.mark.parametrize("text", [
+    "segfault in worker on malformed input", "SIGSEGV parsing crafted file",
+    "SIGABRT on untrusted payload", "out of bounds index from attacker input",
+    "null pointer dereference on remote request", "integer overflow found by fuzz run"])
+def test_ordinary_crashes_are_security_only_on_untrusted_input(text):
+    assert failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
+
+
+def test_a_security_copy_digests_its_subject_and_collect_accepts_it(tmp_path):
+    f = failures.new("canary-held", "o/x", "c0ffee0", security=True,
+                     run_id="github/o/x/1/1/canary")
+    state, _ = failures.open_record(f, tmp_path / "f")
+    copy = failures.public_copy(state, tmp_path / "pub")
+    pub = failures.read(copy).record
+    assert "c0ffee0" not in "".join(p.read_text() for p in copy.rglob("*.json"))
+    assert pub.subject == failures.subject_digest("c0ffee0") and pub.id == f.id
+    assert github.PUBLIC_SUBJECT.fullmatch(pub.subject)
+    again = failures.public_copy(failures.read(copy), tmp_path / "pub2")   # a copy of a copy
+    assert failures.read(again).record.subject == pub.subject
+    st = FileStore(tmp_path / "store")
+    assert _collect(st, {f"{failures.dirname(f.id)}-1-1-a": _zip(copy)})[2] == []
+    (stored,) = st.failures()
+    assert stored.security and stored.record.subject == pub.subject

@@ -37,6 +37,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.14"
+      - run: echo "$GITHUB_WORKSPACE/tools/bin" >> "$GITHUB_PATH"   # qqresults from source
       - id: first
         uses: ./failure
         with:
@@ -73,7 +74,6 @@ jobs:
           # open one; the later is closed as a duplicate and does not count.
           echo "issues with the record's marker (not closed as duplicate): $issues"
           test "$issues" = "1"
-          python -m pip install --quiet .
           if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
             # collect takes failure records only from default-branch runs, so any other ref (a PR,
             # a dispatch on a branch or tag) checks the record its own job wrote (the directory the
