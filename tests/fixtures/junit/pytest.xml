@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="1" skipped="1" tests="4" time="0.412" timestamp="2026-10-04T12:00:00.000000+00:00" hostname="runner"><testcase classname="tests.test_greet" name="test_hello" time="0.001" /><testcase classname="tests.test_greet" name="test_goodbye" time="0.002"><failure message="AssertionError: assert 'bye' == 'goodbye'">def test_goodbye():
+&gt;       assert greet.bye() == "goodbye"
+E       AssertionError: assert 'bye' == 'goodbye'
+
+tests/test_greet.py:9: AssertionError</failure></testcase><testcase classname="tests.test_greet" name="test_setup" time="0.000"><error message="failed on setup with &quot;RuntimeError: no db&quot;">RuntimeError: no db</error></testcase><testcase classname="tests.test_greet" name="test_later" time="0.000"><skipped type="pytest.skip" message="not yet">tests/test_greet.py:15: not yet</skipped></testcase></testsuite></testsuites>

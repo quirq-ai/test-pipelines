@@ -1,0 +1,69 @@
+# The result sink as a GitHub Action, for the gate and post-submit builders (plan §5.2).
+# Use it after the test steps, with `if: always()`, pinned by commit:
+#
+#   - uses: quirq-ai/test-pipelines/sink@<commit>
+#     if: always()
+#     with:
+#       junit: results/*.xml
+#
+# It writes one run bundle (run, results, verdict) and keeps it as a workflow artifact named
+# after the run, which the results store imports (V0-TST-02). It never fails the job for failing
+# tests; it fails only when a report is not JUnit XML. A job with no reports still stores a run,
+# marked as having no results, because a missing signal is not a pass.
+name: qq result sink
+description: Store this job's JUnit test results as a quirq infra results bundle.
+inputs:
+  junit:
+    description: Report globs relative to the workspace, one per line (** allowed).
+    required: true
+  name:
+    description: >-
+      Tells apart several sinks in one job. Required under a matrix, where every leg shares the
+      job id: pass the matrix values or strategy.job-index, or the artifact names collide.
+    required: false
+    default: ""
+  kind:
+    description: Override the run kind (presubmit, gate, postsubmit, canary, other).
+    required: false
+    default: ""
+  retention-days:
+    description: How long GitHub keeps the bundle artifact. TODO(expert) long-term storage.
+    required: false
+    default: "90"
+outputs:
+  bundle:
+    description: Path of the bundle directory.
+    value: ${{ steps.sink.outputs.bundle }}
+  passed:
+    description: "\"true\" when the run's verdict passed."
+    value: ${{ steps.sink.outputs.passed }}
+runs:
+  using: composite
+  steps:
+    - id: sink
+      shell: bash
+      env:
+        QQ_JUNIT: ${{ inputs.junit }}
+        QQ_NAME: ${{ inputs.name }}
+        QQ_KIND: ${{ inputs.kind }}
+      run: |
+        set -euo pipefail
+        python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' || {
+          echo "::error::qq result sink needs Python 3.11 or newer as python3 (actions/setup-python)"; exit 1; }
+        venv="$RUNNER_TEMP/qqresults-venv"
+        python3 -m venv "$venv"
+        "$venv/bin/python" -m pip install --quiet --disable-pip-version-check "$GITHUB_ACTION_PATH/.."
+        args=()
+        while IFS= read -r glob; do
+          [ -n "$glob" ] && args+=(--junit "$glob")
+        done <<< "$QQ_JUNIT"
+        [ ${#args[@]} -gt 0 ] || { echo "::error::qq result sink: the junit input is empty"; exit 1; }
+        [ -z "$QQ_NAME" ] || args+=(--name "$QQ_NAME")
+        [ -z "$QQ_KIND" ] || args+=(--kind "$QQ_KIND")
+        "$venv/bin/qqresults" sink "${args[@]}" --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/qq-results"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: ${{ steps.sink.outputs.name }}
+        path: ${{ steps.sink.outputs.bundle }}
+        retention-days: ${{ inputs.retention-days }}
+        if-no-files-found: error

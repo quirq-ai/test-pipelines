@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="2" failures="0" errors="0" time="0.300000">
+	<testsuite tests="2" failures="0" time="0.010000" name="example.com/pkg/store" timestamp="2026-10-04T12:00:00Z">
+		<properties>
+			<property name="go.version" value="go1.25.0 linux/amd64"></property>
+		</properties>
+		<testcase classname="example.com/pkg/store" name="TestPut" time="0.000000"></testcase>
+		<testcase classname="example.com/pkg/store" name="TestPut/overwrite_is_refused" time="0.000000"></testcase>
+	</testsuite>
+</testsuites>

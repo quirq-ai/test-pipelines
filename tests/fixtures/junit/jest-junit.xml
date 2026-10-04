@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites name="jest tests" tests="1" failures="0" errors="0" time="1.2">
+  <testsuite name="Button" errors="0" failures="0" skipped="0" timestamp="2026-10-04T12:00:00" time="1.1" tests="1">
+    <testcase classname="Button renders" name="Button renders" time="0.02">
+    </testcase>
+  </testsuite>
+</testsuites>
