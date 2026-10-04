@@ -26,18 +26,30 @@ import, a timeout) is never evidence on the base side, even when the change cras
 fixture that reads a generated file crashes on base because the worktree lacks the file, and
 would hide a change that makes the same fixture crash for a real reason. The same read inside
 the test body is a FAIL (runners report any exception there as a <failure>), so a FAIL must
-also look like the change's: every failing result on both sides must have the same kind. The
-kind is the `type` attribute of the <failure> (an exception class, where the runner writes one) when
-every one of those results has one (and every <failure> in it has a type). Otherwise it is the
-first word of the message's first line (an exception class such as `FileNotFoundError:`, or
-`assert`), after removing ANSI escape codes
-and a leading `E` marker. Some words carry no kind, and a failure with one is never
-evidence: an empty message, `def` (a traceback with no message), `[captured` (a message that
-was only captured output), a word with no letters, and generic words such as `Failed` or
-`Error`, in any case and with any trailing punctuation, and the root classes `Exception` and
-`Throwable` under any namespace (runners that write the same message for every failure). This is a heuristic: it tells
-a missing file from a regression that raises something else, not two different failures of
-one kind (two plain `assert`s). The first run at each base keeps its id
+also look like the change's: every failing result on both sides must have the same kind.
+When every one of those results (and every <failure> in it) has a `type` attribute (an
+exception class, where the runner writes one), the types decide: different types fail
+differently, however little each says (a `TypeError` with the change is not an `Error` on
+base), and one type shared by every failure is the kind if it carries one. Only when a type is
+missing, or every failure has the same type and it carries no kind, do the messages decide,
+for every result alike: the kind is the first word of the message's first line, after removing
+ANSI escape codes and a leading `E` marker, and only if it looks like an exception class, an
+identifier or namespaced identifier (`a.b.C`, `a::C`) whose last part is CamelCase and ends in
+`Error`, `Exception`, `Failure`, `Fault` or `Panic` after more letters, with an optional
+trailing colon (such as `FileNotFoundError:`). A failure with no class-like kind never exonerates: an empty message
+(some runners write none), a file path, a test name, prose such as `expected` or `Test method X
+threw exception:`, a quoted word, or `assert`. Some words carry no kind even when class-like,
+compared in any case, with any trailing punctuation and without their namespace: generic words
+such as `Failed` or `Error`, and the root classes `Exception` and `Throwable` (runners that
+write the same message for every failure). Types carry no kind when they have no letters, are
+one of those generic words, are a runner category that some runners write for every failure
+whatever went wrong (`assert`, written for an assertion and for an unrelated panic alike,
+`timeout`, `panicked`, `traceback`, `thrown:`, `abort`, `signal` and the like; the full list is
+junit.GENERIC_KINDS), or contain whitespace (a category such as `test failure` or `test
+timeout`, or several types joined as `A / B`). A <failure> that reports a timeout, an abort or
+a signal is a CRASH, not a FAIL (see junit.py), so it never exonerates. This is a heuristic: it
+tells a missing file from a regression that raises something else, not two different failures
+of one kind (two `AssertionError`s). The first run at each base keeps its id
 (`<run>/base`, `<run>/base2`); the extra runs are `<run>/base-run2`, `<run>/base2-run2` and so on.
 
 The rerun command comes from the caller (the adapter or builder), so this module never names a
@@ -174,15 +186,6 @@ def _passed(test_id: str, results: list[Result]) -> bool:
 _ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[@-Z\\-_])|\[[0-9;]+m")
 # The `E   ` prefix some runners put on error lines: only at the start of the line.
 _E_MARKER = re.compile(r"\AE(?:\s+|\Z)")
-# Words that say nothing about a failure's kind (see the module docstring): compared ignoring
-# case, trailing punctuation and any dotted namespace (`a.b.Exception` is `Exception`). The root
-# exception classes are generic too: a type of `Exception` or `Throwable` says no more than
-# `Failed`.
-_GENERIC = frozenset({"failed", "fail", "failure", "error", "def", "[captured",
-                      "exception", "throwable", "baseexception"})
-_TRAILING = ":.!?;,"
-
-
 def _kind(r: Result, by_type: bool) -> str:
     """The kind of a failure: its `type`, or the first word of its message's first line, e.g.
     `FileNotFoundError:` or `assert` (see the module docstring)."""
@@ -193,9 +196,26 @@ def _kind(r: Result, by_type: bool) -> str:
     return words[0] if words else ""
 
 
+# The first word of a message counts as a kind only when it looks like an exception class: an
+# identifier, or a namespaced one (`a.b.C`, `a::C`), whose last part is CamelCase and ends in one
+# of these with something before it (`ValueError`, not `Error`, `Terror` or `parse_error`), with
+# an optional trailing colon. Anything else (a file path, a test name, prose, a quoted word)
+# carries no kind, so the failure never exonerates.
+_CLASS_SUFFIXES = ("Error", "Exception", "Failure", "Fault", "Panic")
+_CLASS_LIKE = re.compile(r"\A(?:[^\W\d]\w*(?:\.|::))*[A-Z][A-Za-z0-9]*:?\Z")
+
+
 def _informative(kind: str) -> bool:
-    return (any(c.isalpha() for c in kind)
-            and kind.casefold().rstrip(_TRAILING).rsplit(".", 1)[-1] not in _GENERIC)
+    """A type that carries a kind (see junit.informative_type)."""
+    return junit.informative_type(kind)
+
+
+def _class_like(word: str) -> bool:
+    """A message's first word that carries a kind: class-like (_CLASS_LIKE) and not generic."""
+    last = re.split(r"\.|::", word.rstrip(":"))[-1]
+    return (bool(_CLASS_LIKE.match(word))
+            and any(last.endswith(x) and len(last) > len(x) for x in _CLASS_SUFFIXES)
+            and junit.informative_type(word))
 
 
 def _kinds(kinds: set[str]) -> str:
@@ -222,14 +242,23 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
         # It is read only after the pass check below, so it never holds PASS or SKIP.
         crashed = sorted(on_base - {Status.FAIL.value})
         # The kind of each failure, with and without the change (see the module docstring): its
-        # type when every one has a type, else the first word of its message.
+        # type when every one on both sides has an informative type, else the first word of its
+        # message, for every result alike. Never a mix: a type on one side and a message word on
+        # the other could not be compared, and an uninformative type (one fixed category for
+        # every failure) falls back to the messages, which may carry no kind either.
         failing = [r for b in [results] + [b.results for b in retries]
                    for r in b if r.test_id == t and not r.expected]
         failing_on_base = [r for rs in per_base for r in rs]
-        by_type = all(r.failure_type.strip() for r in failing + failing_on_base)
+        # Every failure has a type: different types fail differently, whether or not each says
+        # much (a TypeError is not an Error); one informative type is the kind. Only when a type
+        # is missing, or every failure has the same uninformative type, do the messages decide.
+        types = {r.failure_type.strip() for r in failing + failing_on_base}
+        by_type = "" not in types and (len(types) > 1 or all(map(_informative, types)))
         kind_on_change = {_kind(r, by_type) for r in failing}
         kind_on_base = {_kind(r, by_type) for r in failing_on_base}
-        no_kind = not all(map(_informative, kind_on_change | kind_on_base))
+        kinds = kind_on_change | kind_on_base
+        no_kind = (not all(map(_class_like, kinds)) if not by_type
+                   else len(kinds) == 1 and not all(map(_informative, kinds)))
         if not_retried:
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, f"not retried: {not_retried}"))
         elif passed_on:

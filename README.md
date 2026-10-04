@@ -238,17 +238,38 @@ change: one that passes on any base run, one that crashes on any base run (a JUn
 as a fixture that reads a generated file the base worktree lacks; a crash on base is no signal,
 even when the change crashes too), one that crashes with the change but fails an assertion on
 base, one that fails differently there, one whose failure has no kind (below), and one with no
-base result, such as a new test. The kind of a failure is the `type` attribute of its JUnit
-`<failure>` (an exception class, as Surefire writes it) when every failure on both sides has
-one; otherwise it is the first word of its message's first line, such as `FileNotFoundError:`
-or `assert`, after removing ANSI escape codes and a leading pytest `E` marker. So a test body
-that reads a missing generated file on base (a FAIL in pytest) does not exonerate a change that
-makes it raise something else. A failure whose kind says nothing never exonerates: an empty
-message, `def` (a traceback with no message), `[captured` (a message that was only captured
-output), a word with no letters, or a generic word such as `Failed` or `Error` (in any case, with
-any trailing punctuation), or a root class such as `Exception` or `Throwable`, which some
-runners write for every failure. This is a heuristic and cannot tell two failures of one kind
-apart. The retry and
+base result, such as a new test. When every failure on both sides has a JUnit `type` (an
+exception class, as Surefire writes it), the types decide: different types fail differently,
+however little each says (a `TypeError` with the change is not an `Error` on base), and one
+type shared by every failure is the kind if it carries one. Only when a type is missing, or
+every failure has the same type and it says nothing (Rust libtest's `assert`), do the messages
+decide: the kind is the first word of the message's first line, after removing ANSI escape
+codes and a leading pytest `E` marker, and only if it looks like an exception class: an
+identifier or namespaced identifier (`a.b.C`, `a::C`) whose last part is CamelCase and ends in
+`Error`, `Exception`, `Failure`, `Fault` or `Panic` after at least one more letter, such as
+`FileNotFoundError:` (not `Error`, `Terror` or `parse_error`). **A failure with no
+class-like kind never exonerates**: an empty message (libtest writes none), a file path
+(`src/lib.rs:5:9:`), a test name, prose (`expected`, MSTest's `Test method X threw
+exception:`), a quoted word, `assert`, `thread` (`thread 'x' panicked at`), `Traceback`, jest's
+`thrown:` or `Timeout`. So a test body that reads a missing generated file on base (a FAIL in
+pytest) does not exonerate a change that makes it raise something else. Generic words carry no
+kind even when class-like: `Failed`, `Error`, and root classes such as `Exception` or
+`Throwable`, under any namespace. A type carries no kind when it is one of those, a runner
+category written for every failure whatever went wrong (audit N1: libtest's `assert` for an
+`assert_eq!` and for an unrelated `unwrap()` panic alike, and `timeout`; cargo-nextest's `test
+failure`, `test timeout` and `test abort`; `panicked`, `traceback`, `thrown:`, `abort`,
+`signal`), or contains whitespace (including joined types such as `A / B`). A `<failure>` that
+reports a timeout, an abort or a signal is a CRASH, like an `<error>`, so it never exonerates:
+one whose `type` has the word `timeout`, `abort`, `aborted`, `signal` or a signal name
+(libtest's `timeout`, nextest's `test timeout`), or one with no type, or a type that carries no
+kind, whose message's first line begins with such a report (`Timeout of 2000ms exceeded`,
+pytest-timeout's `Failed: Timeout >1.0s`, jest's `thrown: "Exceeded timeout`, `timed out`,
+`Aborted`, `killed by signal 9`, `signal: 11, SIGSEGV`, `SIGSEGV`). A failure whose type is an
+exception class stays a FAIL whatever its message says (`timeout: expected 3 to equal 5` with
+`AssertionError`), as do `assert timeout == 5`, `timeout is None` and `signal 5 != 3`; a
+timeout named later in the line or as an exception class (`TimeoutError`) stays a FAIL too, and
+its kind is compared as usual. This is a heuristic and
+cannot tell two failures of one kind apart. The retry and
 base runs are stored too, linked to the run by `parent` and listed in the verdict's `inputs`.
 The base side runs in the same job, so the rerun command must test the code in its working
 directory. If the tests import installed code (an editable install, a build outside the tree),
@@ -279,7 +300,9 @@ commits, or read the queue's merge method from the branch rules, once the org's 
 and merge method are decided (ORG-03). The rerun command comes from the builder, so the core never names a runner;
 `$QQ_RETRY_TESTS` lists the failed test ids for a command that can select them. CI proves the
 done-when with `tools/planted_demo.sh`: the planted failure is exonerated, and changes that break
-a test or the code under it still block. "Through the gate" waits for the merge queue (V0-ORG-03).
+a test or the code under it still block, including a Rust crate (real `cargo test` JUnit, through
+`RUSTC_BOOTSTRAP=1 ... -Z unstable-options --format junit`) whose test panics on base and fails
+an `assert_eq!` with the change. "Through the gate" waits for the merge queue (V0-ORG-03).
 
 ## Failure records (V0-TST-04)
 
