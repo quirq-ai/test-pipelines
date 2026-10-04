@@ -66,14 +66,17 @@ def run_from_env(env: Mapping[str, str], kind: str = "", name: str = "") -> Run:
         change = Change(repo=repo, number=pr.get("number"),
                         head_sha=(pr.get("head") or {}).get("sha", ""),
                         base_sha=(pr.get("base") or {}).get("sha", ""))
-        base_commit = change.base_sha
+        # On pull_request GitHub tests a merge of the PR onto its branch: the first parent is the
+        # tree without the change. pull_request_target tests the branch itself, not a merge.
+        base_commit = f"{commit}^1" if event_name == "pull_request" else change.base_sha
         branch = (pr.get("base") or {}).get("ref", branch)
     elif mg := event.get("merge_group"):
         # The queue tests head_sha, which is base_sha plus the queued changes ahead of it.
         m = re.search(r"/pr-(\d+)-", mg.get("head_ref", ""))
-        base_commit = mg.get("base_sha", "")
         # The PR's own head commit is not in the payload, so head_sha stays empty.
-        change = Change(repo=repo, number=int(m.group(1)) if m else None, base_sha=base_commit)
+        change = Change(repo=repo, number=int(m.group(1)) if m else None,
+                        base_sha=mg.get("base_sha", ""))
+        base_commit = f"{commit}^1"   # the entries ahead, without this one (retry.py)
         branch = mg.get("base_ref", "").removeprefix("refs/heads/") or branch
     elif event_name == "push":
         base_commit = event.get("before", "")

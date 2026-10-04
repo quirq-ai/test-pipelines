@@ -42,7 +42,7 @@ def sink(run: Run, patterns: list[str], root: Path, out: Path, rerun_cmd: str = 
         run = Run.from_dict({**run.to_dict(), "results_found": False})
     if rerun_cmd:
         checked = retry.recheck(run, results, rerun_cmd, root, policy, base_commit, setup=setup)
-        for extra in checked.retries + ([checked.base] if checked.base else []):
+        for extra in checked.retries + checked.bases:
             bundle.write(extra, out)
         v = checked.verdict
     else:

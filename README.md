@@ -121,8 +121,10 @@ afterwards, or the base side would test the change's code and wrongly exonerate 
 cannot be checked out or `setup` fails there, the retries are still stored and nothing is
 exonerated; if `setup` fails to restore the change, the step fails. The base is the tested
 commit without this change: for a pull request or a merge-queue entry, the tested merge commit's
-first parent (so a fix queued ahead cannot exonerate a change that breaks the test again); for a
-push, the commit before it. The rerun command comes from the builder, so the core never names a runner;
+first parent; for a push, the commit before it. When the target branch's commit (base_sha)
+differs, the test must also fail there: a failure is exonerated only if it fails at every base.
+So neither a fix queued ahead nor a rebase queue (whose first parent is the PR's own earlier
+commit) can exonerate a regression. The rerun command comes from the builder, so the core never names a runner;
 `$QQ_RETRY_TESTS` lists the failed test ids for a command that can select them. CI proves the
 done-when with `tools/planted_demo.sh`: the planted failure is exonerated, and changes that break
 a test or the code under it still block. "Through the gate" waits for the merge queue (V0-ORG-03).

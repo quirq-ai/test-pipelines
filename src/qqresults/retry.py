@@ -29,13 +29,13 @@ tests could be testing the change's code), and if the restore fails, the step fa
 steps after it would test the wrong code.
 TODO(expert): run the base side hermetically once remote-build provides executors (V0-RBE-01).
 
-The base is the tested commit without this change. For a pull request (GitHub tests a merge of
-the change onto its branch) and a merge-queue entry (a merge of the change onto the entries ahead
-of it) that is the tested commit's first parent, not the PR's or queue's base_sha: an entry
-ahead may fix a test this change breaks again, and comparing with the target branch would then
-exonerate the regression. For a push it is the commit before the push (`before`).
-TODO(expert): a rebase merge queue tests the PR's commits rebased, where the first parent is the
-PR's own previous commit; use the commit below the rebased range once a rebase queue is used.
+The base is the tested commit without this change, which the backend decides (for a GitHub pull
+request or merge-queue entry, the tested merge commit's first parent; for a push, `before`).
+When the change also names its target branch's commit (base_sha) and that differs, the test must
+fail there too: a failure is exonerated only if it fails at every base. That keeps both traps
+closed: an entry queued ahead that fixes the test (base_sha fails, the first parent passes), and a
+rebase queue testing a PR's last commit (the first parent is the PR's own earlier commit, which
+fails; base_sha passes).
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ from pathlib import Path
 
 from qqresults import bundle, junit, verdict
 from qqresults.errors import Error
-from qqresults.model import CaseVerdict, Result, Run, RunKind, Verdict, VerdictStatus
+from qqresults.model import CaseVerdict, Result, Run, Verdict, VerdictStatus
 from qqresults.policy import Policy
 
 Runner = Callable[[str, Path, dict[str, str]], int | None]   # None counts as 0
@@ -112,7 +112,7 @@ def _passed(test_id: str, results: list[Result]) -> bool:
 
 
 def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
-           base: bundle.Bundle | None, base_error: str = "") -> Verdict:
+           bases: list[bundle.Bundle], base_error: str = "") -> Verdict:
     first = verdict.compute(run, results)
     if not results or not run.results_found:
         return first
@@ -120,16 +120,17 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
     for case in first.tests:
         t = case.test_id
         passed_on = next((i for i, b in enumerate(retries, 1) if _passed(t, b.results)), None)
-        base_rs = [r for r in base.results if r.test_id == t] if base else []
+        per_base = [[r for r in b.results if r.test_id == t] for b in bases]
         if passed_on:
             tests.append(CaseVerdict(t, VerdictStatus.FLAKY.value, f"passed on retry {passed_on}"))
-        elif base_rs and not any(r.expected for r in base_rs):
-            tests.append(CaseVerdict(t, VerdictStatus.EXONERATED.value,
-                                     f"also fails without the change, at {base.run.commit[:12]}"))
-        elif base_rs:
+        elif any(rs and any(r.expected for r in rs) for rs in per_base):
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value,
                                      "fails with the change and passes without it"))
-        elif base:
+        elif bases and not base_error and all(per_base):
+            at = ", ".join(b.run.commit[:12] for b in bases)
+            tests.append(CaseVerdict(t, VerdictStatus.EXONERATED.value,
+                                     f"also fails without the change, at {at}"))
+        elif bases and not base_error:
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value,
                                      "no result without the change (a new test, or no signal)"))
         else:
@@ -145,14 +146,14 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
         reason = f"{reason}; base comparison failed: {base_error}".lstrip("; ")
     return Verdict(run_id=run.id, passed=unexpected == 0, counts=dict(sorted(counts.items())),
                    tests=tests, reason=reason,
-                   inputs=[b.run.id for b in retries] + ([base.run.id] if base else []))
+                   inputs=[b.run.id for b in retries + bases])
 
 
 @dataclass
 class Rechecked:
     verdict: Verdict
     retries: list[bundle.Bundle]
-    base: bundle.Bundle | None
+    bases: list[bundle.Bundle]
 
 
 def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy,
@@ -162,7 +163,7 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
     failing = [c.test_id for c in verdict.compute(run, results).tests
                if c.status == VerdictStatus.UNEXPECTED.value]
     if not failing:
-        return Rechecked(decide(run, results, [], None), [], None)
+        return Rechecked(decide(run, results, [], []), [], [])
     remaining = list(failing)
     for n in range(1, policy.retry_failed + 1):
         child = child_run(run, "retry", n)
@@ -172,29 +173,38 @@ def recheck(run: Run, results: list[Result], cmd: str, cwd: Path, policy: Policy
         remaining = [t for t in remaining if not _passed(t, rs)]
         if not remaining:
             break
-    base = None
+    bases: list[bundle.Bundle] = []
     base_error = ""
-    base_commit = base_commit or default_base(run)
     if remaining and policy.compare_with_base:
-        if not base_commit:
+        commits = [base_commit] if base_commit else candidate_bases(run)
+        if not commits:
             base_error = "no base commit known"
-        else:
+        for n, commit in enumerate(commits, 1):
             try:
-                base = run_on_base(run, remaining, cmd, cwd, base_commit, runner, setup)
+                if _resolve(cwd, commit) in {b.run.commit for b in bases}:
+                    continue                  # e.g. the first parent is base_sha itself
+                bases.append(run_on_base(run, remaining, cmd, cwd, commit, runner, setup, n))
             except RetryError as e:   # keep the run and its retries; never exonerate without data
                 base_error = str(e)
-    return Rechecked(decide(run, results, retries, base, base_error), retries, base)
+                break
+    return Rechecked(decide(run, results, retries, bases, base_error), retries, bases)
 
 
-def default_base(run: Run) -> str:
-    """The tested commit without this change (see the module docstring)."""
-    if run.kind in (RunKind.GATE.value, RunKind.PRESUBMIT.value) and run.change:
-        return f"{run.commit}^1"
-    return run.base_commit
+def candidate_bases(run: Run) -> list[str]:
+    """Every base a failure must also fail at to be exonerated (see the module docstring)."""
+    target = run.change.base_sha if run.change else ""
+    return [c for c in dict.fromkeys([run.base_commit, target]) if c]
+
+
+def _resolve(cwd: Path, commit: str) -> str:
+    try:
+        return git(cwd, "rev-parse", f"{commit}^{{commit}}")
+    except RetryError:
+        return ""                             # not fetched yet: run_on_base fetches it
 
 
 def run_on_base(run: Run, tests: list[str], cmd: str, cwd: Path, base_commit: str,
-                runner: Runner = shell, setup: str = "") -> bundle.Bundle:
+                runner: Runner = shell, setup: str = "", n: int = 1) -> bundle.Bundle:
     try:
         git(cwd, "cat-file", "-e", f"{base_commit}^{{commit}}")
     except RetryError:
@@ -202,7 +212,8 @@ def run_on_base(run: Run, tests: list[str], cmd: str, cwd: Path, base_commit: st
             git(cwd, "fetch", "--quiet", "--depth", "2", "origin", base_commit[:-2])
         else:
             git(cwd, "fetch", "--quiet", "--depth", "1", "origin", base_commit)
-    child = child_run(run, "base", commit=git(cwd, "rev-parse", f"{base_commit}^{{commit}}"))
+    child = child_run(run, "base", n if n > 1 else 0,
+                      commit=git(cwd, "rev-parse", f"{base_commit}^{{commit}}"))
     with tempfile.TemporaryDirectory(prefix="qq-base-") as tmp:
         tree = Path(tmp) / "base"
         git(cwd, "worktree", "add", "--quiet", "--detach", str(tree), child.commit)
