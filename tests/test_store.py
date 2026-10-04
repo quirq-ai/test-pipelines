@@ -64,13 +64,28 @@ def test_a_bundle_without_failure_type_from_an_older_sink_still_imports(tmp_path
     src = bundle.write(b, tmp_path / "sink")
     lines = [json.loads(line) for line in (src / bundle.RESULTS).read_text().splitlines()]
     for line in lines:
-        del line["failure_type"]
+        line.pop("failure_type", None)
     (src / bundle.RESULTS).chmod(0o644)
     (src / bundle.RESULTS).write_text("".join(json.dumps(line) + "\n" for line in lines))
     st = FileStore(tmp_path / "store")
     assert st.import_dir(src)
     assert [r.failure_type for r in st.results("r1")] == ["", ""]
     assert "failure_type" not in (st.runs_dir / src.name / bundle.RESULTS).read_text()
+
+
+def test_a_result_without_a_type_keeps_its_bytes_and_id():
+    # The JSON and id this Result had before failure_type existed (computed at 696a3d1).
+    before = ('{"duration_s":0.5,"expected":false,"file":"","message":"AssertionError: x",'
+              '"metrics":{},"raw":"","run_id":"r1","schema":"quirq-results/1","source":"",'
+              '"status":"FAIL","test_id":"t::a"}')
+    r = Result(run_id="r1", test_id="t::a", status="FAIL", expected=False, duration_s=0.5,
+               message="AssertionError: x")
+    assert r.to_dict() == json.loads(before) and r.to_json() == before
+    assert r.id == "sha256:9bad2417b47aff44243d07719a2b06c612475f8ccd8dbe8e3ef64f56ce799777"
+    assert Result.from_dict(json.loads(before)) == r
+    typed = Result.from_dict({**json.loads(before), "failure_type": "AssertionError"})
+    assert typed.to_dict()["failure_type"] == "AssertionError"
+    assert Result.from_dict(typed.to_dict()) == typed and typed.id != r.id
 
 
 def test_import_refuses_a_failure_type_that_is_not_a_string(tmp_path):

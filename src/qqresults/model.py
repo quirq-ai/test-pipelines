@@ -216,6 +216,14 @@ class Result(_Record):
     failure_type: str = ""          # the `type` of <failure>/<error> (junit.MAX_TYPE), when given
     schema: str = SCHEMA
 
+    def to_dict(self) -> dict[str, Any]:
+        """Without failure_type when it is "", so a Result with no type keeps the bytes and the
+        id it had before the field existed."""
+        data = super().to_dict()
+        if not data["failure_type"]:
+            del data["failure_type"]
+        return data
+
     @property
     def id(self) -> str:
         """Content address: the same outcome recorded twice has the same id."""
