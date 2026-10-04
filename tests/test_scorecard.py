@@ -1,5 +1,7 @@
 import datetime as dt
 
+import pytest
+
 from qqresults import cli, scorecard
 from qqresults.store import FileStore
 from test_store import make
@@ -223,3 +225,68 @@ def test_a_run_whose_every_queue_time_is_late_is_skipped_not_untimed(tmp_path):
     st.put(_gate_job("lint", "2026-10-04T09:05:00Z", queued="2026-10-04T09:20:00Z"))
     m = gate(st)
     assert not m.measured and m.detail == "1 run(s) queued after they finished, skipped"
+
+
+def _push(st, rid, commit, before, finished, fail=False, **run):
+    from qqresults import bundle, verdict
+    from qqresults.model import Run
+    b = make(rid, commit=commit, finished=finished, fail=fail)
+    data = {**b.run.to_dict(), "base_commit": before, **run}
+    if before is None:
+        del data["base_commit"]              # a record written without the field
+    r = Run.from_dict(data)
+    results = b.results if r.results_found else []
+    st.put(bundle.Bundle(r, results, verdict.compute(r, results)))
+
+
+def _slow_green_on_an_older_commit(st, before=lambda b: b):
+    # c1's job is slow and passes at 10:30; c2 (pushed on top of c1) is red at 10:00; c3 fixes
+    # it at 10:45. Main was red from 10:00 to 10:45, even though c1 went green in between.
+    _push(st, "p1", "c1", before("c0"), "2026-10-04T10:30:00Z")
+    _push(st, "p2", "c2", before("c1"), "2026-10-04T10:00:00Z", fail=True)
+    _push(st, "p3", "c3", before("c2"), "2026-10-04T10:45:00Z")
+
+
+def test_main_red_follows_the_push_chain_not_finish_times(tmp_path):
+    st = FileStore(tmp_path)
+    _slow_green_on_an_older_commit(st)
+    m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Main-red time")
+    assert m.value == 45.0 and m.detail == "3 post-submit commits"
+
+
+def test_without_a_push_chain_main_red_falls_back_to_finish_times_and_says_so(tmp_path):
+    st = FileStore(tmp_path)
+    _slow_green_on_an_older_commit(st, before=lambda b: None)   # older records: no base_commit
+    m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Main-red time")
+    assert m.value == 30.0 and "push chain unknown, ordered by job finish time" in m.detail
+
+
+def test_a_cancelled_push_still_links_the_chain(tmp_path):
+    st = FileStore(tmp_path)
+    _push(st, "p1", "c1", "c0", "2026-10-04T10:30:00Z")
+    _push(st, "p2", "c2", "c1", "2026-10-04T10:00:00Z", fail=True)
+    _push(st, "p3", "c3", "c2", "2026-10-04T10:20:00Z", results_found=False, job_status="cancelled")
+    _push(st, "p4", "c4", "c3", "2026-10-04T10:45:00Z")
+    m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Main-red time")
+    assert m.value == 45.0 and m.detail == "3 post-submit commits"
+
+
+@pytest.mark.parametrize("pushes", [
+    [("c1", "c0"), ("c2", "c1"), ("c3", "c1")],      # a force push: two pushes from c1
+    [("c1", "c0"), ("c2", "c1"), ("c3", "")],        # a dispatched run: no before
+    [("c1", "c0"), ("c3", "c2")],                     # a push the store has no run of
+])
+def test_a_broken_push_chain_is_not_trusted(tmp_path, pushes):
+    st = FileStore(tmp_path)
+    for i, (commit, before) in enumerate(pushes):
+        _push(st, f"p{i}", commit, before, f"2026-10-04T1{i}:00:00Z", fail=i == 0)
+    m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Main-red time")
+    assert m.value == 60.0 and "push chain unknown" in m.detail
+
+
+def test_a_newer_green_before_an_older_red_is_not_negative_red_time(tmp_path):
+    st = FileStore(tmp_path)
+    _push(st, "p1", "c1", "c0", "2026-10-04T10:30:00Z", fail=True)   # slow, red
+    _push(st, "p2", "c2", "c1", "2026-10-04T10:10:00Z")              # already green
+    m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Main-red time")
+    assert m.value == 0.0 and "red now" not in m.detail

@@ -158,16 +158,52 @@ def gate_time(runs: list[tuple[Run, Verdict]]) -> Metric:
     return m
 
 
+def push_before(run: Run) -> str:
+    """The commit main was at before the push a post-submit run tested, or "" when unknown.
+
+    The GitHub backend records a push's `before` as the run's base_commit; a scheduled or
+    dispatched run has none, and a value like "<sha>^1" or the all-zero sha names no push.
+    """
+    b = run.base_commit
+    return b if b and "^" not in b and b.strip("0") else ""
+
+
+def push_order(befores: dict[str, str]) -> list[str] | None:
+    """Commits in main's push order (each push goes from its before to its after), or None
+    when the runs do not link every commit into one chain (a commit with no before after the
+    first, two pushes from one commit, or a push the store has no run of)."""
+    after: dict[str, str] = {}
+    for commit, before in befores.items():
+        if before in befores:
+            if before in after:
+                return None                    # a force push: two pushes from one commit
+            after[before] = commit
+    roots = [c for c, b in befores.items() if b not in befores]
+    if len(roots) != 1:
+        return None
+    order = roots
+    while order[-1] in after:
+        order.append(after[order[-1]])
+    return order if len(order) == len(befores) else None
+
+
 def main_red(runs: list[tuple[Run, Verdict]], since: dt.datetime, until: dt.datetime) -> Metric:
     """Minutes main spent red: from the first red post-submit commit to the next green one.
 
+    Commits are taken in main's push order (before -> after), so a slow green job on an older
+    commit cannot end a red that a newer commit started. When the stored runs do not link the
+    commits into one chain, they are ordered by when their jobs finished, and the detail says so.
     Only runs inside the window are read, so a red that began before it counts from the window's
     first red run. TODO(expert): carry main's state across the window edge.
     """
     m = Metric("Main-red time", "under 60 min/week", unit="min/week")
     commits: dict[str, dict[str, tuple[Run, Verdict]]] = defaultdict(dict)
+    befores: dict[str, set[str]] = defaultdict(set)
     for r, v in runs:
-        if r.kind != RunKind.POSTSUBMIT or not r.finished_at or red(r, v) is None:
+        if r.kind != RunKind.POSTSUBMIT:
+            continue
+        befores[r.commit].add(push_before(r))  # a cancelled run still links the chain
+        if not r.finished_at or red(r, v) is None:
             continue
         # A re-run of a failed job replaces it: keep only the latest attempt of each job.
         jobs = commits[r.commit]
@@ -178,25 +214,34 @@ def main_red(runs: list[tuple[Run, Verdict]], since: dt.datetime, until: dt.date
         m.waiting_on = "post-submit runs that store results (the sink on each repo's main)"
         return m
     # A commit is red as soon as its first job fails, and green once its last job has passed.
-    ordered = []
-    for jobs in commits.values():
+    states = {}
+    for commit, jobs in commits.items():
         reds = [parse_time(r.finished_at) for r, v in jobs.values() if red(r, v)]
-        ordered.append((min(reds), False) if reds
-                       else (max(parse_time(r.finished_at) for r, _ in jobs.values()), True))
-    ordered.sort()
+        states[commit] = ((min(reds), False) if reds
+                          else (max(parse_time(r.finished_at) for r, _ in jobs.values()), True))
+    chain = None
+    if all(len(b) == 1 for b in befores.values()):   # else one commit was pushed from two
+        chain = push_order({c: b.pop() for c, b in befores.items()})
+    if chain:
+        ordered = [states[c] for c in chain if c in states]
+    else:
+        ordered = sorted(states.values())
     red_since = None
     total = 0.0
     for at, green in ordered:
         if not green and red_since is None:
             red_since = at
         elif green and red_since is not None:
-            total += (at - red_since).total_seconds()
+            # A newer commit's green may land before an older one's red: main was not red then.
+            total += max((at - red_since).total_seconds(), 0)
             red_since = None
     if red_since is not None:
         total += (until - red_since).total_seconds()
     weeks = max((until - since).total_seconds() / (7 * 86400), 1 / 7)
     m.value = round(max(total, 0) / 60 / weeks, 1)
-    m.detail = f"{len(ordered)} post-submit commits" + ("; main is red now" if red_since else "")
+    m.detail = (f"{len(ordered)} post-submit commits"
+                + ("" if chain else "; push chain unknown, ordered by job finish time")
+                + ("; main is red now" if red_since else ""))
     return m
 
 
