@@ -53,8 +53,8 @@ repeated id is not a retry, so only V0-TST-03's explicit retries make a test FLA
 What the sink publishes is permanent: the artifact is public on a public repo, and `collect`
 copies it into the write-once `results` branch, which keeps it after the job log is deleted. So
 each `Result` holds only structured fields (test id, status, expected, duration, file, report
-path, metrics) and the head of its failure or skip message: the first 20 lines, at most 1,000
-characters, with any `<system-out>`/`<system-err>` markup cut out. That is enough for the
+path, metrics) and the head of its failure or skip message: the first 20 lines and 1,000
+characters (plus a short truncation marker), with any `<system-out>`/`<system-err>` markup cut out. That is enough for the
 assertion and the first frames, which tell failures apart; the full text stays in the job log.
 `raw` is empty, and `<system-out>`/`<system-err>` are never stored (audit R3). To also keep each
 `<testcase>` element as it was, captured output included and capped at 16,000 characters, pass

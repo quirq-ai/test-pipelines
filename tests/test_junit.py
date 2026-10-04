@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from qqresults import junit
@@ -124,3 +126,11 @@ def test_every_message_is_kept_and_error_wins():
     assert r.status == "CRASH" and r.message == "boom"
     (r,) = junit.parse(data.replace(b'<error message="boom"/>', b""), "r")
     assert r.message == "one\n\ntwo"
+
+
+def test_a_huge_message_full_of_unclosed_markup_is_capped_quickly():
+    data = (b'<testsuite name="s"><testcase name="a"><failure message="'
+            + b"&lt;system-out " * 200_000 + b'"/></testcase></testsuite>')
+    start = time.monotonic()
+    (r,) = junit.parse(data, "r")
+    assert time.monotonic() - start < 2 and len(r.message) < 1_100

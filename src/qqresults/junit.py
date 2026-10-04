@@ -28,7 +28,7 @@ MAX_MESSAGE = 1_000     # characters of a failure or skip message kept on the no
 MAX_MESSAGE_LINES = 20  # and lines of it, so a long traceback keeps only its head
 MAX_RAW = 16_000        # characters of the original <testcase> element kept as raw, opt-in only
 
-_CAPTURED = re.compile(r"<(system-out|system-err)\b[^>]*?(?:/>|>.*?(?:</\1\s*>|$))",
+_CAPTURED = re.compile(r"<(system-out|system-err)\b[^>]{0,200}?(?:/>|>.*?(?:</\1\s*>|$))",
                        re.DOTALL | re.IGNORECASE)
 
 
@@ -43,17 +43,24 @@ def _truncate(text: str, limit: int) -> str:
 
 
 def _cap_message(text: str) -> str:
-    """At most MAX_MESSAGE_LINES lines and MAX_MESSAGE characters, without captured output.
+    """The first MAX_MESSAGE_LINES lines and MAX_MESSAGE characters, without captured output,
+    plus a marker saying how much was cut.
 
     <system-out>/<system-err> are siblings of <failure>, so they are never part of a message;
-    a runner that pastes them into the message text as markup still has them cut out here.
+    a runner that pastes them into the message text as markup still has them cut out here. The
+    text is cut to a bounded size before that, so a huge message cannot make the search slow.
     """
-    text = _CAPTURED.sub("[captured output removed]", text)
     lines = text.split("\n")
+    cut = ""
     if len(lines) > MAX_MESSAGE_LINES:
-        text = "\n".join(lines[:MAX_MESSAGE_LINES]) + (
-            f"\n... [{len(lines) - MAX_MESSAGE_LINES} lines truncated]")
-    return _truncate(text, MAX_MESSAGE)
+        text = "\n".join(lines[:MAX_MESSAGE_LINES])
+        cut = f"\n... [{len(lines) - MAX_MESSAGE_LINES} lines truncated]"
+    total = len(text)
+    text = _CAPTURED.sub("[captured output removed]", text[:2 * MAX_MESSAGE])   # room for markup
+    if total > 2 * MAX_MESSAGE or len(text) > MAX_MESSAGE:
+        text = text[:MAX_MESSAGE]
+        cut = f"\n... [{max(total - len(text), 1)} characters truncated]"
+    return text + cut
 
 
 def _duration(value: str | None) -> float | None:
