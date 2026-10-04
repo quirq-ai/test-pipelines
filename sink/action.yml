@@ -33,7 +33,7 @@ inputs:
   commit:
     description: >-
       Override the commit tested (40 hex), for a dispatched run that checked out another commit
-      than GITHUB_SHA, e.g. a backfill: commit: ${{ inputs.commit || github.sha }}.
+      than GITHUB_SHA, e.g. a backfill that passes the workflow_dispatch commit input (see README).
     required: false
     default: ""
   rerun:
