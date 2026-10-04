@@ -8,8 +8,8 @@
         Print a bundle's verdict.
     qqresults import --store DIR BUNDLE_DIR...
         Add sink bundles to the results store (write-once).
-    qqresults collect --store DIR --repo OWNER/NAME...
-        Add every bundle the repos' GitHub workflow runs kept (token from GITHUB_TOKEN).
+    qqresults collect --store DIR --repo OWNER/NAME... [--workflow GLOB...] [--cross-repo OWNER/NAME...]
+        Add every bundle the repos' own runs of trusted workflows kept (token from GITHUB_TOKEN).
     qqresults query runs|results|history --store DIR [filters] [--json]
         Read the store.
     qqresults scorecard --store DIR [--days N] [--json]
@@ -102,10 +102,12 @@ def cmd_collect(args) -> int:
     gh = backends.load("github")
     st = store.open_store(args.store)
     token = os.environ.get("GITHUB_TOKEN", "")
+    trust = gh.Trust(workflows=tuple(args.workflow or gh.DEFAULT_WORKFLOWS),
+                     cross_repo=frozenset(args.cross_repo or ()))
     failed = False
     for repo in args.repo:
         try:
-            new, old, errors = gh.collect(repo, st, token)
+            new, old, errors = gh.collect(repo, st, token, trust=trust)
         except Error as e:   # one repo failing to list must not hide the others
             new, old, errors = 0, 0, [f"{repo}: {e}"]
         print(f"{repo}: {new} new, {old} already stored, {len(errors)} skipped")
@@ -157,8 +159,10 @@ def cmd_query(args) -> int:
 
 def cmd_scorecard(args) -> int:
     until = dt.datetime.now(dt.UTC)
-    card = scorecard.compute(store.open_store(args.store), until - dt.timedelta(days=args.days),
-                             until, repos=args.repo)
+    st = store.open_store(args.store)
+    card = scorecard.compute(st, until - dt.timedelta(days=args.days), until, repos=args.repo)
+    for message in st.skipped.values():
+        print(f"qqresults: warning: {message}", file=sys.stderr)
     if args.json:
         print(json.dumps(card.to_dict(), indent=2, sort_keys=True))
     else:
@@ -271,6 +275,13 @@ def build_parser() -> argparse.ArgumentParser:
     co = sub.add_parser("collect", help="add the bundles GitHub kept as workflow artifacts")
     co.add_argument("--store", required=True)
     co.add_argument("--repo", action="append", required=True, metavar="OWNER/NAME")
+    co.add_argument("--workflow", action="append", metavar="GLOB",
+                    help="only runs of workflow files matching this glob may write; repeat for "
+                         "more (default: .github/workflows/qq-*.yml and "
+                         ".github/workflows/presubmit.yml)")
+    co.add_argument("--cross-repo", action="append", metavar="OWNER/NAME",
+                    help="this collected repo's runs may store kind 'other' runs naming "
+                         "another repo (perf)")
     co.add_argument("--strict", action="store_true", help="exit 1 if any artifact was skipped")
     co.set_defaults(func=cmd_collect)
 

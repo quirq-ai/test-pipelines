@@ -11,8 +11,11 @@ belong to `release` and `remote-build`; a Failure refers to them by key.
 from __future__ import annotations
 
 import dataclasses
+import datetime as dt
 import hashlib
 import json
+import math
+import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, ClassVar, Self
@@ -57,18 +60,93 @@ class _Record:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Self:
-        """Build a record from its JSON form, ignoring fields this version does not know."""
-        known = {f.name for f in dataclasses.fields(cls)}  # type: ignore[arg-type]
+        """Build a record from its JSON form, ignoring fields this version does not know.
+
+        Every known field is type-checked (ValueError), so a record read from an artifact or the
+        store holds what its annotations say, and a stored record cannot break a reader later.
+        """
+        if not isinstance(data, dict):
+            raise ValueError(f"{cls.__name__}: expected a JSON object, not {_short(data)}")
+        types = {f.name: f.type for f in dataclasses.fields(cls)}  # type: ignore[arg-type]
         kwargs = {}
         for key, value in data.items():
-            if key not in known:
+            if key not in types:
                 continue
-            if key in cls._nested and isinstance(value, dict):
-                value = cls._nested[key].from_dict(value)
+            if key in cls._nested:
+                if value is not None:
+                    if not isinstance(value, dict):
+                        raise ValueError(f"{cls.__name__}.{key} must be an object or null, "
+                                         f"not {_short(value)}")
+                    value = cls._nested[key].from_dict(value)
             elif key in cls._nested_lists:
-                value = [cls._nested_lists[key].from_dict(v) for v in value or []]
+                if not isinstance(value, list):
+                    raise ValueError(f"{cls.__name__}.{key} must be a list, not {_short(value)}")
+                value = [cls._nested_lists[key].from_dict(v) for v in value]
+            else:
+                _check(cls.__name__, key, types[key], value)
             kwargs[key] = value
         return cls(**kwargs)
+
+
+# Times are RFC 3339 in UTC to the second, as every writer here makes them, so that comparing the
+# strings orders them (store queries and the scorecard window do).
+TIME = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
+def is_time(value: Any) -> bool:
+    if not (isinstance(value, str) and TIME.fullmatch(value)):
+        return False
+    try:
+        dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def _short(value: Any) -> str:
+    text = repr(value)
+    return text if len(text) <= 60 else text[:57] + "..."
+
+
+def _count(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+
+
+def _number(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _metric(v: Any) -> bool:
+    return isinstance(v, dict) and all(
+        isinstance(k, str) and (isinstance(x, str) or _number(x)) for k, x in v.items())
+
+
+# Annotation (as written in the dataclasses below) -> (check, what it must be).
+_CHECKS: dict[str, tuple[Any, str]] = {
+    "str": (lambda v: isinstance(v, str), "a string"),
+    "bool": (lambda v: isinstance(v, bool), "true or false"),
+    "int": (_count, "a non-negative integer"),
+    "int | None": (lambda v: v is None or _count(v), "a non-negative integer or null"),
+    "float | None": (lambda v: v is None or (_number(v) and v >= 0),
+                     "a finite non-negative number or null"),
+    "dict[str, str]": (lambda v: isinstance(v, dict)
+                       and all(isinstance(x, str) for x in v.values()), "an object of strings"),
+    "dict[str, int]": (lambda v: isinstance(v, dict) and all(_count(x) for x in v.values()),
+                       "an object of non-negative integers"),
+    "list[str]": (lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v),
+                  "a list of strings"),
+    "dict[str, dict[str, Any]]": (lambda v: isinstance(v, dict) and all(map(_metric, v.values())),
+                                  "an object of {name: string or finite number} objects"),
+}
+
+
+def _check(record: str, key: str, annotation: str, value: Any) -> None:
+    check, want = _CHECKS[annotation]
+    if not check(value):
+        raise ValueError(f"{record}.{key} must be {want}, not {_short(value)}")
+    if key.endswith("_at") and value and not is_time(value):
+        raise ValueError(f"{record}.{key} must be an RFC 3339 UTC time like "
+                         f"2026-10-04T10:00:00Z, not {_short(value)}")
 
 
 def canonical_json(data: Any) -> str:

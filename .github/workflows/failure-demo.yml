@@ -73,7 +73,14 @@ jobs:
           echo "issues with the record's marker (not closed as duplicate): $issues"
           test "$issues" = "1"
           python -m pip install --quiet .
-          qqresults collect --store "$RUNNER_TEMP/store" --repo "$GITHUB_REPOSITORY"
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            # collect takes failure records only from default-branch runs, so a PR checks the
+            # record its own job wrote (the directory the failure action keeps).
+            mkdir -p "$RUNNER_TEMP/store" && cp -R "$RUNNER_TEMP/qq-failures" "$RUNNER_TEMP/store/failures"
+          else
+            qqresults collect --store "$RUNNER_TEMP/store" --repo "$GITHUB_REPOSITORY" \
+              --workflow .github/workflows/failure-demo.yml
+          fi
           records=$(qqresults failure list --dir "$RUNNER_TEMP/store/failures" | grep -c "$ID" || true)
           echo "records with id $ID: $records"
           test "$records" = "1"

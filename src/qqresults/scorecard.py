@@ -56,6 +56,7 @@ class Scorecard:
     until: str
     repos: dict[str, list[Metric]] = field(default_factory=dict)
     not_measured: list[Metric] = field(default_factory=list)
+    skipped: int = 0           # stored records that did not read and were left out
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -302,6 +303,7 @@ def compute(store: FileStore, since: dt.datetime, until: dt.datetime,
             failures_recorded(fails[repo]),
         ]
     card.not_measured = [Metric(n, t, waiting_on=w) for n, t, w in NOT_MEASURED]
+    card.skipped = len(store.skipped)
     return card
 
 
@@ -309,6 +311,8 @@ def to_markdown(card: Scorecard) -> str:
     lines = [f"# quirq infra scorecard v0", "",
              f"Window {card.since} to {card.until}, generated {card.generated_at} from the results store.",
              ""]
+    if card.skipped:
+        lines += [f"{card.skipped} stored record(s) could not be read and were left out.", ""]
     if not card.repos:
         lines += ["No runs in the store for this window.", ""]
     for repo, metrics in card.repos.items():
