@@ -1,22 +1,27 @@
 """Retry, then compare with base (plan §3 P5, flakes.toml [verdict]); V0-TST-03.
 
 Failed tests are rerun with the change (`retry_failed` times). Tests that still fail are run
-without the change, at the base commit, `retry_failed + 1` times. Only a failure that fails the
-same way without the change, on every one of those runs, does not fail it:
+without the change, at the base commit, `retry_failed + 1` times. Only an assertion failure
+that fails the same way without the change, on every one of those runs, does not fail it:
 
     passed on a retry                         FLAKY        does not fail the change
-    failed on retries, and on every base run  EXONERATED   does not fail the change
-      with the same status as with the change
+    FAIL on retries, and FAIL on every base   EXONERATED   does not fail the change
+      run
     failed on retries, passed on any base run UNEXPECTED   fails the change (flaky on base too)
-    a different status on base (e.g. CRASH    UNEXPECTED   no signal: the base side may lack
-      without the change, FAIL with it)                    files the change's checkout has
+    CRASH on any base run, whatever the       UNEXPECTED   no signal: the base side crashed, and
+      change did                                           its worktree may lack files the
+                                                           change's checkout has
+    CRASH with the change, FAIL on base       UNEXPECTED   no signal: a different failure
     no base result (a new test, no data)      UNEXPECTED   a missing signal never exonerates
 
 A single base run could exonerate a real regression: a test that is flaky on base happens to
 fail there, or crashes there because the base worktree lacks gitignored or generated files or
-submodules. So the base side runs as often as the change side did, and only the same failure
-every time counts. The first run at each base keeps its id (`<run>/base`, `<run>/base2`); the
-extra runs are `<run>/base-run2`, `<run>/base2-run2` and so on.
+submodules. So the base side runs as often as the change side did, and only an assertion failure
+(FAIL), every time, counts. A CRASH (a JUnit <error>: setup, a fixture, an import, a timeout) is
+never evidence on the base side, even when the change crashes too: a fixture that reads a
+generated file crashes on base because the worktree lacks the file, and would hide a change
+that makes the same fixture crash for a real reason. The first run at each base keeps its id
+(`<run>/base`, `<run>/base2`); the extra runs are `<run>/base-run2`, `<run>/base2-run2` and so on.
 
 The rerun command comes from the caller (the adapter or builder), so this module never names a
 test runner. It runs through the shell with:
@@ -63,7 +68,7 @@ from pathlib import Path
 
 from qqresults import bundle, junit, verdict
 from qqresults.errors import Error
-from qqresults.model import CaseVerdict, Result, Run, Verdict, VerdictStatus
+from qqresults.model import CaseVerdict, Result, Run, Status, Verdict, VerdictStatus
 from qqresults.policy import Policy
 
 Runner = Callable[[str, Path, dict[str, str]], int | None]   # None counts as 0
@@ -140,6 +145,10 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
         on_change = {r.status for b in [results] + [b.results for b in retries]
                      for r in b if r.test_id == t and not r.expected}
         on_base = {r.status for rs in per_base for r in rs}
+        # Only an assertion failure is evidence; any other failing status on base (a CRASH: a
+        # missing generated file, a fixture error) never exonerates, whatever the change did.
+        # It is read only after the pass check below, so it never holds PASS or SKIP.
+        crashed = sorted(on_base - {Status.FAIL.value})
         if not_retried:
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, f"not retried: {not_retried}"))
         elif passed_on:
@@ -147,15 +156,18 @@ def decide(run: Run, results: list[Result], retries: list[bundle.Bundle],
         elif any(rs and any(r.expected for r in rs) for rs in per_base):
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value,
                                      "fails with the change and passes without it"))
-        elif bases and not base_error and all(per_base) and (
-                len(on_change) != 1 or on_base != on_change):
+        elif bases and not base_error and crashed:
+            tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, (
+                f"no signal: the base side crashed ({'/'.join(crashed)} without the change), "
+                "and a crash there may come from the base worktree, not the code")))
+        elif bases and not base_error and all(per_base) and on_change != {Status.FAIL.value}:
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value, (
                 f"no signal: {'/'.join(sorted(on_base))} without the change but "
                 f"{'/'.join(sorted(on_change))} with it, so the base failure may not be this one")))
         elif bases and not base_error and all(per_base):
             at = ", ".join(dict.fromkeys(b.run.commit[:12] for b in bases))
             tests.append(CaseVerdict(t, VerdictStatus.EXONERATED.value, (
-                f"also fails without the change, at {at}: {next(iter(on_base))} "
+                f"also fails without the change, at {at}: {Status.FAIL.value} "
                 f"on all {len(bases)} base run(s)")))
         elif bases and not base_error:
             tests.append(CaseVerdict(t, VerdictStatus.UNEXPECTED.value,

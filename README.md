@@ -169,10 +169,12 @@ Failed tests are rerun with the change (`retry_failed` times, default 1, at most
 than `max_failures_to_retry` failures (default 20) the change is treated as broken and nothing is
 retried. Those that still fail
 are rerun at the base commit, in a git worktree, `retry_failed + 1` times. A test that passes on
-a retry is FLAKY, one that fails on every base run with the same status as with the change is
+a retry is FLAKY, one that fails an assertion (FAIL) on every retry and on every base run is
 EXONERATED, and every other failure is UNEXPECTED and fails the change: one that passes on any
-base run, one that fails differently there (a CRASH on base against a FAIL with the change is no
-signal), and one with no base result, such as a new test. The retry and
+base run, one that crashes on any base run (a JUnit error, such as a fixture that reads a
+generated file the base worktree lacks; a crash on base is no signal, even when the change
+crashes too), one that crashes with the change but fails an assertion on base, and one with no
+base result, such as a new test. The retry and
 base runs are stored too, linked to the run by `parent` and listed in the verdict's `inputs`.
 The base side runs in the same job, so the rerun command must test the code in its working
 directory. If the tests import installed code (an editable install, a build outside the tree),
