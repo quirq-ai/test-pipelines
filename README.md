@@ -121,7 +121,8 @@ and V0-TST-03's base run are the exceptions). For a pull request, whose run test
 commit that the API does not name, `commit` is not checked; instead the change's `head_sha` must
 be the run's head commit, and its `number` one of the run's `pull_requests` when GitHub lists any
 (it does for a same-repo PR). A gate run's `queued_at` must lie between 24 hours before GitHub
-created its workflow run and the run's finish, so one bad runner clock cannot dominate p90. A run may name another repo only as kind `other`, from a repo given
+created its workflow run and five minutes after the run's finish (the finish is the runner's
+clock), so one bad runner clock cannot dominate p90; without the run's creation time it is refused. A run may name another repo only as kind `other`, from a repo given
 with `--cross-repo` (the `scorecard` workflow passes `quirq-ai/perf`). Such a source can name any
 repo, so everything from it is held to more: `--workflow` must be given (its default globs never
 apply to it, and collecting it without one is an error), and only its push, schedule, dispatch

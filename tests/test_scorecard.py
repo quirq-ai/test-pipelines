@@ -254,6 +254,16 @@ def test_main_red_follows_the_push_chain_not_finish_times(tmp_path):
     assert m.value == 45.0 and m.detail == "3 post-submit commits"
 
 
+def test_a_red_streak_starts_at_its_earliest_red_not_its_first_in_push_order(tmp_path):
+    # c1 is red at 10:30, c2 (pushed on top of it) is red already at 10:00, c3 fixes it at 11:00.
+    st = FileStore(tmp_path)
+    _push(st, "p1", "c1", "c0", "2026-10-04T10:30:00Z", fail=True)
+    _push(st, "p2", "c2", "c1", "2026-10-04T10:00:00Z", fail=True)
+    _push(st, "p3", "c3", "c2", "2026-10-04T11:00:00Z")
+    m = metric(scorecard.compute(st, SINCE, UNTIL), "quirq-ai/xo-space", "Main-red time")
+    assert m.value == 60.0
+
+
 def test_without_a_push_chain_main_red_falls_back_to_finish_times_and_says_so(tmp_path):
     st = FileStore(tmp_path)
     _slow_green_on_an_older_commit(st, before=lambda b: None)   # older records: no base_commit

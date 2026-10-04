@@ -117,6 +117,7 @@ RFC3339 = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[
                      r"(Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])")
 # A gate run's queue entry is at most this long before GitHub created its workflow run.
 MAX_QUEUE_WAIT = dt.timedelta(hours=24)
+CLOCK_SKEW = dt.timedelta(minutes=5)    # the runner's clock (finished_at) against GitHub's
 
 
 def _rfc3339_utc(text: str) -> str:
@@ -372,18 +373,23 @@ def _check_bundle(origin: Origin, trust: Trust, b: bundle.Bundle) -> None:
 
 def _check_queued(origin: Origin, run: Run) -> None:
     """A queue entry lies between MAX_QUEUE_WAIT before GitHub created the workflow run and the
-    run's finish, so one runner's bad clock (or a 1970 default) cannot dominate gate timing."""
+    run's finish (with CLOCK_SKEW of slack, since the finish is the runner's clock), so one
+    runner's bad clock (or a 1970 default) cannot dominate gate timing. Without the creation time
+    there is no lower bound, so the queue time is refused rather than trusted."""
     def at(text: str) -> dt.datetime:
         return dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
 
+    if not origin.created_at:
+        raise GitHubAPIError(f"run {run.id}: has queued_at but workflow run {origin.run_id} has no "
+                             "creation time to check it against")
     queued = at(run.queued_at)
-    earliest = at(origin.created_at) - MAX_QUEUE_WAIT if origin.created_at else None
-    if (run.finished_at and queued > at(run.finished_at)) or (earliest and queued < earliest):
-        low = earliest.strftime("%Y-%m-%dT%H:%M:%SZ") if earliest else "any time"
-        raise GitHubAPIError(f"run {run.id}: queued_at {run.queued_at} is not between {low} "
-                             f"(24 h before workflow run {origin.run_id} was created) and its "
-                             f"finish {run.finished_at or 'unknown'}; check the runner's clock "
-                             "and quirq-ai/gate/timing")
+    earliest = at(origin.created_at) - MAX_QUEUE_WAIT
+    if (run.finished_at and queued > at(run.finished_at) + CLOCK_SKEW) or queued < earliest:
+        raise GitHubAPIError(f"run {run.id}: queued_at {run.queued_at} is not between "
+                             f"{earliest.strftime('%Y-%m-%dT%H:%M:%SZ')} (24 h before workflow run "
+                             f"{origin.run_id} was created) and its finish "
+                             f"{run.finished_at or 'unknown'}; check the runner's clock and "
+                             "quirq-ai/gate/timing")
 
 
 def _check_failure(origin: Origin, path: Path) -> None:

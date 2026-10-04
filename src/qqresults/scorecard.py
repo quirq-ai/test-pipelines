@@ -232,8 +232,8 @@ def main_red(runs: list[tuple[Run, Verdict]], since: dt.datetime, until: dt.date
     red_since = None
     total = 0.0
     for at, green in ordered:
-        if not green and red_since is None:
-            red_since = at
+        if not green:   # the streak starts at its earliest red, which may be a newer commit's
+            red_since = at if red_since is None else min(red_since, at)
         elif green and red_since is not None:
             # A newer commit's green may land before an older one's red: main was not red then.
             total += max((at - red_since).total_seconds(), 0)
