@@ -9,9 +9,10 @@ It closes only when culprit, fix and covering test are all linked (postmortem.to
     <dir>/failure.json                 the Failure, write-once
     <dir>/links/<time>-<field>.json    {"field", "value", "at"}, each write-once
 
-Free text (the summary, and any value that is not a commit, digest or URL) stays in the record.
-What goes public (the issue, and the copy uploaded as an artifact) is public_view(): structured
-fields only, plus the summary when the caller opted in with a public_summary mark.
+Free text (the summary, and any value public_value() does not allow) stays in the record. What
+goes public (the issue, and the copy uploaded as an artifact) is public_view(): structured fields
+only, plus the summary when the caller opted in with a public_summary mark. A security record
+goes public only as its id and security mark (public_copy), so the store learns the mark.
 
 The same layout is a failure bundle (kept by the backend, e.g. as a workflow artifact) and its
 place in the store (`<store>/failures/<dir>`).
@@ -33,10 +34,11 @@ from qqresults.model import Failure, FailureKind, canonical_json
 
 RECORD = "failure.json"
 LINKS = "links"
-LINK_FIELDS = Failure.LINKS + ("issue",)
 # Marks are links whose value is "true": security (re-reported or flagged later as security)
 # and public_summary (the caller opted in to showing the summary publicly).
 MARKS = ("security", "public_summary")
+VALUE_LINKS = Failure.LINKS + ("issue",)   # links that carry a value
+LINK_FIELDS = VALUE_LINKS + MARKS          # every field a link file may have
 
 # Words that make a failure look like a security issue. Such records are kept, but never mirrored
 # to a public issue. TODO(suraj): where security-looking failures go instead (a private advisory,
@@ -157,8 +159,8 @@ def open_record(f: Failure, parent: Path) -> tuple[State, bool]:
 
 
 def add_link(path: Path, field: str, value: str) -> None:
-    if field not in LINK_FIELDS + MARKS:
-        raise FailureError(f"cannot link {field!r}; links are {', '.join(LINK_FIELDS)}")
+    if field not in LINK_FIELDS:
+        raise FailureError(f"cannot link {field!r}; links are {', '.join(VALUE_LINKS)}")
     if not value:
         raise FailureError(f"link {field}: empty value")
     at = now()
@@ -211,43 +213,97 @@ def import_dir(src: Path, parent: Path) -> bool:
     return added
 
 
-# Values shown as they are: a commit, a digest, a URL, owner/repo@commit, owner/repo#n or the
-# action's own run id. Anything else may be free text, which could describe a vulnerability.
-_TOKEN = re.compile(r"[0-9a-f]{7,64}|\w+:[0-9a-f]+|https://[^\s`|<>]+|"
-                    r"[\w.-]+/[\w.-]+(@[0-9a-f]{7,64}|#\d+)|github/[\w.-]+/[\w.-]+/\d+/\d+/[\w.-]+",
-                    re.IGNORECASE)
+# What may be shown publicly. Anything else may be free text, which could describe a
+# vulnerability, so it is withheld: when unsure, withhold.
+#   - a commit (7 to 40 hex, or 64), or a digest: sha1:<40 hex>, sha256:<64 hex> (or the 16-hex
+#     digest public_view itself writes for a free-text subject), sha512:<128 hex>;
+#   - owner/repo@<commit> or owner/repo#<number>;
+#   - https://github.com/owner/repo/(pull|issues)/<n>, .../commit/<hex>, .../actions/runs/<n>
+#     (optionally /job/<n> or /attempts/<n>); no other URL;
+#   - the action's run id, github/owner/repo/<run>/<attempt>/<job>.
+# The owner must be the record's own owner (an org's repo names are made on purpose, not prose).
+_OWNER = r"[A-Za-z0-9][A-Za-z0-9-]{0,38}"
+_NAME_RE = r"[A-Za-z0-9._-]{1,100}"
+_COMMIT = r"[0-9a-f]{7,40}"
+_VALUE = re.compile(
+    rf"{_COMMIT}|[0-9a-f]{{64}}|sha1:[0-9a-f]{{40}}|sha256:(?:[0-9a-f]{{16}}|[0-9a-f]{{64}})|"
+    rf"sha512:[0-9a-f]{{128}}|"
+    rf"(?P<o1>{_OWNER})/{_NAME_RE}(?:@{_COMMIT}|#[0-9]{{1,10}})|"
+    rf"https://github\.com/(?P<o2>{_OWNER})/{_NAME_RE}/(?:(?:pull|issues)/[0-9]{{1,10}}|"
+    rf"commit/{_COMMIT}|actions/runs/[0-9]{{1,20}}(?:/(?:job|attempts)/[0-9]{{1,20}})?)|"
+    rf"github/(?P<o3>{_OWNER})/{_NAME_RE}/[0-9]{{1,20}}/[0-9]{{1,5}}/[A-Za-z0-9_.-]{{1,100}}")
+_REPO = re.compile(rf"{_OWNER}/{_NAME_RE}")
+# Stage, signal and channel are short names ("probe", "health", "stable"): no spaces.
+_LABEL = re.compile(r"[A-Za-z0-9_.-]{1,40}")
+LABEL_FIELDS = ("stage", "signal", "channel")
+VALUE_FIELDS = ("build_digest", "last_good", "first_bad", "run_id") + Failure.LINKS
 WITHHELD = "withheld"
 
 
-def _public(v: str) -> str:
-    return v if not v or _TOKEN.fullmatch(v) else WITHHELD
+def public_value(v: str, repo: str, field: str = "") -> str:
+    """v as it may be shown publicly for a record of repo: as it is, or WITHHELD."""
+    if not v:
+        return v
+    if field in LABEL_FIELDS:
+        return v if _LABEL.fullmatch(v) else WITHHELD
+    if field == "repo":
+        return v if _REPO.fullmatch(v) else WITHHELD
+    m = _VALUE.fullmatch(v)
+    if not m:
+        return WITHHELD
+    owner = next((o for o in m.group("o1", "o2", "o3") if o), None)
+    if owner is not None and not (_REPO.fullmatch(repo)
+                                  and owner.lower() == repo.split("/")[0].lower()):
+        return WITHHELD
+    return v
 
 
 def public_view(f: Failure, public_summary: bool = False) -> Failure:
-    """The failure as it may be shown publicly: free text is withheld, a free-text subject is
-    replaced by its digest, and the summary is dropped unless the caller opted in."""
-    subject = f.subject if _TOKEN.fullmatch(f.subject) else (
+    """The failure as it may be shown publicly: every free-text field is withheld unless it is a
+    short name (stage, signal, channel) or a commit, digest, own-org reference or GitHub URL; a
+    free-text subject is replaced by its digest, and the summary is dropped unless the caller
+    opted in. Kind, id and opened_at are not free text (an enum, a hash, a time)."""
+    subject = f.subject if public_value(f.subject, f.repo) == f.subject else (
         "sha256:" + hashlib.sha256(f.subject.encode()).hexdigest()[:16])
-    return dataclasses.replace(f, subject=subject, summary=f.summary if public_summary else "",
-                               run_id=_public(f.run_id),
-                               **{k: _public(getattr(f, k)) for k in Failure.LINKS})
+    return dataclasses.replace(
+        f, repo=public_value(f.repo, f.repo, "repo"), subject=subject,
+        summary=f.summary if public_summary else "",
+        **{k: public_value(getattr(f, k), f.repo, k) for k in LABEL_FIELDS + VALUE_FIELDS})
+
+
+def _public_link(link: dict, repo: str) -> dict:
+    field = link["field"]
+    value = "true" if field in MARKS else public_value(link["value"], repo, field)
+    return {**link, "value": value}
 
 
 def public_copy(state: State, parent: Path) -> Path:
-    """Write the public view of a record, with its links, as a bundle under parent to upload.
+    """Write what of a record may be uploaded publicly, as a bundle under parent.
 
-    Rewritten on every call (it is derived, not a record). Never call it for a security record.
+    Rewritten on every call (it is derived, not a record). A record that is not security-related
+    gets its public view, with its links passed through the same filter. A security record gets a
+    marks-only bundle instead: its id, kind, structured subject and run, and the security mark,
+    so the store learns the mark (and stops mirroring it) without learning anything else.
     """
     dest = parent / state.path.name
     shutil.rmtree(dest, ignore_errors=True)
     (dest / LINKS).mkdir(parents=True)
-    (dest / RECORD).write_text(public_view(state.record, state.public_summary).to_json() + "\n",
-                               encoding="utf-8")
+    if state.security:
+        mark(state.path, "security")   # a link file, so the store gets it like any other link
+        state = read(state.path)
+        pub = public_view(state.record)
+        record = Failure(id=pub.id, kind=pub.kind, repo=pub.repo, subject=pub.subject,
+                         opened_at=pub.opened_at, run_id=pub.run_id, security=True)
+        keep: tuple[str, ...] = ("security",)
+    else:
+        record = public_view(state.record, state.public_summary)
+        keep = LINK_FIELDS
+    (dest / RECORD).write_text(record.to_json() + "\n", encoding="utf-8")
     for p in sorted((state.path / LINKS).glob("*.json")):
         link = json.loads(p.read_text(encoding="utf-8"))
-        if link["field"] not in MARKS + ("issue",):
-            link["value"] = _public(link["value"])
-        (dest / LINKS / p.name).write_text(canonical_json(link) + "\n", encoding="utf-8")
+        if link["field"] in keep:
+            (dest / LINKS / p.name).write_text(
+                canonical_json(_public_link(link, state.record.repo)) + "\n", encoding="utf-8")
     return dest
 
 

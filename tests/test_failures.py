@@ -1,3 +1,4 @@
+import hashlib
 import io
 import json
 import zipfile
@@ -64,7 +65,8 @@ def test_a_held_canary_creates_exactly_one_record_and_one_issue(tmp_path):
     issue = gh.issues[0]
     assert issue["labels"] == ["qq-failure", "qq-failure:canary-held"]
     assert f"<!-- qq-failure: {state.record.id} -->" in issue["body"]
-    assert issue["title"] == "[qq canary-held] quirq-ai/xo-space: probe health sha256:abc"
+    digest = "sha256:" + hashlib.sha256(b"sha256:abc").hexdigest()[:16]   # not a full digest
+    assert issue["title"] == f"[qq canary-held] quirq-ai/xo-space: probe health {digest}"
     assert "Canary held" not in issue["body"]      # free text is never public by default
     # a fresh runner (empty scratch dir) still finds the issue by its marker
     other = tmp_path / "other"
@@ -317,4 +319,155 @@ def test_cli_upload_is_the_public_copy(tmp_path, monkeypatch):
     assert cli.main(["failure", "link", failures.failure_id("canary-held", "o/x", "sha256:9"),
                      "--dir", str(tmp_path / "f"), "--public-copy", str(pub),
                      "--github-output", str(out)]) == 0
-    assert "upload=\n" in out.read_text() and not list(pub.iterdir())
+    upload = dict(l.split("=", 1) for l in out.read_text().splitlines())["upload"]
+    marks = failures.read(Path(upload))      # the security record goes up as its mark only
+    assert marks.security and marks.record.security and "probe" not in marks.record.to_json()
+    assert set(marks.links) == {"security"} and [p.name for p in pub.iterdir()] == [Path(upload).name]
+
+
+PROSE = "admin page open to anonymous users"
+DIGEST = "sha256:" + "9" * 64
+
+
+@pytest.mark.parametrize("field", ["stage", "signal", "channel", "last_good", "first_bad",
+                                   "build_digest", "run_id", "operation"])
+def test_every_free_text_field_is_withheld_publicly(tmp_path, field):
+    state, _ = held(tmp_path / "rec", **{field: PROSE})
+    copy = failures.public_copy(state, tmp_path / "pub")
+    text = (failures.issue_title(state) + failures.issue_body(state)
+            + "".join(p.read_text() for p in copy.rglob("*.json")))
+    assert "anonymous" not in text and "`withheld`" in failures.issue_body(state)
+
+
+def test_short_names_and_structured_values_still_show(tmp_path):
+    sha = "c0ffee0" + "0" * 33
+    state, _ = held(tmp_path, channel="stable", last_good=sha, first_bad="c0ffee1",
+                    build_digest="sha256:" + "a" * 64,
+                    run_id="github/quirq-ai/xo-space/991/1/canary")
+    body = failures.issue_body(state)
+    for value in ("probe", "health", "stable", sha, "c0ffee1", "sha256:" + "a" * 64,
+                  "github/quirq-ai/xo-space/991/1/canary"):
+        assert f"`{value}`" in body
+    assert failures.issue_title(state).startswith("[qq canary-held] quirq-ai/xo-space: probe health ")
+
+
+@pytest.mark.parametrize("value", [
+    "admin_page_open_to_anonymous_users:0", "admin-panel/open-to-everyone#1",
+    "https://x.example/admin-panel-open-to-everyone", "quirq-ai/admin page@c0ffee0",
+    "https://github.com/quirq-ai/xo-space/issues/admin-panel-open", "sha256:0", "sha1:abc",
+    "https://github.com/other-org/xo-space/pull/3", "other-org/repo@c0ffee0",
+    "github/o/x/1/1/admin page open", "g" * 12])
+def test_prose_shaped_like_a_reference_is_withheld(tmp_path, value):
+    assert failures.public_value(value, "quirq-ai/xo-space") == failures.WITHHELD
+    f = failures.new("canary-held", "quirq-ai/xo-space", value)
+    assert failures.public_view(f).subject != value          # replaced by its digest
+    assert value not in failures.issue_title(failures.State(f, {}, tmp_path))
+    state, _ = held(tmp_path)
+    failures.add_link(state.path, "culprit", value)
+    failures.add_link(state.path, "issue", value)
+    state = failures.read(state.path)
+    assert value not in failures.issue_body(state) + failures.issue_title(state)
+    copy = failures.public_copy(state, tmp_path / "pub")
+    assert value not in "".join(p.read_text() for p in copy.rglob("*.json"))
+
+
+@pytest.mark.parametrize("value", [
+    "c0ffee0", "c0ffee0" + "0" * 33, "sha256:" + "a" * 64, "sha512:" + "b" * 128,
+    "sha1:" + "c" * 40, "quirq-ai/xo-space@c0ffee0", "quirq-ai/infra-config#12",
+    "https://github.com/quirq-ai/xo-space/pull/12",
+    "https://github.com/quirq-ai/xo-space/commit/c0ffee0",
+    "https://github.com/quirq-ai/xo-space/actions/runs/991/job/7"])
+def test_structured_references_are_shown(value):
+    assert failures.public_value(value, "quirq-ai/xo-space") == value
+
+
+def _zip(path):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for p in path.rglob("*"):
+            if p.is_file():
+                z.write(p, (Path(path.name) / p.relative_to(path)).as_posix())
+    return buf.getvalue()
+
+
+def _collect(st, artifacts):
+    """collect, against a fake API listing the given {artifact name: zip bytes}, all uploaded by
+    workflow run 1 of o/x (a scheduled run on main)."""
+    run = {"id": 1, "event": "schedule", "path": ".github/workflows/qq-canary.yml",
+           "run_attempt": 1, "head_branch": "main", "head_sha": "c1",
+           "head_repository": {"full_name": "o/x"}}
+
+    def get(url, token):
+        if "/actions/artifacts" in url:
+            return json.dumps({"artifacts": [
+                {"name": n, "id": i, "archive_download_url": n, "size_in_bytes": len(z),
+                 "workflow_run": {"id": 1}} for i, (n, z) in enumerate(artifacts.items())]}).encode()
+        if url.endswith("/actions/runs/1"):
+            return json.dumps(run).encode()
+        if url == f"{github.API}/repos/o/x":
+            return json.dumps({"default_branch": "main"}).encode()
+        return artifacts[url]
+    return github.collect("o/x", st, "", get=get)
+
+
+@pytest.mark.parametrize("same_job", [True, False])
+def test_a_withdrawn_issue_is_never_republished_from_the_store(tmp_path, monkeypatch, same_job):
+    # open (public copy uploaded) -> open --security (issue withdrawn) -> collect -> link --mirror
+    gh = FakeGitHub()
+    monkeypatch.setattr(github, "api", gh)
+    out = tmp_path / "out"
+    fid = failures.failure_id("canary-held", "o/x", DIGEST)
+
+    def open_(job, *extra):
+        out.write_text("")
+        code = cli.main(["failure", "open", "--dir", str(tmp_path / job / "f"), "--kind",
+                         "canary-held", "--repo", "o/x", "--subject", DIGEST, "--stage",
+                         "probe", "--summary", "probe failed", "--mirror", "o/x",
+                         "--run-id", f"github/o/x/1/1/{job}",
+                         "--public-copy", str(tmp_path / job / "pub"),
+                         "--github-output", str(out), *extra])
+        upload = dict(l.split("=", 1) for l in out.read_text().splitlines())["upload"]
+        return code, _zip(Path(upload))
+
+    code, first = open_("job1")
+    assert code == 0 and gh.issues[0]["state"] == "open"
+    code, second = open_("job1" if same_job else "job2", "--security")
+    assert code == 1 and gh.issues[0]["state"] == "closed"     # NeedsDeletion, upload still made
+    st = FileStore(tmp_path / "store")
+    assert _collect(st, {f"{failures.dirname(fid)}-1-1-a": first,
+                         f"{failures.dirname(fid)}-1-1-b": second})[2] == []
+    (stored,) = st.failures()
+    assert stored.security and "probe failed" not in stored.record.to_json()
+    assert cli.main(["failure", "link", fid, "--dir", str(tmp_path / "store" / "failures"),
+                     "--culprit", "c0ffee0", "--mirror", "o/x"]) == 1   # not republished
+    assert len(gh.issues) == 1 and gh.issues[0]["state"] == "closed"
+    assert gh.issues[0]["title"].startswith("[qq failure] withheld")
+    assert "probe" not in gh.issues[0]["body"]
+
+
+def test_a_marks_only_bundle_alone_makes_a_security_record(tmp_path):
+    st = FileStore(tmp_path / "store")
+    state, _ = held(tmp_path / "f", security=True, run_id="github/quirq-ai/xo-space/991/1/canary")
+    copy = failures.public_copy(state, tmp_path / "pub")
+    text = "".join(p.read_text() for p in copy.rglob("*.json"))
+    assert "probe" not in text and "Canary held" not in text and "health" not in text
+    marks = failures.read(copy)
+    assert marks.record.id == state.record.id and marks.record.run_id == state.record.run_id
+    assert set(marks.links) == {"security"} and marks.links["security"] == "true"
+    assert st.import_failure(copy) and st.failure(state.record.id).security
+    assert github.mirror_issue(st.failure(state.record.id), "o/x", "tok",
+                               call=FakeGitHub()) == ("", False)
+
+
+def test_cli_link_stores_only_public_values(tmp_path, capsys):
+    state, _ = held(tmp_path)
+    d = str(tmp_path)
+    assert cli.main(["failure", "link", state.record.id, "--dir", d, "--culprit", "c0ffee0",
+                     "--covering-test", PROSE]) == 0
+    st = failures.read(state.path)
+    assert st.links == {"culprit": "c0ffee0", "covering_test": "withheld"} and not st.security
+    assert "stored as 'withheld'" in capsys.readouterr().out
+    assert cli.main(["failure", "link", state.record.id, "--dir", d,
+                     "--fix", "patch for CVE-2026-1"]) == 0
+    st = failures.read(state.path)
+    assert st.security and "CVE" not in json.dumps(st.links)

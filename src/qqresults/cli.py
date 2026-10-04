@@ -29,7 +29,6 @@ import datetime as dt
 import json
 import os
 import re
-import shutil
 import sys
 from pathlib import Path
 
@@ -184,10 +183,10 @@ def _report(state: failures.State, created: bool | None, args) -> None:
     f = state.current
     upload = ""
     if args.public_copy:
-        if state.security:   # never uploaded; drop a copy made before it looked that way
-            shutil.rmtree(Path(args.public_copy) / state.path.name, ignore_errors=True)
-        else:
-            upload = str(failures.public_copy(state, Path(args.public_copy)))
+        # A security record is uploaded only as its id and security mark (replacing any public
+        # copy made before it looked that way), so the store learns the mark and never mirrors it.
+        upload = str(failures.public_copy(state, Path(args.public_copy)))
+        state = failures.read(state.path)
     verb = "" if created is None else ("opened " if created else "already open: ")
     print(f"{verb}{f.id} ({f.kind}, {f.repo}) at {state.path}")
     print("closed" if state.closed else "open; missing " + ", ".join(state.missing))
@@ -211,23 +210,36 @@ def cmd_failure(args) -> int:
         if args.public_summary:
             failures.mark(state.path, "public_summary")
             state = failures.read(state.path)
-        if args.mirror:
-            state = _mirror(state, args.mirror)
-        _report(state, created, args)
+        try:
+            if args.mirror:
+                state = _mirror(state, args.mirror)
+        finally:   # report (and write the upload) even when withdrawing an issue fails the step
+            _report(state, created, args)
     elif args.action == "link":
         path = parent / failures.dirname(args.id)
-        failures.read(path)  # fails clearly if the record is not here
-        for field in failures.LINK_FIELDS:
+        repo = failures.read(path).record.repo  # fails clearly if the record is not here
+        for field in failures.VALUE_LINKS:
             value = getattr(args, field, None)
-            if value:
-                failures.add_link(path, field, value)
+            if not value:
+                continue
+            # --dir is usually a store's failures/, which is public: only what the public filter
+            # allows is written there. Security-looking text still marks the record security.
+            if failures.SECURITY_WORDS.search(value):
+                failures.mark(path, "security")
+            shown = failures.public_value(value, repo, field)
+            if shown != value:
+                print(f"{field}: stored as {shown!r} (only commits, digests, own-org references "
+                      "and GitHub URLs are stored; keep other detail elsewhere)")
+            failures.add_link(path, field, shown)
         for name in failures.MARKS:
             if getattr(args, name):
                 failures.mark(path, name)
         state = failures.read(path)
-        if args.mirror:
-            state = _mirror(state, args.mirror)
-        _report(state, None, args)
+        try:
+            if args.mirror:
+                state = _mirror(state, args.mirror)
+        finally:
+            _report(state, None, args)
     else:
         for d in sorted(parent.iterdir()) if parent.is_dir() else []:
             if (d / failures.RECORD).is_file():
@@ -326,7 +338,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="show the summary in the public issue and upload (default: withheld)")
     fa.add_argument("--public-copy", metavar="DIR",
                     help="write the record's public view under DIR, for upload")
-    for name in failures.LINK_FIELDS:
+    for name in failures.VALUE_LINKS:
         if name != "operation":
             fa.add_argument("--" + name.replace("_", "-"), dest=name, help="link")
     fa.add_argument("--mirror", metavar="OWNER/NAME",

@@ -146,31 +146,46 @@ marker, so reporting the same event twice (a retried pipeline, a second runner) 
 record and one issue. What is learned later is added as link records, never by rewriting:
 
 ```sh
-qqresults failure link <id> --dir <store>/failures --culprit <change> --fix <change> \
-  --covering-test <test id> --mirror quirq-ai/xo-space    # updates the issue; closes it when complete
+qqresults failure link <id> --dir <store>/failures --culprit <owner/repo@sha> --fix <PR URL> \
+  --covering-test <commit or URL> --mirror quirq-ai/xo-space   # updates the issue; closes it when complete
 ```
+
+The store is the public results branch, so `failure link` writes only what may be public (below)
+into it; any other value is stored as `withheld` (and still marks the record security if it reads
+that way). Keep the detail where it belongs (the PR, the postmortem) and link to it.
 
 A record closes only when culprit, fix and covering test are linked (infra-config
 `postmortem.toml` `record_needs`), and the scorecard reports the share that are.
 
 Free text is never public without the opt-in. The issue title and body, and the failure artifact
-(which the results store collects onto the public results branch), carry structured fields only:
-kind, repo, the subject (or its digest when it is not a commit, digest or URL), stage, signal,
-channel, build digest, last good and first bad, and links that are commit SHAs, digests or URLs.
-The summary, and any other value that may be free text, stays in the local record and shows as
-`withheld` publicly. Pass `public-summary: "true"` to the action (or `--public-summary` to
-`qqresults failure open`/`link`) to show the summary; the artifact is a public copy written by
-`--public-copy`, never the record itself.
+(which the results store collects onto the public results branch), carry only:
+
+- kind, id and opening time, and repo when it is a plain `owner/name`;
+- stage, signal and channel when each is a short name without spaces (`[A-Za-z0-9_.-]{1,40}`,
+  so `probe`, `health`, `stable` show);
+- the subject, build digest, last good, first bad, run and every link (culprit, fix, covering
+  test, operation, failure class, postmortem, issue) only when it is a commit (7 to 40 hex), a
+  digest (`sha1:`, `sha256:` or `sha512:` with its full hex length), `owner/repo@<commit>` or
+  `owner/repo#<number>`, a `https://github.com/owner/repo/` pull, issue, commit or Actions run
+  URL, or the action's run id; references and URLs only when the owner is the record's own.
+
+Anything else, including any other URL, shows as `withheld` (a subject is replaced by its digest
+instead). The summary stays in the local record unless you pass `public-summary: "true"` to the
+action (or `--public-summary` to `qqresults failure open`/`link`); the artifact is a public copy
+written by `--public-copy`, never the record itself.
 
 The security classifier errs towards withholding: records flagged `security`, of kind `fuzz`, or
 matching words such as "overflow", "credential", "segfault", "crash" or "without login" are kept
-but never mirrored to a public issue, and their failure artifact is not uploaded, even with the
-opt-in. Reporting an existing record again with `security: "true"` or security-looking text marks
-it security too. If a record only looks that way after its issue was opened, the issue's text is
-hidden and it is closed, and the step fails asking a repo admin to delete it: editing an issue
-does not remove the old text from its history or from emails already sent. The public copy of the
-record may already be in an artifact by then. TODO(suraj): where those go instead. The `failure-demo` workflow
-proves the done-when against the real API with a planted held canary.
+but never mirrored to a public issue, even with the opt-in. Their artifact holds only the record
+id, kind, subject (or its digest), run and a `security` mark, so the store learns the mark and
+`failure link --mirror` on the store record never republishes it. Reporting an existing record
+again with `security: "true"` or security-looking text marks it security too. If a record only
+looks that way after its issue was opened, the issue's text is hidden and it is closed, and the
+step fails asking a repo admin to delete it: editing an issue does not remove the old text from
+its history or from emails already sent. The record's earlier public copy may already be in an
+artifact by then; this job's artifact is replaced by the marks-only one. TODO(suraj): where
+security records go instead. The `failure-demo` workflow proves the done-when against the real
+API with a planted held canary.
 
 ## v0 status
 
