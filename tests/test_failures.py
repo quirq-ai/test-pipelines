@@ -496,7 +496,7 @@ def test_name_slots_of_references_are_checked_for_security(tmp_path, value):
     assert failures.public_value(value, "quirq-ai/innernet") == failures.WITHHELD
     assert failures.reads_as_security(value)
     f = failures.new("canary-held", "quirq-ai/innernet", "sha256:" + "a" * 64, run_id=value)
-    assert f.security and value not in failures.issue_body(failures.State(f, {}, tmp_path))
+    assert value not in failures.issue_body(failures.State(f, {}, tmp_path))   # run id: org-chosen, not classified, but withheld
 
 
 @pytest.mark.parametrize("label,shown", [
@@ -574,3 +574,58 @@ def test_a_repeat_report_cannot_publish_another_reports_summary(tmp_path, monkey
     assert "report text" not in gh.issues[0]["body"]
     assert cli.main(base + ["--summary", "first report text", "--public-summary"]) == 0
     assert "first report text" in gh.issues[0]["body"]
+
+
+def _crafted(tmp_path, **overrides):
+    f = failures.new("canary-held", "o/x", "c0ffee0", stage="probe")
+    record = {**f.to_dict(), **overrides}
+    d = tmp_path / "crafted"
+    (d / "links").mkdir(parents=True)
+    (d / "failure.json").write_text(json.dumps(record))
+    return d
+
+
+@pytest.mark.parametrize("overrides", [
+    {"opened_at": "Heap overflow in parser lets attacker run code"},
+    {"schema": "unsigned updates accepted from mirror"},
+    {"id": "token leak in prod: AKIAEXAMPLE"},
+    {"kind": "whatever prose"},
+    {"subject": ["x"]}, {"stage": 3}, {"security": "no"}, {"repo": {"a": 1}},
+])
+def test_a_crafted_record_never_reaches_the_store(tmp_path, overrides):
+    st = FileStore(tmp_path / "store")
+    with pytest.raises(failures.FailureError):
+        st.import_failure(_crafted(tmp_path, **overrides))
+    assert not (tmp_path / "store" / "failures").exists() or not list(
+        (tmp_path / "store" / "failures").rglob("failure.json"))
+    assert st.import_failure(_crafted(tmp_path / "ok"))      # the same record, well-formed
+
+
+@pytest.mark.parametrize("text", [
+    "CrashLoopBackOff in canary pod", "panic: runtime error in handler",
+    "java.lang.OutOfMemoryError: Java heap space", "goroutine leak in worker",
+    "memory leak in cache", "TLS certificate expired", "escalated to on-call",
+    "rollout not verified within 10m", "config key not required", "kernel panic on boot"])
+def test_ordinary_failures_still_get_an_issue(text):
+    assert not failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
+
+
+@pytest.mark.parametrize("text", [
+    "remote code execution in uploader", "zip slip in extractor", "unsigned update accepted",
+    "SIGILL in decoder", "KASAN: slab-out-of-bounds", "XML external entity in importer",
+    "null pointer dereference in parser", "requests.get(url, verify=False)",
+    "privilege escalation via setuid", "credential leak in logs", "leaked the API key",
+    "certificate verification disabled", "signature not verified", "auth not required on /admin",
+    "heap buffer overflow", "o​pen redirect", "ｏpen redirect"])
+def test_security_phrases_and_disguised_text_are_caught(text):
+    assert failures.new("canary-held", "o/x", "c0ffee0", summary=text).security
+
+
+def test_an_org_chosen_repo_name_is_neither_classified_nor_withheld(tmp_path):
+    f = failures.new("canary-held", "quirq-ai/auth-gateway", "c0ffee0",
+                     run_id="github/quirq-ai/auth-gateway/1/1/canary")
+    assert not f.security
+    pub = failures.public_view(f)
+    assert pub.repo == "quirq-ai/auth-gateway" and pub.run_id == f.run_id
+    assert failures.public_value("quirq-ai/auth-gateway@c0ffee0", f.repo) == "quirq-ai/auth-gateway@c0ffee0"
+    assert failures.public_value("quirq-ai/token-store@c0ffee0", f.repo) == failures.WITHHELD

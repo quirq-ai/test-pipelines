@@ -5,16 +5,21 @@
 #     with:
 #       kind: canary-held
 #       subject: ${{ steps.build.outputs.digest }}   # what failed; the same subject is the same record
-#       summary: "Canary held: /health probe failed"    # kept in the record, not shown publicly
+#       summary: "Canary held: /health probe failed"    # visible in the run log; see below
 #       stage: probe
 #       signal: health
 #
 # The record id comes from kind, repo and subject, so reporting the same event twice opens one
 # record and one issue. Security-looking failures are never mirrored to a public issue, and their
 # artifact holds only the record id and its security mark. Otherwise the issue and the uploaded
-# artifact carry structured fields only; the summary and other free text appear only with
+# artifact carry structured fields only; the summary and other free text appear there only with
 # `public-summary: "true"`. Needs `issues: write` on the job's token. The artifact is what the
 # results store collects.
+#
+# Every input (and the step's environment) is printed in the run log, which is public on a public
+# repo. Never put security detail in `summary` or any other input there: write it to a file on the
+# runner and pass `summary-file` (its contents are not logged). TODO(suraj): where private
+# details live.
 name: qq failure record
 description: Open a quirq infra failure record and mirror it to one labelled issue.
 inputs:
@@ -24,7 +29,8 @@ inputs:
   subject:
     description: What failed (build digest, commit or run id). Same subject, same record.
     required: true
-  summary: {description: One line on what happened., required: false, default: ""}
+  summary: {description: One line on what happened. Printed in the (public) run log., required: false, default: ""}
+  summary-file: {description: A file on the runner holding the summary instead (not logged)., required: false, default: ""}
   channel: {description: Release channel., required: false, default: ""}
   build-digest: {description: The build's digest., required: false, default: ""}
   last-good: {description: Last good commit or build., required: false, default: ""}
@@ -56,6 +62,7 @@ runs:
         QQ_KIND: ${{ inputs.kind }}
         QQ_SUBJECT: ${{ inputs.subject }}
         QQ_SUMMARY: ${{ inputs.summary }}
+        QQ_SUMMARY_FILE: ${{ inputs.summary-file }}
         QQ_CHANNEL: ${{ inputs.channel }}
         QQ_BUILD_DIGEST: ${{ inputs.build-digest }}
         QQ_LAST_GOOD: ${{ inputs.last-good }}
@@ -86,14 +93,21 @@ runs:
           value="${!var}"
           [ -z "$value" ] || args+=("--${pair%%:*}" "$value")
         done
+        if [ -n "$QQ_SUMMARY_FILE" ]; then
+          [ -z "$QQ_SUMMARY" ] || { echo "::error::qq failure record: pass summary or summary-file, not both"; exit 1; }
+          summary=$(cat -- "$QQ_SUMMARY_FILE") || { echo "::error::qq failure record: cannot read summary-file"; exit 1; }
+          [ -z "$summary" ] || args+=("--summary=$summary")
+        fi
         [ "$QQ_SECURITY" != "true" ] || args+=(--security)
         [ "$QQ_PUBLIC_SUMMARY" != "true" ] || args+=(--public-summary)
         dir="$RUNNER_TEMP/qq-failures"   # shared by every call in the job, so a repeat finds the record
         # One artifact name per job (a matrix leg is a job too), so another job's upload of the
         # same record never overwrites this job's security mark; repeats in this job overwrite.
         job_file="$RUNNER_TEMP/qq-failures-job"
-        [ -s "$job_file" ] || python3 -c 'import secrets; print(secrets.token_hex(4))' > "$job_file"
-        echo "job=$(cat "$job_file")" >> "$GITHUB_OUTPUT"
+        [ -s "$job_file" ] || python3 -P -c 'import secrets; print(secrets.token_hex(4))' > "$job_file"
+        job=$(cat "$job_file")
+        [[ "$job" =~ ^[0-9a-f]{8}$ ]] || { echo "::error::qq failure record: bad job token in $job_file"; exit 1; }
+        echo "job=$job" >> "$GITHUB_OUTPUT"
         qqresults failure open --dir "$dir" --public-copy "$RUNNER_TEMP/qq-failures-public" "${args[@]}"
     # This repo's artifacts and results branch are public, so the record itself never leaves the
     # runner. The upload is its public copy (structured fields only), or for a security-looking

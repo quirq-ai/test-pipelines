@@ -26,11 +26,12 @@ import json
 import re
 import shutil
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 
 from qqresults.errors import Error
-from qqresults.model import Failure, FailureKind, canonical_json
+from qqresults.model import SCHEMA, Failure, FailureKind, canonical_json
 
 RECORD = "failure.json"
 LINKS = "links"
@@ -46,31 +47,50 @@ LINK_FIELDS = VALUE_LINKS + MARKS          # every field a link file may have
 # split, `_ - . / : # @` turned into spaces, lowercased, so "test_jwt_not_checked",
 # "stack-smashing" and "openRedirect" match like the plain phrases. Between the words of a phrase
 # any run of spaces (or none) matches.
+#
+# Words that are security terms in themselves match alone; words that are just as common in
+# ordinary failures (crash, panic, heap, leak, certificate, escalated, "not verified") match only
+# in a security phrase, so a CrashLoopBackOff, a Go panic, a Java heap OOM, a goroutine leak, an
+# expired certificate or a page escalated to on-call still gets its public issue.
+_SECRETS = r"(?:credential|token|secret|pass\s*word|passwd|api\s*key|ssh\s*key|private\s*key|key|pii|data)s?"
 _PHRASES = (
     r"secur", r"vulnerab", r"\bcve\b", r"exploit", r"over\s*flow", r"use\s*after\s*free",
     r"out\s*of\s*bounds", r"injection", r"credential", r"secret", r"token", r"pass\s*word",
     r"private\s*key", r"sandbox", r"privilege", r"privesc", r"\bxss\b", r"\brce\b", r"ssrf",
-    r"csrf", r"bypass", r"unauthori", r"unauthenticated", r"\bauth[nz]?\b", r"leak",
-    r"sanitizer", r"\b[amt]san\b", r"\bubsan\b", r"heap", r"traversal", r"\bdos\b", r"redos",
+    r"csrf", r"bypass", r"unauthori", r"unauthenticated", r"\bauth[nz]?\b",
+    rf"{_SECRETS}\s*(?:is\s*|was\s*|are\s*)?leak", rf"leak\w*\s*(?:the\s*|an?\s*)?{_SECRETS}",
+    r"sanitizer", r"\b[amkt]san\b", r"\bubsan\b", r"heap\s*(?:overflow|buffer|corruption|spray|"
+    r"over\s*read|under\s*(?:flow|read)|use\s*after)", r"traversal", r"\bdos\b", r"redos",
     r"denial\s*of\s*service", r"deserializ", r"memory\s*corruption", r"arbitrary\s*code",
-    r"\bsqli\b", r"sql\s*inject", r"api\s*key", r"ssh\s*key", r"passwd", r"attacker", r"\bpii\b",
-    r"\bghsa\b", r"double\s*free", r"certificate", r"open\s*redirect", r"malicious",
+    r"remote\s*code\s*exec", r"\bsqli\b", r"sql\s*inject", r"api\s*key", r"ssh\s*key", r"passwd",
+    r"attacker", r"\bpii\b", r"\bghsa\b", r"double\s*free", r"open\s*redirect", r"malicious",
     r"access\s*control", r"sensitive\s*data", r"segv", r"segfault", r"sigabrt", r"sigbus",
-    r"stack\s*smash", r"\buaf\b", r"\boob\b", r"over\s*read", r"\bxxe\b",
-    r"prototype\s*pollution", r"\bjwt", r"\bcors\b", r"toctou", r"crash", r"panic",
+    r"sigill", r"stack\s*smash", r"\buaf\b", r"\boob\b", r"over\s*read", r"\bxxe\b",
+    r"xml\s*external\s*entit", r"null\s*(?:pointer|ptr)\s*deref", r"zip\s*slip",
+    r"unsigned\s*(?:update|package|artifact|image|binar)", r"verify\s*=?\s*false",
+    r"insecure\s*skip\s*verify", r"prototype\s*pollution", r"\bjwt", r"\bcors\b", r"toctou",
     r"authentication", r"authorization", r"\bidor\b", r"\bssti\b", r"\bcwe\b", r"spoof",
     r"impersonat", r"smuggl", r"without\s*(?:login|auth|password|a\s*session)",
-    r"reachable\s*without", r"\badmin", r"anonymous", r"open\s*to\s*(?:every|any|all\b|the\s*public)",
-    r"(?:login|sign\s*in|auth\w*)\s*(?:is\s*)?not\s*(?:required|checked|enforced)",
-    r"\bnot\s*(?:required|checked|enforced|verified|validated)\b", r"world\s*(?:read|writ)",
-    r"\bexpos", r"\bpublicly\b", r"\bunsafe\b", r"\bescalat",
+    r"reachable\s*without", r"anonymous\s*(?:access|user|read|write|request)",
+    r"open\s*to\s*(?:every|any|anon|all\b|the\s*public)", r"world\s*(?:read|writ)",
+    r"publicly\s*(?:accessible|readable|writable|reachable|exposed)",
+    r"privilege\s*escalat|escalat\w*\s*(?:of\s*)?privilege",
+    r"(?:certificate|cert|tls|ssl|hostname)\s*(?:validation|verification|check\w*)\s*"
+    r"(?:is\s*|was\s*)?(?:disabled|skipped|off|bypass)",
+    r"(?:skip\w*|disabl\w*|no|without)\s*(?:tls|ssl|cert\w*|hostname)\s*verif",
+    r"(?:signature|sig|auth\w*|login|sign\s*in|token|cert\w*|password|session|csrf|origin|"
+    r"permission)s?\s*(?:is\s*|was\s*|are\s*)?(?:not|never|no\s*longer|un)\s*(?:required|checked|"
+    r"enforced|verified|validated)",
 )
 SECURITY_WORDS = re.compile("|".join(_PHRASES))
 
 
 def security_text(text: str) -> str:
-    """text normalised for SECURITY_WORDS: separators to spaces and lowercased, once as it is and
-    once with camelCase split ("openRedirect"; "ReDoS" and "SQLi" match the first way)."""
+    """text normalised for SECURITY_WORDS: NFKC, format characters (zero-width and the like)
+    removed, separators to spaces and lowercased, once as it is and once with camelCase split
+    ("openRedirect"; "ReDoS" and "SQLi" match the first way)."""
+    text = "".join(c for c in unicodedata.normalize("NFKC", text)
+                   if unicodedata.category(c) != "Cf")
     split = re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", " ", text)
     return " | ".join(re.sub(r"[\s_\-./:#@]+", " ", t).lower() for t in (text, split))
 
@@ -79,8 +99,8 @@ def reads_as_security(text: str) -> bool:
     return bool(SECURITY_WORDS.search(security_text(text)))
 
 
-# Errs towards withholding: "memory leak", "tokenizer" or an "admin" page match too, and only cost
-# a public issue. Fuzz findings are treated as security-looking by default (postmortem.toml
+# Errs towards withholding where the word is a security term ("tokenizer" matches too), at the
+# cost of a public issue. Fuzz findings are treated as security-looking by default (postmortem.toml
 # fuzz-security-crash).
 SECURITY_KINDS = {FailureKind.FUZZ.value}
 
@@ -108,12 +128,17 @@ def dirname(fid: str) -> str:
 
 
 def looks_security_related(f: Failure, links: dict[str, str] | None = None) -> bool:
-    """True when the record or any link reads like a security issue. Errs towards True."""
+    """True when the record or any link reads like a security issue. Errs towards True.
+
+    Only free text is classified: names the org chose (the repo, the run id with its job, the
+    issue URL) are not, so a repo called auth-gateway does not make all its failures security.
+    """
     if f.security or f.kind in SECURITY_KINDS or (links or {}).get("security"):
         return True
-    text = " ".join([v for v in f.to_dict().values() if isinstance(v, str)]
-                    + list((links or {}).values()))
-    return reads_as_security(text)
+    org_chosen = {"id", "kind", "repo", "run_id", "opened_at", "schema"}
+    text = [v for k, v in f.to_dict().items() if k not in org_chosen and isinstance(v, str)]
+    text += [str(v) for k, v in (links or {}).items() if k not in MARKS + ("issue",)]
+    return reads_as_security(" | ".join(text))
 
 
 def new(kind: str, repo: str, subject: str, **fields) -> Failure:
@@ -281,16 +306,19 @@ def public_value(v: str, repo: str, field: str = "") -> str:
     if field in LABEL_FIELDS:
         ok = _LABEL.fullmatch(v) and "test" not in v and not reads_as_security(v)
         return v if ok else WITHHELD
-    if field == "repo":
-        return v if _REPO.fullmatch(v) and not reads_as_security(v) else WITHHELD
+    if field == "repo":   # org-chosen: a plain owner/name shows as it is
+        return v if _REPO.fullmatch(v) else WITHHELD
     m = _VALUE.fullmatch(v)
     if not m:
         return WITHHELD
-    slots = [g for g in m.group("o1", "r1", "o2", "r2", "o3", "r3", "j3") if g]
-    if slots:
-        owner = slots[0]
+    owner = next((o for o in m.group("o1", "o2", "o3") if o), None)
+    if owner is not None:
         if not (_REPO.fullmatch(repo) and owner.lower() == repo.split("/")[0].lower()):
             return WITHHELD
+        name = next(r for r in m.group("r1", "r2", "r3") if r)
+        slots = [m.group("j3") or ""]
+        if f"{owner}/{name}".lower() != repo.lower():   # the record's own repo is org-chosen
+            slots.append(name)
         if reads_as_security(" ".join(slots)):
             return WITHHELD
     return v
@@ -320,7 +348,38 @@ def _write_link(dest: Path, field: str, value: str, at: str) -> None:
         body + "\n", encoding="utf-8")
 
 
+def check_shape(f: Failure) -> None:
+    """Raise FailureError unless the fields public_view passes through unfiltered (id, kind,
+    opened_at, schema, security) have the only shape this version writes, and every other field
+    is a string. A record from an artifact is untrusted input."""
+    def bad(what: str) -> FailureError:
+        return FailureError(f"failure record {str(f.id)[:40]!r}: {what}")
+
+    for field in dataclasses.fields(Failure):
+        value = getattr(f, field.name)
+        if field.name == "security":
+            if not isinstance(value, bool):
+                raise bad("security must be true or false")
+        elif not isinstance(value, str):
+            raise bad(f"{field.name} must be a string")
+    if f.kind not in {k.value for k in FailureKind}:
+        raise bad("unknown kind")
+    if not re.fullmatch(rf"{re.escape(f.kind)}-[0-9a-f]{{16}}", f.id):
+        raise bad("the id is not <kind>-<16 hex>")
+    if not _TIME.fullmatch(f.opened_at):
+        raise bad("opened_at is not a UTC time like 2026-01-02T03:04:05Z")
+    if f.schema != SCHEMA:
+        raise bad(f"schema is not {SCHEMA}")
+
+
 def public_bundle(src: Path, dest: Path) -> None:
+    try:
+        _public_bundle(src, dest)
+    except (TypeError, ValueError, KeyError, AttributeError) as e:   # untrusted input
+        raise FailureError(f"{src}: not a usable failure record: {e}") from None
+
+
+def _public_bundle(src: Path, dest: Path) -> None:
     """Write what of the record at src may be public as a bundle at dest (an empty directory).
 
     A record that is not security-related gets its public view, with its links passed through the
@@ -329,6 +388,7 @@ def public_bundle(src: Path, dest: Path) -> None:
     learns the mark (and stops mirroring) and nothing else.
     """
     state = read(src)
+    check_shape(state.record)
     repo = state.record.repo
     (dest / LINKS).mkdir(parents=True, exist_ok=True)
     if state.security:
