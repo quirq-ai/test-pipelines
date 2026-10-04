@@ -62,11 +62,11 @@ def test_planted_failure_that_also_fails_on_base_does_not_block(tmp_path, state)
     assert b.verdict.passed
     assert statuses(b) == {"t::planted": "EXONERATED"}
     assert b.verdict.tests[0].reason.startswith("also fails without the change")
-    assert b.verdict.inputs == ["local/o/x/r1/retry1", "local/o/x/r1/base"]
+    assert b.verdict.inputs == ["local/o/x/r1/retry1", "local/o/x/r1/base", "local/o/x/r1/base-run2"]
     # the retry and base runs are stored next to the change's run, each write-once
     names = sorted(p.name for p in (tmp_path / "out").iterdir())
     assert names == ["qq-results-local_o_x_r1", "qq-results-local_o_x_r1_base",
-                     "qq-results-local_o_x_r1_retry1"]
+                     "qq-results-local_o_x_r1_base-run2", "qq-results-local_o_x_r1_retry1"]
     base_bundle = bundle.read(tmp_path / "out" / "qq-results-local_o_x_r1_base")
     assert base_bundle.run.commit == base and base_bundle.run.role == "base"
     assert base_bundle.run.parent == "local/o/x/r1"
@@ -236,7 +236,8 @@ def test_a_failure_at_every_base_is_still_exonerated(tmp_path, state):
     repo, main = repo_with(tmp_path, "t::add fail\n", "t::add fail\n")
     path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
                         tmp_path / "out", rerun_cmd=CMD)
-    assert statuses(b) == {"t::add": "EXONERATED"} and len(b.verdict.inputs) == 2   # retry1, one base run
+    assert statuses(b) == {"t::add": "EXONERATED"}
+    assert [i.rsplit("/", 1)[1] for i in b.verdict.inputs] == ["retry1", "base", "base-run2"]  # one base
 
 
 def test_two_distinct_bases_both_run(tmp_path, state):
@@ -247,7 +248,8 @@ def test_two_distinct_bases_both_run(tmp_path, state):
     path, b = sink.sink(_queue_run(repo, tmp_path, main), ["results/*.xml"], repo,
                         tmp_path / "out", rerun_cmd=CMD)
     assert statuses(b) == {"t::add": "EXONERATED"}
-    assert [i.rsplit("/", 1)[1] for i in b.verdict.inputs] == ["retry1", "base", "base2"]
+    assert [i.rsplit("/", 1)[1] for i in b.verdict.inputs] == [
+        "retry1", "base", "base-run2", "base2", "base2-run2"]
     assert (tmp_path / "out" / "qq-results-local_o_x_r1_base2").is_dir()
 
 
@@ -257,3 +259,60 @@ def test_a_second_base_that_cannot_be_checked_out_never_exonerates(tmp_path, sta
                         tmp_path / "out", rerun_cmd=CMD)
     assert statuses(b) == {"t::add": "UNEXPECTED"} and "base comparison failed" in b.verdict.reason
     assert (tmp_path / "out" / "qq-results-local_o_x_r1_base").is_dir()   # the first base is kept
+
+
+# --- the base side runs as often as the change side (AUDIT-S1) --------------------------------
+
+def test_a_test_flaky_on_base_cannot_exonerate(tmp_path, state):
+    # The test fails on the first base run and passes on the second; one base run would have
+    # exonerated the change's real failure.
+    repo, base = repo_with(tmp_path, "t::ok pass\nt::wobbly flaky\n", "t::ok pass\nt::wobbly fail\n")
+    _, b = sink_it(repo, tmp_path, base)
+    assert statuses(b) == {"t::wobbly": "UNEXPECTED"} and not b.verdict.passed
+    assert "passes without it" in b.verdict.tests[0].reason
+
+
+def test_a_crash_on_base_is_no_signal_for_a_failure_with_the_change(tmp_path, state):
+    # e.g. the base worktree lacks a generated file, so the test cannot even start there
+    repo, base = repo_with(tmp_path, "t::p crash\n", "t::p fail\n")
+    _, b = sink_it(repo, tmp_path, base)
+    assert statuses(b) == {"t::p": "UNEXPECTED"} and not b.verdict.passed
+    assert b.verdict.tests[0].reason.startswith("no signal: CRASH without the change but FAIL with it")
+
+
+def test_the_same_crash_on_every_run_is_exonerated(tmp_path, state):
+    repo, base = repo_with(tmp_path, "t::p crash\n", "t::p crash\n")
+    _, b = sink_it(repo, tmp_path, base, Policy(retry_failed=2))
+    assert statuses(b) == {"t::p": "EXONERATED"} and b.verdict.passed
+    assert "CRASH on all 3 base run(s)" in b.verdict.tests[0].reason
+    assert b.verdict.inputs[2:] == ["local/o/x/r1/base", "local/o/x/r1/base-run2",
+                                    "local/o/x/r1/base-run3"]
+
+
+def test_without_retries_base_runs_once(tmp_path, state):
+    repo, base = repo_with(tmp_path, "t::p fail\n", "t::p fail\n")
+    _, b = sink_it(repo, tmp_path, base, Policy(retry_failed=0))
+    assert statuses(b) == {"t::p": "EXONERATED"} and b.verdict.inputs == ["local/o/x/r1/base"]
+
+
+def test_any_base_run_that_disagrees_blocks():
+    run = Run(id="r", repo="o/x", kind="presubmit", commit="c")
+    fail = [Result(run_id="r", test_id="t::a", status="FAIL", expected=False)]
+
+    def child(role, suffix, status):
+        c = retry.child_run(run, role, commit="b" * 40 if role == "base" else "")
+        c = Run.from_dict({**c.to_dict(), "id": f"{c.id}{suffix}"})
+        rs = [Result(run_id=c.id, test_id="t::a", status=status, expected=False)]
+        return bundle.Bundle(c, rs, retry.verdict.compute(c, rs))
+
+    def base(suffix, status):
+        return child("base", suffix, status)
+
+    retries = [child("retry", "1", "FAIL")]
+    same = retry.decide(run, fail, retries, [base("", "FAIL"), base("-run2", "FAIL")])
+    assert same.passed and same.tests[0].status == "EXONERATED"
+    mixed = retry.decide(run, fail, retries, [base("", "FAIL"), base("-run2", "CRASH")])
+    assert not mixed.passed and mixed.tests[0].reason.startswith("no signal: CRASH/FAIL without")
+    missing = retry.decide(run, fail, retries,
+                           [base("", "FAIL"), bundle.Bundle(base("-run2", "FAIL").run, [], same)])
+    assert not missing.passed and "no result without the change" in missing.tests[0].reason

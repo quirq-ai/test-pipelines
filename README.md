@@ -168,9 +168,11 @@ Give the sink a rerun command and let its verdict decide the check:
 Failed tests are rerun with the change (`retry_failed` times, default 1, at most 3); with more
 than `max_failures_to_retry` failures (default 20) the change is treated as broken and nothing is
 retried. Those that still fail
-are rerun at the base commit, in a git worktree. A test that passes on a retry is FLAKY, one
-that also fails on base is EXONERATED, and only a failure that passes without the change (or
-that has no base result, such as a new test) is UNEXPECTED and fails the change. The retry and
+are rerun at the base commit, in a git worktree, `retry_failed + 1` times. A test that passes on
+a retry is FLAKY, one that fails on every base run with the same status as with the change is
+EXONERATED, and every other failure is UNEXPECTED and fails the change: one that passes on any
+base run, one that fails differently there (a CRASH on base against a FAIL with the change is no
+signal), and one with no base result, such as a new test. The retry and
 base runs are stored too, linked to the run by `parent` and listed in the verdict's `inputs`.
 The base side runs in the same job, so the rerun command must test the code in its working
 directory. If the tests import installed code (an editable install, a build outside the tree),

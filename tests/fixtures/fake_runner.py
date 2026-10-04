@@ -1,7 +1,7 @@
 """A stand-in test runner for the retry tests: reads cases.txt in the current directory.
 
-Each line is `<test id> <pass|fail|flaky>`. A flaky test fails the first time it runs (per
-state file $FAKE_STATE) and passes after. Writes JUnit XML to $QQ_JUNIT_DIR, or to argv[1].
+Each line is `<test id> <pass|fail|crash|flaky>`. A crash is a JUnit <error>. A flaky test fails
+the first time it runs (per state file $FAKE_STATE) and passes after. Writes JUnit XML to $QQ_JUNIT_DIR, or to argv[1].
 """
 import os
 import sys
@@ -23,6 +23,7 @@ out = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(os.environ["QQ_JUNIT_DIR"
 out.parent.mkdir(parents=True, exist_ok=True)
 body = "".join(
     f"<testcase classname={quoteattr(t.split('::')[0])} name={quoteattr(t.split('::')[1])}>"
-    + ('<failure message="planted"/>' if o == "fail" else "") + "</testcase>" for t, o in cases)
+    + {"fail": '<failure message="planted"/>', "crash": '<error message="crashed"/>'}.get(o, "")
+    + "</testcase>" for t, o in cases)
 out.write_text(f'<testsuite name="fake">{body}</testsuite>')
-sys.exit(1 if any(o == "fail" for _, o in cases) else 0)
+sys.exit(1 if any(o in ("fail", "crash") for _, o in cases) else 0)
