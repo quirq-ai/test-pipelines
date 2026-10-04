@@ -161,3 +161,22 @@ def test_a_skip_on_retry_is_not_a_pass(tmp_path):
     cmd = f"printf '%s' '{skip_xml}' > \"$QQ_JUNIT_DIR/r.xml\""
     checked = retry.recheck(run, results, cmd, tmp_path, Policy(compare_with_base=False))
     assert not checked.verdict.passed and checked.verdict.tests[0].status == "UNEXPECTED"
+
+
+def test_a_failed_base_setup_never_exonerates(tmp_path, state):
+    repo, base = repo_with(tmp_path, "t::p fail\n", "t::p fail\n")   # would be exonerated
+    run = first_run(repo, tmp_path)
+    checked = retry.recheck(run, sink.junit.parse_file(repo / "results/junit.xml", run.id),
+                            CMD, repo, Policy(), base,
+                            setup='[ "$QQ_SIDE" = change ]')          # fails on the base side
+    assert not checked.verdict.passed and checked.base is None
+    assert "setup command failed on the base side" in checked.verdict.reason
+
+
+def test_a_failed_restore_fails_the_step(tmp_path, state):
+    repo, base = repo_with(tmp_path, "t::p fail\n", "t::p fail\n")
+    run = first_run(repo, tmp_path)
+    with pytest.raises(retry.RestoreError, match="change side"):
+        retry.recheck(run, sink.junit.parse_file(repo / "results/junit.xml", run.id),
+                      CMD, repo, Policy(), base, setup='[ "$QQ_SIDE" = base ]')
+    assert len(git(repo, "worktree", "list").splitlines()) == 1   # the base worktree is gone

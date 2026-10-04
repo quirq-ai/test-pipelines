@@ -107,7 +107,8 @@ The base side runs in the same job, so the rerun command must test the code in i
 directory. If the tests import installed code (an editable install, a build outside the tree),
 pass `setup`: it runs in the base worktree before the base tests and in the change's checkout
 afterwards, or the base side would test the change's code and wrongly exonerate it. If the base
-cannot be checked out, the retries are still stored and nothing is exonerated. In the merge
+cannot be checked out or `setup` fails there, the retries are still stored and nothing is
+exonerated; if `setup` fails to restore the change, the step fails. In the merge
 queue the base is the target branch, so failures from changes queued ahead count against this
 one, which errs towards blocking. The rerun command comes from the builder, so the core never names a runner;
 `$QQ_RETRY_TESTS` lists the failed test ids for a command that can select them. CI proves the

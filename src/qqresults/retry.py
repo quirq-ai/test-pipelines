@@ -23,7 +23,10 @@ worktree of the base commit, inside the same job and environment, so the command
 code in its working directory ($PWD). Anything installed into the environment (an editable
 install, a build output outside the tree) would otherwise make the base side test the change's
 code and wrongly exonerate it. For that, give a setup command: it runs in the base worktree
-before the base tests, and again in the change's checkout afterwards to restore it.
+before the base tests, and again in the change's checkout afterwards to restore it. Unlike the
+test command, its exit code counts: if it fails on the base side, nothing is exonerated (the base
+tests could be testing the change's code), and if the restore fails, the step fails, because the
+steps after it would test the wrong code.
 TODO(expert): run the base side hermetically once remote-build provides executors (V0-RBE-01).
 
 In the merge queue the base is the target branch, not the queue entry ahead of the change, so a
@@ -43,15 +46,26 @@ from qqresults.errors import Error
 from qqresults.model import CaseVerdict, Result, Run, Verdict, VerdictStatus
 from qqresults.policy import Policy
 
-Runner = Callable[[str, Path, dict[str, str]], None]
+Runner = Callable[[str, Path, dict[str, str]], int | None]   # None counts as 0
 
 
 class RetryError(Error):
     pass
 
 
-def shell(cmd: str, cwd: Path, env: dict[str, str]) -> None:
-    subprocess.run(cmd, shell=True, cwd=cwd, env={**os.environ, **env}, check=False)
+class RestoreError(Error):
+    """The setup command failed to put the change back; not caught, so the step fails."""
+
+
+def shell(cmd: str, cwd: Path, env: dict[str, str]) -> int:
+    return subprocess.run(cmd, shell=True, cwd=cwd, env={**os.environ, **env}, check=False).returncode
+
+
+def run_setup(setup: str, cwd: Path, side: str, runner: Runner = shell) -> None:
+    code = runner(setup, cwd, {"QQ_SIDE": side}) or 0
+    if code != 0:
+        raise (RetryError if side == "base" else RestoreError)(
+            f"setup command failed on the {side} side (exit {code})")
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -179,13 +193,13 @@ def run_on_base(run: Run, tests: list[str], cmd: str, cwd: Path, base_commit: st
         git(cwd, "worktree", "add", "--quiet", "--detach", str(tree), child.commit)
         try:
             if setup:
-                runner(setup, tree, {"QQ_SIDE": "base"})
+                run_setup(setup, tree, "base", runner)
             rs = run_tests(cmd, tree, tests, child, runner, side="base")
         finally:
-            if setup:   # put the change's environment back for the steps after this one
-                runner(setup, cwd, {"QQ_SIDE": "change"})
             subprocess.run(["git", "-C", str(cwd), "worktree", "remove", "--force", str(tree)],
                            capture_output=True)
             subprocess.run(["git", "-C", str(cwd), "worktree", "prune"], capture_output=True)
+            if setup:   # put the change's environment back for the steps after this one
+                run_setup(setup, cwd, "change", runner)
     child = Run.from_dict({**child.to_dict(), "results_found": bool(rs)})
     return bundle.Bundle(child, rs, verdict.compute(child, rs))
