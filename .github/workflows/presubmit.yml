@@ -8,6 +8,7 @@ on:
     branches: [main]
 permissions:
   contents: read
+  actions: read     # V0-TST-02 check below reads this repo's result artifacts
 jobs:
   presubmit:
     runs-on: ubuntu-24.04
@@ -29,3 +30,13 @@ jobs:
       - name: the stored bundle reads back
         if: always() && steps.sink.outputs.bundle != ''
         run: qqresults show "${{ steps.sink.outputs.bundle }}"
+      # V0-TST-02: the store and scorecard read real runs. Collects this repo's stored results
+      # through the GitHub API into a scratch store (the scorecard workflow keeps the real one).
+      - name: collect into a scratch store and compute the scorecard
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          qqresults collect --store "$RUNNER_TEMP/store" --repo "$GITHUB_REPOSITORY"
+          qqresults query runs --store "$RUNNER_TEMP/store" | tail -5
+          qqresults scorecard --store "$RUNNER_TEMP/store" --days 30 | tee -a "$GITHUB_STEP_SUMMARY"
+          test -n "$(qqresults query runs --store "$RUNNER_TEMP/store")"
