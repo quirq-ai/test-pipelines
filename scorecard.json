@@ -79,7 +79,7 @@
       }
     ]
   },
-  "generated_at": "2026-10-06T18:28:59Z",
+  "generated_at": "2026-10-06T21:21:46Z",
   "not_measured": [
     {
       "detail": "",
@@ -315,7 +315,7 @@
     ],
     "quirq-ai/test-pipelines": [
       {
-        "detail": "1 green run(s) without a queue time",
+        "detail": "2 green run(s) without a queue time",
         "extra": {},
         "name": "Gate time-to-green",
         "target": "P1: p50 under 15 min, p90 under 30 min",
@@ -333,7 +333,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 105 runs passed only on retry",
+        "detail": "0 of 108 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -342,7 +342,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "1 of 1 gate runs passed",
+        "detail": "2 of 2 gate runs passed",
         "extra": {},
         "name": "Gate runs passed",
         "target": "measured",
@@ -360,7 +360,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "77 of 77 presubmit runs passed",
+        "detail": "79 of 79 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
@@ -369,7 +369,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "of 106 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 109 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -465,7 +465,7 @@
       }
     ]
   },
-  "since": "2026-09-29T18:28:59Z",
+  "since": "2026-09-29T21:21:46Z",
   "skipped": 0,
-  "until": "2026-10-06T18:28:59Z"
+  "until": "2026-10-06T21:21:46Z"
 }
