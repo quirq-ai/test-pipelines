@@ -78,7 +78,7 @@ def test_long_messages_are_truncated():
 
 
 CAPTURED = b"""<testsuite name="s"><testcase name="a"><failure message="assert 1 == 2">Traceback
-""" + b"".join(b"  frame %d\n" % i for i in range(100)) + b"""</failure>
+""" + b"".join(b"  f%d\n" % i for i in range(100)) + b"""</failure>
     <system-out>TOKEN=hunter2 printed by the test</system-out>
     <system-err>password: hunter3</system-err></testcase></testsuite>"""
 
@@ -90,6 +90,19 @@ def test_by_default_only_the_head_of_the_message_is_kept():
     lines = r.message.split("\n")
     assert lines[0] == "assert 1 == 2" and lines[1] == "Traceback"
     assert len(lines) == junit.MAX_MESSAGE_LINES + 1 and lines[-1] == "... [82 lines truncated]"
+
+
+def test_a_long_message_keeps_only_its_first_200_characters():
+    # Alpha decision 2: 200 characters hold the assertion line, which tells failures apart.
+    text = "AssertionError: " + "x" * 500 + "\n" + "".join(f"  frame {i}\n" for i in range(30))
+    data = ('<testsuite name="s"><testcase name="a"><failure message="m">' + text
+            + '</failure></testcase></testsuite>').encode()
+    (r,) = junit.parse(data, "r")
+    head, marker = r.message.rsplit("\n", 1)
+    assert junit.MAX_MESSAGE == 200 and len(head) == 200
+    assert head.startswith("m\nAssertionError: xxx")
+    # counted from the whole message, including the lines cut first
+    assert marker == f"... [{len('m') + 1 + len(text.strip()) - 200} characters truncated]"
 
 
 def test_captured_output_pasted_into_a_message_is_cut_out():

@@ -24,7 +24,7 @@ from qqresults.model import Result, Status
 # message only, never the <testcase> element with its <system-out>/<system-err>, which can hold
 # anything a test printed (audit R3). The head of a message (the assertion and the first frames)
 # is what tells failures apart; the rest is in the job log, which can be deleted.
-MAX_MESSAGE = 1_000     # characters of a failure or skip message kept on the normalized Result
+MAX_MESSAGE = 200       # characters of a failure or skip message kept on the normalized Result
 MAX_MESSAGE_LINES = 20  # and lines of it, so a long traceback keeps only its head
 MAX_RAW = 16_000        # characters of the original <testcase> element kept as raw, opt-in only
 MAX_TYPE = 200          # characters of the `type` attribute of <failure>/<error> kept
@@ -156,6 +156,7 @@ def _cap_message(text: str) -> str:
     a runner that pastes them into the message text as markup still has them cut out here. The
     text is cut to a bounded size before that, so a huge message cannot make the search slow.
     """
+    original = len(text)
     lines = text.split("\n")
     cut = ""
     if len(lines) > MAX_MESSAGE_LINES:
@@ -165,7 +166,8 @@ def _cap_message(text: str) -> str:
     text = _CAPTURED.sub("[captured output removed]", text[:2 * MAX_MESSAGE])   # room for markup
     if total > 2 * MAX_MESSAGE or len(text) > MAX_MESSAGE:
         text = text[:MAX_MESSAGE]
-        cut = f"\n... [{max(total - len(text), 1)} characters truncated]"
+        # Counted from the whole message, so a cut by lines first is included.
+        cut = f"\n... [{max(original - len(text), 1)} characters truncated]"
     return text + cut
 
 
