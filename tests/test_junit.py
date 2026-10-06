@@ -78,7 +78,7 @@ def test_long_messages_are_truncated():
 
 
 CAPTURED = b"""<testsuite name="s"><testcase name="a"><failure message="assert 1 == 2">Traceback
-""" + b"".join(b"  frame %d\n" % i for i in range(100)) + b"""</failure>
+""" + b"".join(b"  f%d\n" % i for i in range(100)) + b"""</failure>
     <system-out>TOKEN=hunter2 printed by the test</system-out>
     <system-err>password: hunter3</system-err></testcase></testsuite>"""
 
@@ -92,6 +92,19 @@ def test_by_default_only_the_head_of_the_message_is_kept():
     assert len(lines) == junit.MAX_MESSAGE_LINES + 1 and lines[-1] == "... [82 lines truncated]"
 
 
+def test_a_long_message_keeps_only_its_first_200_characters():
+    # Alpha decision 2: 200 characters hold the assertion line, which tells failures apart.
+    text = "AssertionError: " + "x" * 500 + "\n" + "".join(f"  frame {i}\n" for i in range(30))
+    data = ('<testsuite name="s"><testcase name="a"><failure message="m">' + text
+            + '</failure></testcase></testsuite>').encode()
+    (r,) = junit.parse(data, "r")
+    head, marker = r.message.rsplit("\n", 1)
+    assert junit.MAX_MESSAGE == 200 and len(head) == 200
+    assert head.startswith("m\nAssertionError: xxx")
+    # counted from the whole message, including the lines cut first
+    assert marker == f"... [{len('m') + 1 + len(text.strip()) - 200} characters truncated]"
+
+
 def test_captured_output_pasted_into_a_message_is_cut_out():
     data = b"""<testsuite name="s"><testcase name="a"><failure message="boom">before
         &lt;system-out&gt;TOKEN=hunter2&lt;/system-out&gt; after
@@ -100,6 +113,14 @@ def test_captured_output_pasted_into_a_message_is_cut_out():
     assert "hunter2" not in r.message and "hunter3" not in r.message
     assert "before" in r.message and "after" in r.message
     assert r.message.count("[captured output removed]") == 2
+
+
+def test_an_unclosed_captured_tag_with_a_long_attribute_is_cut_out():
+    # review of #32: the 400-character window can end inside the tag, before its `>`
+    (r,) = junit.parse(b'<testsuite name="s"><testcase name="a"><failure message="boom">x'
+                       b' &lt;system-out a="' + b"SECRET" * 100 + b'"&gt;body</failure>'
+                       b'</testcase></testsuite>', "r")
+    assert "SECRET" not in r.message and "[captured output removed]" in r.message
 
 
 def test_keep_raw_keeps_the_element_capped():

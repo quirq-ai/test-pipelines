@@ -75,7 +75,7 @@ inputs:
       included (up to 16,000 characters), in every result. This publishes that text permanently:
       in the artifact and in the write-once results store, which cannot delete it later, even
       after the job log is gone. By default only structured fields and the head of each failure
-      message (20 lines, 1,000 characters) are kept.
+      message (20 lines, 200 characters) are kept.
     required: false
     default: "false"
   retention-days:
