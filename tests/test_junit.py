@@ -115,6 +115,14 @@ def test_captured_output_pasted_into_a_message_is_cut_out():
     assert r.message.count("[captured output removed]") == 2
 
 
+def test_an_unclosed_captured_tag_with_a_long_attribute_is_cut_out():
+    # review of #32: the 400-character window can end inside the tag, before its `>`
+    (r,) = junit.parse(b'<testsuite name="s"><testcase name="a"><failure message="boom">x'
+                       b' &lt;system-out a="' + b"SECRET" * 100 + b'"&gt;body</failure>'
+                       b'</testcase></testsuite>', "r")
+    assert "SECRET" not in r.message and "[captured output removed]" in r.message
+
+
 def test_keep_raw_keeps_the_element_capped():
     (r,) = junit.parse(CAPTURED, "r", keep_raw=True)
     assert r.raw.startswith("<testcase") and "<system-out>TOKEN=hunter2" in r.raw

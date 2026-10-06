@@ -29,7 +29,8 @@ MAX_MESSAGE_LINES = 20  # and lines of it, so a long traceback keeps only its he
 MAX_RAW = 16_000        # characters of the original <testcase> element kept as raw, opt-in only
 MAX_TYPE = 200          # characters of the `type` attribute of <failure>/<error> kept
 
-_CAPTURED = re.compile(r"<(system-out|system-err)\b[^>]*?(?:/>|>.*?(?:</\1\s*>|$))",
+# An opening tag cut off before its `>` (a long attribute) is removed to the end too.
+_CAPTURED = re.compile(r"<(system-out|system-err)\b[^>]*?(?:/>|>.*?(?:</\1\s*>|$)|$)",
                        re.DOTALL | re.IGNORECASE)
 
 
