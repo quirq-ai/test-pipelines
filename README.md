@@ -77,8 +77,8 @@ jest-junit and gotestsum ids stable across runs. Everything that knows GitHub is
 ## The results store and scorecard v0 (V0-TST-02)
 
 The store is a write-once tree of run bundles (`runs/<bundle>/`), kept on this repo's `results`
-branch. The `scorecard` workflow collects every `qq-results-*` artifact from the onboarded repos'
-runs into it, commits only new files, and writes `scorecard.md` and `scorecard.json` next to them
+branch. The `scorecard` workflow collects every `qq-results-*` artifact from xo-space's,
+innernet's and this repo's runs into it (website, onboarded since, is not collected yet), commits only new files, and writes `scorecard.md` and `scorecard.json` next to them
 (and to the run's summary). It also collects perf's runs (V0-PRF-01): their Run names the
 measured repo with kind `other`, so they are stored and queryable but never counted as that
 repo's presubmit, gate or post-submit runs. Importing a run that is already stored is a no-op;
@@ -207,9 +207,9 @@ failure record's links are additive: a later default-branch run can add links (a
 record) to a record an earlier run opened, and a record with a digested subject may carry any id,
 so a default-branch run of an allowed workflow can add to any record of its repo.
 
-The `results` branch is only ever added to, by the `scorecard` workflow.
-TODO(suraj): add a ruleset on the `results` branch that blocks force-pushes and deletion (only
-a repo admin can), so nothing can rewrite the stored history.
+The `results` branch is only ever added to, by the `scorecard` workflow. Gate's
+`qq-state-branches` ruleset (gate `settings/github.toml`, applied with the repo rulesets at gate
+`6610664`) blocks force-pushes and deletion of it, so nothing can rewrite the stored history.
 
 ## Retry, then compare with base (V0-TST-03)
 
@@ -303,13 +303,14 @@ tag can shadow a branch of the same name: with a branch or tag name, the run's b
 retries are still written, but nothing is compared ("not a full 40-hex commit id; not
 compared"), so its still-failing tests stay UNEXPECTED and `fail-on-verdict` fails. Without
 `rerun`, `base` is not used. TODO(expert): derive the base from the PR's
-commits, or read the queue's merge method from the branch rules, once the org's merge queue
-and merge method are decided (ORG-03). The rerun command comes from the builder, so the core never names a runner;
+commits, or read the queue's merge method from the branch rules (ORG-03 settled on squash merge
+queues for every repo, so a squash entry with entries ahead is not compared today). The rerun command comes from the builder, so the core never names a runner;
 `$QQ_RETRY_TESTS` lists the failed test ids for a command that can select them. CI proves the
 done-when with `tools/planted_demo.sh`: the planted failure is exonerated, and changes that break
 a test or the code under it still block, including a Rust crate (real `cargo test` JUnit, through
 `RUSTC_BOOTSTRAP=1 ... -Z unstable-options --format junit`) whose test panics on base and fails
-an `assert_eq!` with the change. "Through the gate" waits for the merge queue (V0-ORG-03).
+an `assert_eq!` with the change. No generated builder passes `rerun` yet (infra-config `generated/`), so the retry and base
+comparison run in this repo's CI, not yet in any product's gate.
 
 ## Failure records (V0-TST-04)
 
