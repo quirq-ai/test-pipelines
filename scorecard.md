@@ -1,6 +1,6 @@
 # quirq infra scorecard v0
 
-Window 2026-10-01T06:17:37Z to 2026-10-08T06:17:37Z, generated 2026-10-08T06:17:37Z from the results store.
+Window 2026-10-01T13:41:49Z to 2026-10-08T13:41:49Z, generated 2026-10-08T13:41:49Z from the results store.
 
 ## Collect incomplete
 
@@ -38,13 +38,13 @@ The collect before this card did not read everything, so the runs it missed are 
 
 | Metric | Value | Target | Detail |
 |---|---|---|---|
-| Gate time-to-green | 2.2 min | P1: p50 under 15 min, p90 under 30 min | p50 2.2 / p90 2.2 over 7 green gate runs; 1 red gate run(s) not counted; 1 green run(s) without a queue time |
-| Main-red time | 0 min/week | under 60 min/week | 17 post-submit commits |
-| Flake rate | 0 % | under 1% | 0 of 66 runs passed only on retry |
-| Gate runs passed | 88.9 % | measured | 8 of 9 gate runs passed |
-| Post-submit runs passed | 100 % | measured | 17 of 17 postsubmit runs passed |
-| Presubmit runs passed | 95 % | measured | 38 of 40 presubmit runs passed (1 cancelled or unknown not counted) |
-| Runs with no test results | 1 runs | 0 | of 67 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Gate time-to-green | 2.2 min | P1: p50 under 15 min, p90 under 30 min | p50 2.2 / p90 2.3 over 9 green gate runs; 1 red gate run(s) not counted; 1 green run(s) without a queue time |
+| Main-red time | 0 min/week | under 60 min/week | 19 post-submit commits |
+| Flake rate | 0 % | under 1% | 0 of 72 runs passed only on retry |
+| Gate runs passed | 90.9 % | measured | 10 of 11 gate runs passed |
+| Post-submit runs passed | 100 % | measured | 19 of 19 postsubmit runs passed |
+| Presubmit runs passed | 95.2 % | measured | 40 of 42 presubmit runs passed (1 cancelled or unknown not counted) |
+| Runs with no test results | 1 runs | 0 | of 73 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
 | Failures fully recorded | not measured | 100% | waiting on held canary, rollback, auto-revert or fuzz records in the window (none opened) |
 
 ## Not measured yet
