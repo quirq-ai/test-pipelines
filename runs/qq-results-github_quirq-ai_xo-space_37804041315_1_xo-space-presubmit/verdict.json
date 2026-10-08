@@ -1,0 +1,1 @@
+{"counts":{"EXPECTED":1878,"UNEXPECTED":1},"inputs":[],"passed":false,"reason":"1 unexpected test(s)","run_id":"github/quirq-ai/xo-space/37804041315/1/xo-space-presubmit","schema":"quirq-results/1","tests":[{"reason":"","status":"UNEXPECTED","test_id":"tests.test_space_wiki.SpaceWikiTests::test_installer_tells_you_how_to_come_back_and_never_nests"}]}
