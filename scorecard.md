@@ -1,6 +1,6 @@
 # quirq infra scorecard v0
 
-Window 2026-10-01T23:26:44Z to 2026-10-08T23:26:44Z, generated 2026-10-08T23:26:44Z from the results store.
+Window 2026-10-02T06:19:33Z to 2026-10-09T06:19:33Z, generated 2026-10-09T06:19:33Z from the results store.
 
 ## Collect incomplete
 
@@ -12,13 +12,13 @@ The collect before this card did not read everything, so the runs it missed are 
 
 | Metric | Value | Target | Detail |
 |---|---|---|---|
-| Gate time-to-green | 0.9 min | P1: p50 under 15 min, p90 under 30 min | p50 0.9 / p90 0.9 over 2 green gate runs; 1 green run(s) without a queue time |
-| Main-red time | 0 min/week | under 60 min/week | 6 post-submit commits |
-| Flake rate | 0 % | under 1% | 0 of 21 runs passed only on retry |
-| Gate runs passed | 100 % | measured | 3 of 3 gate runs passed |
-| Post-submit runs passed | 100 % | measured | 6 of 6 postsubmit runs passed (1 cancelled or unknown not counted) |
+| Gate time-to-green | 0.8 min | P1: p50 under 15 min, p90 under 30 min | p50 0.8 / p90 0.9 over 3 green gate runs; 1 green run(s) without a queue time |
+| Main-red time | 0 min/week | under 60 min/week | 7 post-submit commits |
+| Flake rate | 0 % | under 1% | 0 of 23 runs passed only on retry |
+| Gate runs passed | 100 % | measured | 4 of 4 gate runs passed |
+| Post-submit runs passed | 100 % | measured | 7 of 7 postsubmit runs passed (1 cancelled or unknown not counted) |
 | Presubmit runs passed | 91.7 % | measured | 11 of 12 presubmit runs passed (5 cancelled or unknown not counted) |
-| Runs with no test results | 7 runs | 0 | of 27 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Runs with no test results | 7 runs | 0 | of 29 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
 | Failures fully recorded | not measured | 100% | waiting on held canary, rollback, auto-revert or fuzz records in the window (none opened) |
 
 ## quirq-ai/test-pipelines
