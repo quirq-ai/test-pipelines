@@ -79,7 +79,7 @@
       }
     ]
   },
-  "generated_at": "2026-10-13T00:49:35Z",
+  "generated_at": "2026-10-13T14:23:23Z",
   "not_measured": [
     {
       "detail": "",
@@ -389,15 +389,15 @@
     ],
     "quirq-ai/xo-space": [
       {
-        "detail": "p50 2.2 / p90 2.5 over 14 green gate runs; 2 red gate run(s) not counted; 1 green run(s) without a queue time",
+        "detail": "p50 2.3 / p90 2.5 over 13 green gate runs; 2 red gate run(s) not counted; 1 green run(s) without a queue time",
         "extra": {
-          "p50": 2.2,
+          "p50": 2.3,
           "p90": 2.5
         },
         "name": "Gate time-to-green",
         "target": "P1: p50 under 15 min, p90 under 30 min",
         "unit": "min",
-        "value": 2.2,
+        "value": 2.3,
         "waiting_on": ""
       },
       {
@@ -410,7 +410,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 67 runs passed only on retry",
+        "detail": "0 of 62 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -419,12 +419,12 @@
         "waiting_on": ""
       },
       {
-        "detail": "15 of 17 gate runs passed",
+        "detail": "14 of 16 gate runs passed",
         "extra": {},
         "name": "Gate runs passed",
         "target": "measured",
         "unit": "%",
-        "value": 88.2,
+        "value": 87.5,
         "waiting_on": ""
       },
       {
@@ -437,16 +437,16 @@
         "waiting_on": ""
       },
       {
-        "detail": "32 of 35 presubmit runs passed",
+        "detail": "29 of 31 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
         "unit": "%",
-        "value": 91.4,
+        "value": 93.5,
         "waiting_on": ""
       },
       {
-        "detail": "of 67 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 62 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -465,7 +465,7 @@
       }
     ]
   },
-  "since": "2026-10-06T00:49:35Z",
+  "since": "2026-10-06T14:23:23Z",
   "skipped": 0,
-  "until": "2026-10-13T00:49:35Z"
+  "until": "2026-10-13T14:23:23Z"
 }
