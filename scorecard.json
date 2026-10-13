@@ -79,7 +79,7 @@
       }
     ]
   },
-  "generated_at": "2026-10-12T15:42:58Z",
+  "generated_at": "2026-10-13T00:49:35Z",
   "not_measured": [
     {
       "detail": "",
@@ -389,7 +389,7 @@
     ],
     "quirq-ai/xo-space": [
       {
-        "detail": "p50 2.2 / p90 2.5 over 14 green gate runs; 1 red gate run(s) not counted; 1 green run(s) without a queue time",
+        "detail": "p50 2.2 / p90 2.5 over 14 green gate runs; 2 red gate run(s) not counted; 1 green run(s) without a queue time",
         "extra": {
           "p50": 2.2,
           "p90": 2.5
@@ -419,12 +419,12 @@
         "waiting_on": ""
       },
       {
-        "detail": "15 of 16 gate runs passed",
+        "detail": "15 of 17 gate runs passed",
         "extra": {},
         "name": "Gate runs passed",
         "target": "measured",
         "unit": "%",
-        "value": 93.8,
+        "value": 88.2,
         "waiting_on": ""
       },
       {
@@ -437,12 +437,12 @@
         "waiting_on": ""
       },
       {
-        "detail": "33 of 36 presubmit runs passed",
+        "detail": "32 of 35 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
         "unit": "%",
-        "value": 91.7,
+        "value": 91.4,
         "waiting_on": ""
       },
       {
@@ -465,7 +465,7 @@
       }
     ]
   },
-  "since": "2026-10-05T15:42:58Z",
+  "since": "2026-10-06T00:49:35Z",
   "skipped": 0,
-  "until": "2026-10-12T15:42:58Z"
+  "until": "2026-10-13T00:49:35Z"
 }
