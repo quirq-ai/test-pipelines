@@ -1,6 +1,6 @@
 # quirq infra scorecard v0
 
-Window 2026-10-07T17:20:12Z to 2026-10-14T17:20:12Z, generated 2026-10-14T17:20:12Z from the results store.
+Window 2026-10-07T21:48:32Z to 2026-10-14T21:48:32Z, generated 2026-10-14T21:48:32Z from the results store.
 
 ## Collect incomplete
 
@@ -12,26 +12,26 @@ The collect before this card did not read everything, so the runs it missed are 
 
 | Metric | Value | Target | Detail |
 |---|---|---|---|
-| Gate time-to-green | 0.7 min | P1: p50 under 15 min, p90 under 30 min | p50 0.7 / p90 0.8 over 2 green gate runs; 2 green run(s) without a queue time |
-| Main-red time | 0 min/week | under 60 min/week | 4 post-submit commits |
-| Flake rate | 0 % | under 1% | 0 of 15 runs passed only on retry |
-| Gate runs passed | 100 % | measured | 4 of 4 gate runs passed |
-| Post-submit runs passed | 100 % | measured | 4 of 4 postsubmit runs passed |
+| Gate time-to-green | 0.7 min | P1: p50 under 15 min, p90 under 30 min | p50 0.7 / p90 0.8 over 2 green gate runs; 1 green run(s) without a queue time |
+| Main-red time | 0 min/week | under 60 min/week | 3 post-submit commits |
+| Flake rate | 0 % | under 1% | 0 of 13 runs passed only on retry |
+| Gate runs passed | 100 % | measured | 3 of 3 gate runs passed |
+| Post-submit runs passed | 100 % | measured | 3 of 3 postsubmit runs passed |
 | Presubmit runs passed | 100 % | measured | 7 of 7 presubmit runs passed |
-| Runs with no test results | 0 runs | 0 | of 15 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Runs with no test results | 0 runs | 0 | of 13 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
 | Failures fully recorded | not measured | 100% | waiting on held canary, rollback, auto-revert or fuzz records in the window (none opened) |
 
 ## quirq-ai/xo-space
 
 | Metric | Value | Target | Detail |
 |---|---|---|---|
-| Gate time-to-green | 2.4 min | P1: p50 under 15 min, p90 under 30 min | p50 2.4 / p90 2.5 over 8 green gate runs; 1 red gate run(s) not counted; 1 green run(s) without a queue time |
-| Main-red time | 0 min/week | under 60 min/week | 9 post-submit commits |
-| Flake rate | 0 % | under 1% | 0 of 36 runs passed only on retry |
-| Gate runs passed | 90 % | measured | 9 of 10 gate runs passed |
-| Post-submit runs passed | 100 % | measured | 9 of 9 postsubmit runs passed |
-| Presubmit runs passed | 94.1 % | measured | 16 of 17 presubmit runs passed |
-| Runs with no test results | 0 runs | 0 | of 36 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Gate time-to-green | 2.4 min | P1: p50 under 15 min, p90 under 30 min | p50 2.4 / p90 2.5 over 8 green gate runs; 1 red gate run(s) not counted |
+| Main-red time | 0 min/week | under 60 min/week | 8 post-submit commits |
+| Flake rate | 0 % | under 1% | 0 of 32 runs passed only on retry |
+| Gate runs passed | 88.9 % | measured | 8 of 9 gate runs passed |
+| Post-submit runs passed | 100 % | measured | 8 of 8 postsubmit runs passed |
+| Presubmit runs passed | 93.3 % | measured | 14 of 15 presubmit runs passed |
+| Runs with no test results | 0 runs | 0 | of 32 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
 | Failures fully recorded | not measured | 100% | waiting on held canary, rollback, auto-revert or fuzz records in the window (none opened) |
 
 ## Not measured yet

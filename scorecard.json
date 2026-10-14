@@ -79,7 +79,7 @@
       }
     ]
   },
-  "generated_at": "2026-10-14T17:20:12Z",
+  "generated_at": "2026-10-14T21:48:32Z",
   "not_measured": [
     {
       "detail": "",
@@ -238,7 +238,7 @@
   "repos": {
     "quirq-ai/innernet": [
       {
-        "detail": "p50 0.7 / p90 0.8 over 2 green gate runs; 2 green run(s) without a queue time",
+        "detail": "p50 0.7 / p90 0.8 over 2 green gate runs; 1 green run(s) without a queue time",
         "extra": {
           "p50": 0.7,
           "p90": 0.8
@@ -250,7 +250,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "4 post-submit commits",
+        "detail": "3 post-submit commits",
         "extra": {},
         "name": "Main-red time",
         "target": "under 60 min/week",
@@ -259,7 +259,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 15 runs passed only on retry",
+        "detail": "0 of 13 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -268,7 +268,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "4 of 4 gate runs passed",
+        "detail": "3 of 3 gate runs passed",
         "extra": {},
         "name": "Gate runs passed",
         "target": "measured",
@@ -277,7 +277,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "4 of 4 postsubmit runs passed",
+        "detail": "3 of 3 postsubmit runs passed",
         "extra": {},
         "name": "Post-submit runs passed",
         "target": "measured",
@@ -295,7 +295,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "of 15 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 13 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -315,7 +315,7 @@
     ],
     "quirq-ai/xo-space": [
       {
-        "detail": "p50 2.4 / p90 2.5 over 8 green gate runs; 1 red gate run(s) not counted; 1 green run(s) without a queue time",
+        "detail": "p50 2.4 / p90 2.5 over 8 green gate runs; 1 red gate run(s) not counted",
         "extra": {
           "p50": 2.4,
           "p90": 2.5
@@ -327,7 +327,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "9 post-submit commits",
+        "detail": "8 post-submit commits",
         "extra": {},
         "name": "Main-red time",
         "target": "under 60 min/week",
@@ -336,7 +336,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 36 runs passed only on retry",
+        "detail": "0 of 32 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -345,16 +345,16 @@
         "waiting_on": ""
       },
       {
-        "detail": "9 of 10 gate runs passed",
+        "detail": "8 of 9 gate runs passed",
         "extra": {},
         "name": "Gate runs passed",
         "target": "measured",
         "unit": "%",
-        "value": 90.0,
+        "value": 88.9,
         "waiting_on": ""
       },
       {
-        "detail": "9 of 9 postsubmit runs passed",
+        "detail": "8 of 8 postsubmit runs passed",
         "extra": {},
         "name": "Post-submit runs passed",
         "target": "measured",
@@ -363,16 +363,16 @@
         "waiting_on": ""
       },
       {
-        "detail": "16 of 17 presubmit runs passed",
+        "detail": "14 of 15 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
         "unit": "%",
-        "value": 94.1,
+        "value": 93.3,
         "waiting_on": ""
       },
       {
-        "detail": "of 36 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 32 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -391,7 +391,7 @@
       }
     ]
   },
-  "since": "2026-10-07T17:20:12Z",
+  "since": "2026-10-07T21:48:32Z",
   "skipped": 0,
-  "until": "2026-10-14T17:20:12Z"
+  "until": "2026-10-14T21:48:32Z"
 }
