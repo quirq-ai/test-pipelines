@@ -79,7 +79,7 @@
       }
     ]
   },
-  "generated_at": "2026-10-14T12:05:12Z",
+  "generated_at": "2026-10-14T17:20:12Z",
   "not_measured": [
     {
       "detail": "",
@@ -259,7 +259,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 17 runs passed only on retry",
+        "detail": "0 of 15 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -286,7 +286,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "9 of 9 presubmit runs passed",
+        "detail": "7 of 7 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
@@ -295,81 +295,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "of 17 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
-        "extra": {},
-        "name": "Runs with no test results",
-        "target": "0",
-        "unit": "runs",
-        "value": 0,
-        "waiting_on": ""
-      },
-      {
-        "detail": "",
-        "extra": {},
-        "name": "Failures fully recorded",
-        "target": "100%",
-        "unit": "%",
-        "value": null,
-        "waiting_on": "held canary, rollback, auto-revert or fuzz records in the window (none opened)"
-      }
-    ],
-    "quirq-ai/test-pipelines": [
-      {
-        "detail": "1 green run(s) without a queue time",
-        "extra": {},
-        "name": "Gate time-to-green",
-        "target": "P1: p50 under 15 min, p90 under 30 min",
-        "unit": "min",
-        "value": null,
-        "waiting_on": "V0-GAT-04 records queue-entry time on gate runs"
-      },
-      {
-        "detail": "1 post-submit commits",
-        "extra": {},
-        "name": "Main-red time",
-        "target": "under 60 min/week",
-        "unit": "min/week",
-        "value": 0.0,
-        "waiting_on": ""
-      },
-      {
-        "detail": "0 of 3 runs passed only on retry",
-        "extra": {},
-        "name": "Flake rate",
-        "target": "under 1%",
-        "unit": "%",
-        "value": 0.0,
-        "waiting_on": ""
-      },
-      {
-        "detail": "1 of 1 gate runs passed",
-        "extra": {},
-        "name": "Gate runs passed",
-        "target": "measured",
-        "unit": "%",
-        "value": 100.0,
-        "waiting_on": ""
-      },
-      {
-        "detail": "1 of 1 postsubmit runs passed",
-        "extra": {},
-        "name": "Post-submit runs passed",
-        "target": "measured",
-        "unit": "%",
-        "value": 100.0,
-        "waiting_on": ""
-      },
-      {
-        "detail": "1 of 1 presubmit runs passed",
-        "extra": {},
-        "name": "Presubmit runs passed",
-        "target": "measured",
-        "unit": "%",
-        "value": 100.0,
-        "waiting_on": ""
-      },
-      {
-        "detail": "of 3 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 15 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -389,19 +315,19 @@
     ],
     "quirq-ai/xo-space": [
       {
-        "detail": "p50 2.3 / p90 2.5 over 10 green gate runs; 1 red gate run(s) not counted; 1 green run(s) without a queue time",
+        "detail": "p50 2.4 / p90 2.5 over 8 green gate runs; 1 red gate run(s) not counted; 1 green run(s) without a queue time",
         "extra": {
-          "p50": 2.3,
+          "p50": 2.4,
           "p90": 2.5
         },
         "name": "Gate time-to-green",
         "target": "P1: p50 under 15 min, p90 under 30 min",
         "unit": "min",
-        "value": 2.3,
+        "value": 2.4,
         "waiting_on": ""
       },
       {
-        "detail": "11 post-submit commits",
+        "detail": "9 post-submit commits",
         "extra": {},
         "name": "Main-red time",
         "target": "under 60 min/week",
@@ -410,7 +336,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 43 runs passed only on retry",
+        "detail": "0 of 36 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -419,16 +345,16 @@
         "waiting_on": ""
       },
       {
-        "detail": "11 of 12 gate runs passed",
+        "detail": "9 of 10 gate runs passed",
         "extra": {},
         "name": "Gate runs passed",
         "target": "measured",
         "unit": "%",
-        "value": 91.7,
+        "value": 90.0,
         "waiting_on": ""
       },
       {
-        "detail": "11 of 11 postsubmit runs passed",
+        "detail": "9 of 9 postsubmit runs passed",
         "extra": {},
         "name": "Post-submit runs passed",
         "target": "measured",
@@ -437,16 +363,16 @@
         "waiting_on": ""
       },
       {
-        "detail": "19 of 20 presubmit runs passed",
+        "detail": "16 of 17 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
         "unit": "%",
-        "value": 95.0,
+        "value": 94.1,
         "waiting_on": ""
       },
       {
-        "detail": "of 43 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 36 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -465,7 +391,7 @@
       }
     ]
   },
-  "since": "2026-10-07T12:05:12Z",
+  "since": "2026-10-07T17:20:12Z",
   "skipped": 0,
-  "until": "2026-10-14T12:05:12Z"
+  "until": "2026-10-14T17:20:12Z"
 }
