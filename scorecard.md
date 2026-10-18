@@ -1,6 +1,6 @@
 # quirq infra scorecard v0
 
-Window 2026-10-11T11:21:24Z to 2026-10-18T11:21:24Z, generated 2026-10-18T11:21:24Z from the results store.
+Window 2026-10-11T15:58:59Z to 2026-10-18T15:58:59Z, generated 2026-10-18T15:59:00Z from the results store.
 
 ## Collect incomplete
 
@@ -14,11 +14,11 @@ The collect before this card did not read everything, so the runs it missed are 
 |---|---|---|---|
 | Gate time-to-green | not measured | P1: p50 under 15 min, p90 under 30 min | waiting on V0-GAT-04 records queue-entry time on gate runs |
 | Main-red time | not measured | under 60 min/week | waiting on post-submit runs that store results (the sink on each repo's main) |
-| Flake rate | 0 % | under 1% | 0 of 2 runs passed only on retry |
+| Flake rate | 0 % | under 1% | 0 of 5 runs passed only on retry |
 | Gate runs passed | not measured | measured | waiting on gate runs in the store |
 | Post-submit runs passed | not measured | measured | waiting on postsubmit runs in the store |
-| Presubmit runs passed | 100 % | measured | 2 of 2 presubmit runs passed |
-| Runs with no test results | 0 runs | 0 | of 2 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Presubmit runs passed | 100 % | measured | 5 of 5 presubmit runs passed |
+| Runs with no test results | 0 runs | 0 | of 5 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
 | Failures fully recorded | not measured | 100% | waiting on held canary, rollback, auto-revert or fuzz records in the window (none opened) |
 
 ## quirq-ai/xo-space
