@@ -79,7 +79,7 @@
       }
     ]
   },
-  "generated_at": "2026-10-19T13:35:49Z",
+  "generated_at": "2026-10-19T22:28:27Z",
   "not_measured": [
     {
       "detail": "",
@@ -312,7 +312,7 @@
     ],
     "quirq-ai/xo-space": [
       {
-        "detail": "p50 2.5 / p90 2.7 over 2 green gate runs; 1 red gate run(s) not counted",
+        "detail": "p50 2.5 / p90 2.7 over 2 green gate runs",
         "extra": {
           "p50": 2.5,
           "p90": 2.7
@@ -342,12 +342,12 @@
         "waiting_on": ""
       },
       {
-        "detail": "2 of 3 gate runs passed",
+        "detail": "2 of 2 gate runs passed",
         "extra": {},
         "name": "Gate runs passed",
         "target": "measured",
         "unit": "%",
-        "value": 66.7,
+        "value": 100.0,
         "waiting_on": ""
       },
       {
@@ -360,7 +360,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "5 of 5 presubmit runs passed",
+        "detail": "6 of 6 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
@@ -388,7 +388,7 @@
       }
     ]
   },
-  "since": "2026-10-12T13:35:49Z",
+  "since": "2026-10-12T22:28:27Z",
   "skipped": 0,
-  "until": "2026-10-19T13:35:49Z"
+  "until": "2026-10-19T22:28:27Z"
 }
