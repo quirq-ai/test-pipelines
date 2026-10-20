@@ -793,15 +793,19 @@ def test_a_failure_artifacts_links_must_be_dated_after_its_opening(tmp_path):
 
 
 def test_an_artifact_of_link_bundles_is_imported_whole_or_not_at_all(tmp_path):
+    import datetime as dt
     from qqresults import failures
-    art = _failure_zip(tmp_path / "f")
+    # A fixed clock: _collect_zips lists its artifacts as uploaded on 2026-10-04, and a link
+    # bundle older than LINK_BUNDLE_WAIT (7 days) is refused for good, not retried.
+    now = dt.datetime(2026, 10, 5, 10, 0, 0, tzinfo=dt.UTC)
+    art = _failure_zip(tmp_path / "f", opened_at="2026-10-04T10:00:00Z")
     fid = failures.failure_id("canary-held", "o/x", "planted")
     missing = failures.failure_id("canary-held", "o/x", "never reported")
     st = FileStore(tmp_path / "store")
-    assert _collect_zips(st, "o/x", [(*art, 7)], [_demo_run()], DEMO)[2] == []
-    both = _link_zip(fid, bundles=[(fid, (("culprit", "c0ffee1"),)),
-                                   (missing, (("culprit", "c0ffee2"),))])
-    new, _, errors = _collect_zips(st, "o/x", [(*both, 8)], [_demo_run(8)], DEMO)
+    assert _collect_zips(st, "o/x", [(*art, 7)], [_demo_run()], DEMO, now=now)[2] == []
+    both = _link_zip(fid, at="2026-10-04T10:00:00Z", bundles=[(fid, (("culprit", "c0ffee1"),)),
+                                                              (missing, (("culprit", "c0ffee2"),))])
+    new, _, errors = _collect_zips(st, "o/x", [(*both, 8)], [_demo_run(8)], DEMO, now=now)
     assert new == 0 and "not in the store yet" in errors[0]
     assert st.failure(fid).links == {}          # the first bundle was not imported either
 
