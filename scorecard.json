@@ -79,7 +79,7 @@
       }
     ]
   },
-  "generated_at": "2026-10-20T21:43:35Z",
+  "generated_at": "2026-10-20T23:22:48Z",
   "not_measured": [
     {
       "detail": "",
@@ -310,6 +310,80 @@
         "waiting_on": "held canary, rollback, auto-revert or fuzz records in the window (none opened)"
       }
     ],
+    "quirq-ai/test-pipelines": [
+      {
+        "detail": "1 green run(s) without a queue time",
+        "extra": {},
+        "name": "Gate time-to-green",
+        "target": "P1: p50 under 15 min, p90 under 30 min",
+        "unit": "min",
+        "value": null,
+        "waiting_on": "V0-GAT-04 records queue-entry time on gate runs"
+      },
+      {
+        "detail": "",
+        "extra": {},
+        "name": "Main-red time",
+        "target": "under 60 min/week",
+        "unit": "min/week",
+        "value": null,
+        "waiting_on": "post-submit runs that store results (the sink on each repo's main)"
+      },
+      {
+        "detail": "0 of 2 runs passed only on retry",
+        "extra": {},
+        "name": "Flake rate",
+        "target": "under 1%",
+        "unit": "%",
+        "value": 0.0,
+        "waiting_on": ""
+      },
+      {
+        "detail": "1 of 1 gate runs passed",
+        "extra": {},
+        "name": "Gate runs passed",
+        "target": "measured",
+        "unit": "%",
+        "value": 100.0,
+        "waiting_on": ""
+      },
+      {
+        "detail": "",
+        "extra": {},
+        "name": "Post-submit runs passed",
+        "target": "measured",
+        "unit": "%",
+        "value": null,
+        "waiting_on": "postsubmit runs in the store"
+      },
+      {
+        "detail": "1 of 1 presubmit runs passed",
+        "extra": {},
+        "name": "Presubmit runs passed",
+        "target": "measured",
+        "unit": "%",
+        "value": 100.0,
+        "waiting_on": ""
+      },
+      {
+        "detail": "of 2 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "extra": {},
+        "name": "Runs with no test results",
+        "target": "0",
+        "unit": "runs",
+        "value": 0,
+        "waiting_on": ""
+      },
+      {
+        "detail": "",
+        "extra": {},
+        "name": "Failures fully recorded",
+        "target": "100%",
+        "unit": "%",
+        "value": null,
+        "waiting_on": "held canary, rollback, auto-revert or fuzz records in the window (none opened)"
+      }
+    ],
     "quirq-ai/xo-space": [
       {
         "detail": "p50 2.7 / p90 2.7 over 1 green gate run",
@@ -388,7 +462,7 @@
       }
     ]
   },
-  "since": "2026-10-13T21:43:35Z",
+  "since": "2026-10-13T23:22:47Z",
   "skipped": 0,
-  "until": "2026-10-20T21:43:35Z"
+  "until": "2026-10-20T23:22:47Z"
 }
