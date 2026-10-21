@@ -42,6 +42,18 @@ def test_no_workflow_restores_a_cache():
         text = p.read_text()
         assert "actions/cache" not in text, p.name
         assert not re.search(r"^\s+cache(-dependency-path)?:", text, re.M), p.name
+        # setup-node v5+ restores an npm cache without a cache input when the workspace's
+        # package.json names npm, unless told not to.
+        for step in re.findall(r"uses: actions/setup-node@.*?(?=\n      - |\Z)", text, re.S):
+            assert "package-manager-cache: false" in step, p.name
+
+
+def test_the_reset_keeps_only_what_qq_sync_made():
+    # qq's path leaves .qq/venv, .qq/out and recipes' own files; a kind command that walks the
+    # tree would read them, so only qq sync's links and record survive the reset.
+    text = COMPAT.read_text()
+    assert "git clean -ffdxq -e /.qq/toolchains -e /.qq/deps -e /.qq/sync.json\n" in text
+    assert "-e /.qq/\n" not in text
 
 
 def test_compat_workflows_pin_actions_and_keep_no_credentials():

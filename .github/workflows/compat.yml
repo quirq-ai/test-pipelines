@@ -115,6 +115,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: ${{ needs.plan.outputs.node }}
+          package-manager-cache: false   # v5+ restores an npm cache on its own otherwise
       - name: set up qq
         run: |
           echo "$TOOLS/qq/bin" >> "$GITHUB_PATH"
@@ -169,13 +170,13 @@ jobs:
       - name: "qq: test failed"
         if: steps.qq.outputs.result == 'test failed'
         run: "true"
-      # Back to the checked commit, keeping what qq sync fetched, so the kind commands do not
-      # reuse what qq's path built.
+      # Back to the checked commit, keeping only what qq sync made (its links and record), so the
+      # kind commands do not reuse what qq's path built (.qq/venv, .qq/out and the like).
       - name: reset the checkout
         working-directory: repo
         run: |
           git reset --quiet --hard
-          git clean -ffdxq -e /.qq/
+          git clean -ffdxq -e /.qq/toolchains -e /.qq/deps -e /.qq/sync.json
       - name: kind commands
         working-directory: repo
         run: |

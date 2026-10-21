@@ -399,6 +399,17 @@ def _check_bundle(origin: Origin, trust: Trust, b: bundle.Bundle) -> None:
         where = "" if origin.on_default else " off the default branch"
         raise GitHubAPIError(f"run {run.id} claims kind {_short(run.kind)}, which a "
                              f"{origin.event or 'unknown'} run{where} cannot produce")
+    # A role is the bundle's own claim. The compatibility check's verdicts (README, "The
+    # compatibility check") are taken only from compat-publish.yml's workflow_run runs, which
+    # write nothing else; otherwise any trusted uploader could fill a repo's Compatibility row
+    # (perf's, any repo's) and take its own run out of the per-repo metrics.
+    from qqresults import compat
+    publisher = (origin.event == "workflow_run" and origin.repo in trust.cross_repo
+                 and origin.path == compat.PUBLISH_WORKFLOW)
+    if (run.role in compat.ROLES) != publisher:
+        raise GitHubAPIError(f"run {run.id}: role {_short(run.role)} from {origin.path}; the "
+                             f"compatibility roles ({', '.join(compat.ROLES)}) come only from "
+                             f"{compat.PUBLISH_WORKFLOW}, which writes no other")
     if cross:
         pass   # perf and compat name the checked repo's commit, which this run's head cannot vouch for
     elif origin.event == "pull_request":

@@ -176,7 +176,10 @@ branch, check that run's event and head repository, and never republish that run
 unchecked (perf-publish.yml reads perf's validated `perf-data` branch instead). Since such an
 uploader's bundles describe the run that triggered it, a bundle it writes about its own repo is
 held to the same rules as one naming another repo: kind `other` only, and its commit is not
-checked against the uploader's head (the compatibility check's verdict on this repo is one). Failure records are taken only from
+checked against the uploader's head (the compatibility check's verdict on this repo is one).
+A bundle's role is its own claim, so the compatibility roles (`compat`, `compat-qq`) are taken
+only from `compat-publish.yml`'s workflow_run runs of a `--cross-repo` source, whose bundles
+must each carry one; any other bundle claiming them is refused. Failure records are taken only from
 push, schedule or dispatch runs on the default branch; the record must be for the repo, its id
 must be the one its kind, repo and subject give (unless the subject is the public
 `sha256:<16 hex>` digest of a free-text one, which cannot be checked against the id; the id must
@@ -494,7 +497,10 @@ is a gap in qq, not in the repo, so the card shows it in a column of its own.
   the head the plan resolved, installs qq the way a contributor does (`bin/qq` from that qq
   commit, with the qqsync and qqrecipes it pins), and runs the steps above. Kind names and
   commands come from infra-config through `qqcfg get kinds`; the workflow names none
-  (`qqresults compat commands` runs them).
+  (`qqresults compat commands` runs them). qq runs the qq a repo's manifest pins (`[qq]` in
+  `infra/repo.toml`) when that is not the launcher's own version, as it does for a contributor;
+  the bundles name the launcher's commit as `executor`. Before the kind commands the checkout is
+  reset, keeping only what `qq sync` made (`.qq/toolchains`, `.qq/deps`, `.qq/sync.json`).
 - Those jobs run other repos' code, so they hold only `contents: read`, no secret, no persisted
   credentials and no cache, and at most four run at once (the org's concurrent jobs are shared).
   Nothing they upload is trusted. `.github/workflows/compat-publish.yml` runs no repo code: after
@@ -509,8 +515,9 @@ is a gap in qq, not in the repo, so the card shows it in a column of its own.
 - `scorecard.yml` collects those in a pass of its own (`--cross-repo quirq-ai/test-pipelines
   --workflow .github/workflows/compat-publish.yml --artifact-prefix qq-compat-`), so the other
   passes never list them and this pass lists nothing else. They never count toward a repo's
-  metrics: the card shows each repo's latest verdict in a Compatibility table, with the steps
-  that failed and qq's path, and names the repos left out and why.
+  metrics: the card shows the latest check's verdicts in a Compatibility table, with when it
+  finished, the steps that failed and qq's path, and names the repos left out and why. A repo
+  with an older verdict that the latest check did not check is listed apart and not counted.
 - monitoring leaves exactly the runs named `compat (<repo>)` out of this repo's "CI on main"
   rollup (its `config/checks.ts`); `tests/test_workflows.py` keeps every other job from being
   named like that.

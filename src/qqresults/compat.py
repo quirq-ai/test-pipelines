@@ -39,6 +39,8 @@ ROLE = "compat"                  # a repo's verdict: steps 1 to 3 of README's de
 QQ_ROLE = "compat-qq"            # qq's own path in that repo: `qq build`, then `qq test`
 ROLES = (ROLE, QQ_ROLE)
 WORKFLOW = ".github/workflows/compat.yml"
+# The only uploader collect takes ROLES from (backends/github.py _check_bundle).
+PUBLISH_WORKFLOW = ".github/workflows/compat-publish.yml"
 
 # compat.yml's steps that decide whether a repo is compatible, in the order they run. A test keeps
 # these names in step with the workflow.
@@ -233,14 +235,17 @@ def run_jobs(api: str, repo: str, run_id: int, token: str, get) -> list[dict]:
 def fetch_plan(api: str, repo: str, run_id: int, jobs: list[dict], token: str, get, unzip) -> dict:
     """The plan the run's plan job uploaded. Any job of the run can upload an artifact, and the
     repo jobs run repo code, so the plan is taken only when it is the one artifact of its name and
-    was created before the plan job finished, which was before any repo job started (needs:)."""
+    was created while the plan job ran, which was before any repo job of that attempt started
+    (needs:)."""
     found = [j for j in jobs if j.get("name") == PLAN_JOB]
     if len(found) != 1 or found[0].get("conclusion") != "success":
         raise CompatError(f"compat run {run_id}: no successful {PLAN_JOB} job")
     job = found[0]
     attempt, done = job.get("run_attempt"), _time(job.get("completed_at"))
-    if not (isinstance(attempt, int) and attempt >= 1 and done):
-        raise CompatError(f"compat run {run_id}: the {PLAN_JOB} job has no attempt or finish time")
+    began = _time(job.get("started_at"))
+    if not (isinstance(attempt, int) and attempt >= 1 and done and began):
+        raise CompatError(f"compat run {run_id}: the {PLAN_JOB} job has no attempt, start or "
+                          "finish time")
     name = plan_artifact(attempt)
     listing = _json(get, f"{api}/repos/{repo}/actions/runs/{run_id}/artifacts"
                          f"?per_page=100&name={name}", token)
@@ -249,9 +254,12 @@ def fetch_plan(api: str, repo: str, run_id: int, jobs: list[dict], token: str, g
         raise CompatError(f"compat run {run_id}: {len(arts)} artifacts named {name}, not one")
     art = arts[0]
     created = _time(art.get("created_at"))
-    if art.get("expired") or not created or created > done:
+    # While the plan job ran: a repo job of an earlier attempt could have uploaded this attempt's
+    # name before the plan job of this one started.
+    if art.get("expired") or not created or not began <= created <= done:
         raise CompatError(f"compat run {run_id}: {name} was not uploaded by the {PLAN_JOB} job "
-                          f"(created {created or 'at an unknown time'}, the job finished {done})")
+                          f"(created {created or 'at an unknown time'}, the job ran {began} "
+                          f"to {done})")
     url = art.get("archive_download_url")
     if not isinstance(url, str) or not url.startswith(f"{api}/"):
         raise CompatError(f"compat run {run_id}: {name} has no download URL")
@@ -362,24 +370,46 @@ def publish(api: str, repo: str, compat_run: int, origin: dict, token: str, out:
 QQ_STATES = {("PASS", "PASS"): "passes", ("FAIL", "SKIP"): "build fails", ("PASS", "FAIL"): "test fails"}
 
 
-def table(store, since: str, until: str, skip: dict[str, str] | None = None) -> dict | None:
-    """Each repo's latest compat verdict in the window, with qq's path in that run.
+def _check_of(run_id: str) -> str:
+    """The publish a verdict came from: its run id before /compat/<repo> (bundles())."""
+    return run_id.rsplit("/compat/", 1)[0]
 
+
+def table(store, since: str, until: str, skip: dict[str, str] | None = None) -> dict | None:
+    """The verdicts of the latest compat check in the window, with qq's path in that run.
+
+    The latest check is the publish whose verdicts finished last. A repo it did not check (gone,
+    archived or skipped since, or an older run's only) is listed apart, with when it was last
+    checked, and never counts as compatible: a missing verdict is never a pass.
     None when there is nothing to show (no compat runs and no skip list)."""
     from qqresults.store import RunFilter
 
-    latest: dict[str, tuple[Run, Any]] = {}
+    verdicts: list[tuple[Run, Any]] = []
     qq: dict[str, Run] = {}
     for r, v in store.runs(RunFilter(since=since)):
         if r.finished_at > until:
             continue
-        if r.role == ROLE and (r.repo not in latest or (r.finished_at, r.id) >= (
-                latest[r.repo][0].finished_at, latest[r.repo][0].id)):
-            latest[r.repo] = (r, v)
+        if r.role == ROLE:
+            verdicts.append((r, v))
         elif r.role == QQ_ROLE:
             qq[r.id] = r
-    if not latest and not skip:
+    if not verdicts and not skip:
         return None
+    ends: dict[str, str] = {}
+    for r, _ in verdicts:
+        ends[_check_of(r.id)] = max(ends.get(_check_of(r.id), ""), r.finished_at)
+    current = max(ends, key=lambda c: (ends[c], c)) if ends else ""
+    latest: dict[str, tuple[Run, Any]] = {}
+    last_seen: dict[str, str] = {}
+    for r, v in verdicts:
+        if r.repo.split("/", 1)[-1] in (skip or {}):
+            continue    # named under "Not checked" alone, even with a verdict from before
+        if _check_of(r.id) == current:
+            latest[r.repo] = (r, v)
+        else:
+            last_seen[r.repo] = max(last_seen.get(r.repo, ""), r.finished_at)
+    gone = [{"repo": repo, "last_checked": at} for repo, at in sorted(last_seen.items())
+            if repo not in latest]
     rows = []
     for repo, (r, v) in sorted(latest.items()):
         failed = [c.test_id.removeprefix("compat::") for c in v.tests]
@@ -394,6 +424,7 @@ def table(store, since: str, until: str, skip: dict[str, str] | None = None) -> 
                      "failed_at": failed_at, "qq": qq_state, "qq_commit": r.executor,
                      "infra_config": r.config_revision, "detail": reason})
     return {"rows": rows, "skipped": [{"repo": k, "reason": w} for k, w in sorted((skip or {}).items())],
+            "checked_at": ends.get(current, ""), "not_in_latest": gone,
             "compatible": sum(1 for x in rows if x["compatible"]),
             "qq_passes": sum(1 for x in rows if x["qq"] == "passes")}
 
@@ -411,7 +442,8 @@ def markdown(t: dict) -> list[str]:
     if not t["rows"]:
         lines += ["No compat runs in this window.", ""]
     else:
-        lines += [f"{t['compatible']} of {len(t['rows'])} repos compatible; "
+        lines += [f"The latest check finished {t.get('checked_at') or 'at an unknown time'}. "
+                  f"{t['compatible']} of {len(t['rows'])} repos compatible; "
                   f"{t['qq_passes']} pass qq build and test.", "",
                   "| Repo | Commit | Compatible | Failed at | qq build and test | Checked |",
                   "|---|---|---|---|---|---|"]
@@ -421,6 +453,10 @@ def markdown(t: dict) -> list[str]:
                          f"{'yes' if x['compatible'] else 'no'} | {failed} | {x['qq']} | "
                          f"{x['finished_at']} |")
         lines.append("")
+    if t.get("not_in_latest"):
+        lines += ["Not in the latest check, so not counted: " + "; ".join(
+            f"{_cell(g['repo'])} (last checked {g['last_checked']})"
+            for g in t["not_in_latest"]) + ".", ""]
     if t["skipped"]:
         lines += ["Not checked: " + "; ".join(f"{_cell(s['repo'])} ({_cell(s['reason'])})"
                                              for s in t["skipped"]) + ".", ""]

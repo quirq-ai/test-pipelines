@@ -6,11 +6,12 @@ import zipfile
 
 import pytest
 
-from qqresults import bundle, cli, compat, scorecard
+from qqresults import bundle, cli, compat, scorecard, verdict
 from qqresults.backends import github
+from qqresults.model import Result, Run
 from qqresults.store import FileStore
 
-from test_store import _collect_zips, workflow_run
+from test_store import _collect_zips, workflow_run, zipped
 
 QQ, CFG = "a" * 40, "b" * 40
 API = github.API
@@ -217,7 +218,8 @@ def _zip(name, data):
 def _api(jobs, plan, artifacts=None):
     """A fake Actions API for compat run 5: its jobs and its plan artifact."""
     plan_job = {"name": "plan", "conclusion": "success", "run_attempt": 1,
-                "completed_at": "2026-10-20T05:49:00Z", "steps": []}
+                "started_at": "2026-10-20T05:47:30Z", "completed_at": "2026-10-20T05:49:00Z",
+                "steps": []}
     arts = artifacts if artifacts is not None else [
         {"name": "compat-plan-1", "created_at": "2026-10-20T05:48:50Z", "expired": False,
          "archive_download_url": f"{API}/repos/{REPO}/actions/artifacts/1/zip"}]
@@ -250,6 +252,9 @@ def test_publish_writes_one_artifact_of_bundles(tmp_path):
     ([{"name": "compat-plan-1", "created_at": "2026-10-20T05:52:00Z",
        "archive_download_url": f"{API}/x"}], "was not uploaded by the plan job"),
     ([{"name": "compat-plan-1", "archive_download_url": f"{API}/x"}], "was not uploaded"),
+    # Uploaded under this attempt's name by a job of an earlier attempt.
+    ([{"name": "compat-plan-1", "created_at": "2026-10-20T05:40:00Z",
+       "archive_download_url": f"{API}/x"}], "was not uploaded by the plan job"),
     ([{"name": "compat-plan-1", "created_at": "2026-10-20T05:48:00Z",
        "archive_download_url": "https://elsewhere/x"}], "no download URL"),
 ])
@@ -333,6 +338,42 @@ def test_collect_refuses_compat_verdicts_from_anything_else(tmp_path, trust, run
     assert new == 0 and error in (errors + refused)[0]
 
 
+def _role_bundle(run_id, repo, kind, role):
+    run = Run(id=run_id, repo=repo, kind=kind, commit="c1", finished_at="2026-10-04T10:00:00Z",
+              branch="main", role=role)
+    results = [Result(run_id=run_id, test_id=f"compat::{s}", status="PASS", expected=True)
+               for s in compat.STEPS]
+    return bundle.Bundle(run, results, verdict.compute(run, results))
+
+
+PERF = "o/perf"
+PERF_TRUST = github.Trust(workflows=(".github/workflows/perf-publish.yml",),
+                          cross_repo=frozenset({PERF}))
+PERF_RUN = workflow_run(7, repo=PERF, event="workflow_run",
+                        path=".github/workflows/perf-publish.yml")
+
+
+@pytest.mark.parametrize("repo,b,runs,trust", [
+    # A builder's own bundle claiming a compat role: its repo's Compatibility row.
+    ("o/x", _role_bundle("github/o/x/1/1/postsubmit", "o/x", "postsubmit", compat.ROLE), (),
+     github.Trust()),
+    ("o/x", _role_bundle("github/o/x/1/1/postsubmit/qq", "o/x", "postsubmit", compat.QQ_ROLE), (),
+     github.Trust()),
+    # Another cross-repo uploader (perf's) naming any repo with a compat role.
+    (PERF, _role_bundle("github/o/perf/7/1/publish/x", "o/a", "other", compat.ROLE), [PERF_RUN],
+     PERF_TRUST),
+    # compat-publish writing anything but a compat role would feed the per-repo metrics.
+    (TP, _role_bundle("github/o/test-pipelines/9/1/compat/a", "o/a", "other", ""), [PUBLISH_RUN],
+     TRUST),
+])
+def test_only_compat_publish_writes_compat_roles(tmp_path, repo, b, runs, trust):
+    st = FileStore(tmp_path)
+    new, _, errors = _collect_zips(st, repo, [(*zipped(b), runs[0]["id"] if runs else 1)], runs,
+                                   trust)
+    assert new == 0 and len(errors) == 1 and "compatibility roles" in errors[0]
+    assert compat.table(st, "2026-10-01T00:00:00Z", "2026-10-21T00:00:00Z") is None
+
+
 def test_the_default_listing_leaves_compat_artifacts_to_their_own_pass():
     listing = {"artifacts": [{"name": "qq-compat-5-9-1"}, {"name": "qq-results-x"}]}
     get = lambda url, token: json.dumps(listing).encode()
@@ -375,3 +416,24 @@ def test_the_table_takes_each_repos_latest_verdict(tmp_path):
     assert [(r["repo"], r["compatible"]) for r in t["rows"]] == [("o/a", True)]
     assert compat.table(FileStore(tmp_path / "empty"), "2026-10-14T00:00:00Z",
                         "2026-10-21T00:00:00Z") is None
+
+
+def test_a_repo_the_latest_check_did_not_check_is_never_counted(tmp_path):
+    st = FileStore(tmp_path)
+    ok = {s: "success" for s in compat.STEPS}
+    week_ago = [_job(r, steps=ok, completed_at="2026-10-14T05:55:00Z") for r in ("a", "b", "z")]
+    for b in compat.bundles(_plan("a", "b", "z"), week_ago, {**ORIGIN, "run_id": 8}):
+        st.put(b)
+    # The latest check had only a: b is gone (archived, renamed or its plan entry lost), and z is
+    # in the skip list since.
+    for b in compat.bundles(_plan("a"), [_job("a", "failure", {"check out": "failure"})], ORIGIN):
+        st.put(b)
+    t = compat.table(st, "2026-10-14T00:00:00Z", "2026-10-21T00:00:00Z", {"z": "why"})
+    assert [(r["repo"], r["compatible"]) for r in t["rows"]] == [("o/a", False)]
+    assert t["compatible"] == 0 and t["checked_at"] == "2026-10-20T05:55:00Z"
+    assert t["not_in_latest"] == [{"repo": "o/b", "last_checked": "2026-10-14T05:55:00Z"}]
+    text = "\n".join(compat.markdown(t))
+    assert "The latest check finished 2026-10-20T05:55:00Z. 0 of 1 repos compatible" in text
+    assert ("Not in the latest check, so not counted: o/b (last checked 2026-10-14T05:55:00Z)."
+            in text)
+    assert "| o/z |" not in text and "Not checked: z (why)." in text
