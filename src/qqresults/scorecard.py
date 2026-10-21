@@ -12,7 +12,7 @@ from collections import defaultdict
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from qqresults import failures
+from qqresults import compat, failures
 from qqresults.model import FailureKind, Run, RunKind, Verdict, VerdictStatus
 from qqresults.store import FileStore, RunFilter
 
@@ -61,6 +61,7 @@ class Scorecard:
     not_measured: list[Metric] = field(default_factory=list)
     skipped: int = 0           # stored records that did not read and were left out
     collect: dict | None = None   # collect_status() of the collect before it, when given
+    compat: dict | None = None    # compat.table(): the compatibility check's latest verdicts
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -385,7 +386,8 @@ def compute(store: FileStore, since: dt.datetime, until: dt.datetime,
     runs = [(r, v) for r, v in store.runs(RunFilter(since=fmt_time(since)))
             if r.finished_at <= fmt_time(until) and r.kind != RunKind.LOCAL
             and not r.parent    # retry and base runs count through their parent's verdict
-            and r.role != "backfill"]   # finished long after its commit landed
+            and r.role != "backfill"    # finished long after its commit landed
+            and r.role not in compat.ROLES]   # the Compatibility table, not per-repo metrics
     by_repo: dict[str, list[tuple[Run, Verdict]]] = defaultdict(list)
     for r, v in runs:
         by_repo[r.repo].append((r, v))
@@ -529,6 +531,8 @@ def to_markdown(card: Scorecard) -> str:
                 filter(None, [m.detail, m.waiting_on and f"waiting on {m.waiting_on}"]))
             lines.append(f"| {m.name} | {value} | {m.target} | {detail} |")
         lines.append("")
+    if card.compat is not None:
+        lines += compat.markdown(card.compat)
     lines += ["## Not measured yet", "", "| Metric | Target | Waiting on |", "|---|---|---|"]
     lines += [f"| {m.name} | {m.target} | {m.waiting_on} |" for m in card.not_measured]
     return "\n".join(lines) + "\n"

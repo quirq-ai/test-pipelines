@@ -17,8 +17,15 @@
         --report appends what each repo collected and skipped, and why.
     qqresults query runs|results|history --store DIR [filters] [--json]
         Read the store.
-    qqresults scorecard --store DIR [--days N] [--json] [--collect-report FILE]
+    qqresults scorecard --store DIR [--days N] [--json] [--collect-report FILE] [--compat-skip FILE]
         Plan §8's metrics from the store; with --collect-report, says whether collect was complete.
+        The compatibility check's latest verdicts form a table of their own.
+    qqresults compat plan --org ORG --skip FILE --out FILE
+    qqresults compat commands --kinds FILE --manifest FILE [--run DIR]
+    qqresults compat publish --repo OWNER/NAME --run-id N --out DIR
+        The compatibility check (compat.yml, compat-publish.yml; README): the repos and commits
+        to check, a repo's kind commands (from `qqcfg get kinds` and `qqsync show`), and the
+        verdicts as results bundles, read from the finished run through the Actions API.
     qqresults failure open --dir DIR --kind K --repo R --subject S [--summary ...] [--mirror REPO]
     qqresults failure link --dir DIR ID --culprit C --fix F --covering-test T [--mirror REPO]
                            [--run-id RUN --link-copy OUT]
@@ -40,7 +47,7 @@ import re
 import sys
 from pathlib import Path
 
-from qqresults import __version__, backends, bundle, failures, policy, scorecard, sink, store
+from qqresults import __version__, backends, bundle, compat, failures, policy, scorecard, sink, store
 from qqresults.errors import Error
 from qqresults.model import FailureKind, Run, RunKind
 
@@ -121,7 +128,9 @@ def cmd_collect(args) -> int:
     for repo in args.repo:
         listed, refused = True, []
         try:
-            new, old, errors = gh.collect(repo, st, token, trust=trust, refused=refused)
+            new, old, errors = gh.collect(repo, st, token, trust=trust, refused=refused,
+                                          **({"prefixes": tuple(args.artifact_prefix)}
+                                             if args.artifact_prefix else {}))
         except Error as e:   # one repo failing to list must not hide the others
             new, old, errors, listed = 0, 0, [f"{repo}: {e}"], False
         print(f"{repo}: {new} new, {old} already stored, {len(errors)} skipped, "
@@ -188,7 +197,10 @@ def cmd_query(args) -> int:
 def cmd_scorecard(args) -> int:
     until = dt.datetime.now(dt.UTC)
     st = store.open_store(args.store)
-    card = scorecard.compute(st, until - dt.timedelta(days=args.days), until, repos=args.repo)
+    since = until - dt.timedelta(days=args.days)
+    card = scorecard.compute(st, since, until, repos=args.repo)
+    card.compat = compat.table(st, scorecard.fmt_time(since), scorecard.fmt_time(until),
+                               compat.read_skip(Path(args.compat_skip)) if args.compat_skip else None)
     if args.collect_report:
         card.collect = scorecard.collect_status(Path(args.collect_report))
     for message in st.skipped.values():
@@ -197,6 +209,54 @@ def cmd_scorecard(args) -> int:
         print(json.dumps(card.to_dict(), indent=2, sort_keys=True))
     else:
         print(scorecard.to_markdown(card), end="")
+    return 0
+
+
+def cmd_compat(args) -> int:
+    gh = backends.load("github")
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if args.action == "plan":
+        data = compat.make_plan(gh.API, "https://github.com", args.org, Path(args.skip), token,
+                                gh.http_get)
+        Path(args.out).write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        for r in data["repos"]:
+            print(f"check {r['repo']} at {r['branch']} {r['sha'] or '(no commits)'}")
+        for r in data["skipped"]:
+            print(f"skip  {r['repo']}: {r['reason']}")
+        if args.github_output:
+            matrix = {"include": [{"repo": r["repo"], "branch": r["branch"], "sha": r["sha"]}
+                                  for r in data["repos"]]}
+            with open(args.github_output, "a", encoding="utf-8") as f:
+                f.write(f"matrix={json.dumps(matrix, sort_keys=True)}\nqq={data['qq']}\n"
+                        f"infra_config={data['infra_config']}\n")
+        return 0
+    if args.action == "commands":
+        try:
+            kinds = json.loads(Path(args.kinds).read_text(encoding="utf-8"))
+            manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            raise compat.CompatError(f"cannot read the kinds or the manifest: {e}") from None
+        steps = compat.kind_commands(manifest, kinds)
+        if args.run:
+            return compat.run_kind_commands(steps, Path(args.run))
+        for cap, kind, command in steps:
+            print(f"{cap} ({kind}): {command}")
+        return 0
+    run_id, attempt = os.environ.get("GITHUB_RUN_ID", ""), os.environ.get("GITHUB_RUN_ATTEMPT", "")
+    if not (args.run_id.isdigit() and run_id.isdigit() and attempt.isdigit()):
+        raise compat.CompatError("compat publish runs in a workflow: --run-id, GITHUB_RUN_ID and "
+                                 "GITHUB_RUN_ATTEMPT must be numbers")
+    origin = {"repo": os.environ.get("GITHUB_REPOSITORY", args.repo), "run_id": int(run_id),
+              "attempt": int(attempt), "at": scorecard.fmt_time(dt.datetime.now(dt.UTC))}
+    path = compat.publish(gh.API, args.repo, int(args.run_id), origin, token, Path(args.out),
+                          gh.http_get, gh._unzip)
+    for d in sorted(path.iterdir()):
+        b = bundle.read(d)
+        print(f"{b.run.repo} ({b.run.role}) at {b.run.commit or '(no commit)'}: "
+              f"{'PASS' if b.verdict.passed else 'FAIL'}")
+    if args.github_output:
+        with open(args.github_output, "a", encoding="utf-8") as f:
+            f.write(f"bundle={path}\nname={path.name}\n")
     return 0
 
 
@@ -363,6 +423,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="this collected repo's runs may store kind 'other' runs naming "
                          "another repo (perf); needs --workflow, and only its push, schedule "
                          "and dispatch runs on the default branch are stored")
+    co.add_argument("--artifact-prefix", action="append", metavar="PREFIX",
+                    help="read only artifacts named with this prefix; repeat for more (default: "
+                         "qq-results- and qq-failure-; the compat pass reads qq-compat-)")
     co.add_argument("--strict", action="store_true", help="exit 1 if any artifact was skipped")
     co.add_argument("--report", metavar="FILE",
                     help="append what was collected and skipped, per repo, as JSON lines, for "
@@ -393,7 +456,25 @@ def build_parser() -> argparse.ArgumentParser:
     sc.add_argument("--collect-report", metavar="FILE",
                     help="collect --report's file: the card says whether that collect was "
                          "complete, and what it skipped and why")
+    sc.add_argument("--compat-skip", metavar="FILE",
+                    help="the compatibility check's skip list (.github/compat-skip.toml): the "
+                         "Compatibility table names the repos it leaves out, and why")
     sc.set_defaults(func=cmd_scorecard)
+
+    cp = sub.add_parser("compat", help="the compatibility check (compat.yml)")
+    cp.add_argument("action", choices=["plan", "commands", "publish"])
+    cp.add_argument("--org", help="plan: the org whose public repos are checked")
+    cp.add_argument("--skip", help="plan: the skip list (.github/compat-skip.toml)")
+    cp.add_argument("--out", help="plan: the plan file to write; publish: where the bundles go")
+    cp.add_argument("--kinds", help="commands: `qqcfg get kinds` output")
+    cp.add_argument("--manifest", help="commands: `qqsync show` output")
+    cp.add_argument("--run", metavar="DIR", help="commands: run them in DIR, stopping at the first "
+                    "that fails")
+    cp.add_argument("--repo", help="publish: OWNER/NAME of the repo the compat run is in")
+    cp.add_argument("--run-id", help="publish: the compat run")
+    cp.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"),
+                    help=argparse.SUPPRESS)
+    cp.set_defaults(func=cmd_compat)
 
     fa = sub.add_parser("failure", help="failure records with an issue mirror")
     fa.add_argument("action", choices=["open", "link", "list"])
@@ -437,6 +518,13 @@ def main(argv: list[str] | None = None) -> int:
                 "--" + m.replace("_", "-") for m in missing))
         if args.link_copy and args.action != "link":
             parser.error("--link-copy is only for failure link")
+    if args.command == "compat":
+        need = {"plan": ("org", "skip", "out"), "commands": ("kinds", "manifest"),
+                "publish": ("repo", "run_id", "out")}[args.action]
+        missing = [n for n in need if not getattr(args, n)]
+        if missing:
+            parser.error(f"compat {args.action} needs " + ", ".join(
+                "--" + m.replace("_", "-") for m in missing))
     try:
         return args.func(args)
     except Error as e:

@@ -227,8 +227,10 @@ def http_get(url: str, token: str) -> bytes:
     return body
 
 
-def list_result_artifacts(repo: str, token: str, get=http_get, max_pages: int = 20) -> list[dict]:
-    """The repo's unexpired qq-results-* and qq-failure-* artifacts, oldest first.
+def list_result_artifacts(repo: str, token: str, get=http_get, max_pages: int = 20,
+                          prefixes: tuple[str, ...] = (ARTIFACT_PREFIX, FAILURE_PREFIX)) -> list[dict]:
+    """The repo's unexpired artifacts whose names start with one of prefixes (by default
+    qq-results-* and qq-failure-*), oldest first.
 
     Oldest first, so a later upload can never take a run's place by being listed before it, a
     failure record reported again keeps the opened_at and run_id of its first report, and a link
@@ -239,7 +241,7 @@ def list_result_artifacts(repo: str, token: str, get=http_get, max_pages: int = 
         data = json.loads(get(f"{API}/repos/{repo}/actions/artifacts?per_page=100&page={page}", token))
         artifacts = data.get("artifacts", [])
         found.extend(a for a in artifacts
-                     if a.get("name", "").startswith((ARTIFACT_PREFIX, FAILURE_PREFIX))
+                     if a.get("name", "").startswith(prefixes)
                      and not a.get("expired"))
         if len(artifacts) < 100:
             break
@@ -381,7 +383,11 @@ def _check_bundle(origin: Origin, trust: Trust, b: bundle.Bundle) -> None:
     run = b.run
     if origin.attempt_of("run", run.id) != run.attempt:
         raise GitHubAPIError(f"run {run.id}: attempt {run.attempt} does not match its id")
-    cross = run.repo != origin.repo
+    # An uploader started by workflow_run vouches for the run that triggered it (README, "What
+    # collect trusts"), so like a bundle naming another repo it may claim only kind other and its
+    # commit is not its own head; the compat check's verdict on its own repo is one.
+    cross = run.repo != origin.repo or (origin.event == "workflow_run"
+                                        and origin.repo in trust.cross_repo)
     if cross and (origin.repo not in trust.cross_repo or run.kind != RunKind.OTHER.value
                   or not origin.on_default):
         raise GitHubAPIError(f"run {run.id} is for {run.repo} but was found in {origin.repo}; "
@@ -394,7 +400,7 @@ def _check_bundle(origin: Origin, trust: Trust, b: bundle.Bundle) -> None:
         raise GitHubAPIError(f"run {run.id} claims kind {_short(run.kind)}, which a "
                              f"{origin.event or 'unknown'} run{where} cannot produce")
     if cross:
-        pass   # perf names the measured repo's commit, which this run's head cannot vouch for
+        pass   # perf and compat name the checked repo's commit, which this run's head cannot vouch for
     elif origin.event == "pull_request":
         # The run tests GitHub's merge of the PR, which the API does not name; the PR's head
         # must be the run's head, and the PR one GitHub links to the run when it lists any
@@ -616,9 +622,13 @@ def _import_artifact(art: dict, store, token: str, get, origin: Origin, trust: T
 
 
 def collect(repo: str, store, token: str, get=http_get, trust: Trust = Trust(),
-            now: dt.datetime | None = None,
-            refused: list[str] | None = None) -> tuple[int, int, list[str]]:
+            now: dt.datetime | None = None, refused: list[str] | None = None,
+            prefixes: tuple[str, ...] = (ARTIFACT_PREFIX, FAILURE_PREFIX)) -> tuple[int, int, list[str]]:
     """Import every result bundle and failure record that the repo's trusted runs kept.
+
+    prefixes picks the artifacts by name. An artifact of results bundles whose name is not one
+    bundle's (the compat check's qq-compat-*, holding a bundle per repo) is marked as read once
+    imported, as a failure artifact is, so it is not downloaded again.
 
     Returns (new, already stored, errors). One bad artifact is reported and skipped, so it does
     not hide the others. With a refused list, artifacts from runs collect does not trust
@@ -662,7 +672,7 @@ def collect(repo: str, store, token: str, get=http_get, trust: Trust = Trust(),
                 new += 1
             else:
                 old += 1
-            if art["name"].startswith(FAILURE_PREFIX):
+            if art["name"].startswith(FAILURE_PREFIX) or not store.has(art["name"]):
                 store.mark_artifact(f"{art['name']}-{art.get('id', '')}")
         except _LinksWaiting:
             waiting.append(art)
@@ -673,9 +683,9 @@ def collect(repo: str, store, token: str, get=http_get, trust: Trust = Trust(),
                 store.mark_artifact(f"{art['name']}-{art.get('id', '')}")
 
     waiting: list[dict] = []
-    for art in list_result_artifacts(repo, token, get):
-        if (store.has(art["name"]) if art["name"].startswith(ARTIFACT_PREFIX)
-                else store.seen_artifact(f"{art['name']}-{art.get('id', '')}")):
+    for art in list_result_artifacts(repo, token, get, prefixes=prefixes):
+        if ((art["name"].startswith(ARTIFACT_PREFIX) and store.has(art["name"]))
+                or store.seen_artifact(f"{art['name']}-{art.get('id', '')}")):
             old += 1
             continue
         take(art, final=False)

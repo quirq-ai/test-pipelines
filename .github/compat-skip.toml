@@ -1,0 +1,7 @@
+# Public repos of the org the compatibility check (workflows/compat.yml) leaves out, one per line
+# with the reason, which the scorecard's Compatibility table shows. Private repos are never
+# listed by GitHub to the check, and archived ones are left out with that reason. CODEOWNERS
+# covers this file, so leaving a repo out needs suraj's review.
+[skip]
+".github" = "the org profile and community files; changed only through an audited script suraj runs"
+argus-code = "a fork of an outside project; suraj's call whether to check it"
