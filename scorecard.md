@@ -1,6 +1,6 @@
 # quirq infra scorecard v0
 
-Window 2026-10-14T17:21:53Z to 2026-10-21T17:21:53Z, generated 2026-10-21T17:21:53Z from the results store.
+Window 2026-10-14T18:20:43Z to 2026-10-21T18:20:43Z, generated 2026-10-21T18:20:43Z from the results store.
 
 ## Collect incomplete
 
@@ -25,13 +25,13 @@ The collect before this card did not read everything, so the runs it missed are 
 
 | Metric | Value | Target | Detail |
 |---|---|---|---|
-| Gate time-to-green | not measured | P1: p50 under 15 min, p90 under 30 min | 1 green run(s) without a queue time; waiting on V0-GAT-04 records queue-entry time on gate runs |
+| Gate time-to-green | not measured | P1: p50 under 15 min, p90 under 30 min | 2 green run(s) without a queue time; waiting on V0-GAT-04 records queue-entry time on gate runs |
 | Main-red time | 0 min/week | under 60 min/week | 1 post-submit commits |
-| Flake rate | 0 % | under 1% | 0 of 6 runs passed only on retry |
-| Gate runs passed | 100 % | measured | 1 of 1 gate runs passed |
+| Flake rate | 0 % | under 1% | 0 of 7 runs passed only on retry |
+| Gate runs passed | 100 % | measured | 2 of 2 gate runs passed |
 | Post-submit runs passed | 100 % | measured | 1 of 1 postsubmit runs passed |
 | Presubmit runs passed | 100 % | measured | 4 of 4 presubmit runs passed |
-| Runs with no test results | 0 runs | 0 | of 6 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Runs with no test results | 0 runs | 0 | of 7 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
 | Failures fully recorded | not measured | 100% | waiting on held canary, rollback, auto-revert or fuzz records in the window (none opened) |
 
 ## quirq-ai/xo-space
@@ -46,6 +46,14 @@ The collect before this card did not read everything, so the runs it missed are 
 | Presubmit runs passed | 100 % | measured | 3 of 3 presubmit runs passed |
 | Runs with no test results | 0 runs | 0 | of 5 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
 | Failures fully recorded | not measured | 100% | waiting on held canary, rollback, auto-revert or fuzz records in the window (none opened) |
+
+## Compatibility (qq without onboarding)
+
+Each public repo's default branch, from the daily compat check (compat.yml). Compatible: its manifest validates against infra-config's kinds, `qq sync` works and its kinds' commands pass. qq build and test is qq's own path through recipes: a failure there is a gap in qq, not in the repo.
+
+No compat runs in this window.
+
+Not checked: .github (the org profile and community files; changed only through an audited script suraj runs); argus-code (a fork of an outside project; suraj's call whether to check it).
 
 ## Not measured yet
 
