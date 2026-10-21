@@ -189,7 +189,7 @@ def workflow_run(run_id, repo="o/x", event="push", branch="main", sha="c1", atte
 
 
 def _collect_zips(st, repo, zips, runs=(), trust=github.Trust(), default_branch="main",
-                  fetched=None, compare=None, now=None):
+                  fetched=None, compare=None, now=None, prefixes=None):
     """Collect a fake listing: zips are (name, data[, workflow run id[, size]]), listed newest
     first as GitHub does; runs are workflow_run()s (default: a push to main at c1). compare maps
     a commit to its status against the default branch (default: identical, so on it)."""
@@ -214,7 +214,8 @@ def _collect_zips(st, repo, zips, runs=(), trust=github.Trust(), default_branch=
         if url == f"{github.API}/repos/{repo}":
             return json.dumps({"default_branch": default_branch}).encode()
         return zips[int(url.rsplit("/", 1)[1])][1]
-    return github.collect(repo, st, "tok", get=get, trust=trust, now=now)
+    return github.collect(repo, st, "tok", get=get, trust=trust, now=now,
+                          **({"prefixes": prefixes} if prefixes else {}))
 
 
 def test_collect_imports_each_artifact_once(tmp_path):

@@ -1,0 +1,208 @@
+# The compatibility check (README, "The compatibility check"): every public repo of the org, at
+# its default branch, run the way qq would run it, without onboarding it. One job per repo, named
+# `compat (<repo>)`; its steps up to the kind commands are that repo's verdict. It never blocks a
+# merge, is never a required check and opens no issues.
+#
+# The repo jobs run other repos' code, so they hold only `contents: read`, get no secret, keep no
+# credentials and use no cache (any workflow on this repo's default branch could restore one, so
+# none here ever restores a cache: tests/test_workflows.py). Nothing they upload is trusted:
+# compat-publish.yml, which runs no repo code, reads their conclusions through the Actions API and
+# publishes the verdicts for the scorecard. The plan job runs no checked repo's code either (only
+# this repo's qqresults and infra-config main's qqcfg); its artifact is the one compat-publish
+# reads, and only if no later job replaced it.
+#
+# Kind names and commands are not written here: they come from infra-config main's
+# config/kinds.toml through qqcfg, at the commit the plan resolved.
+name: compat
+on:
+  schedule:
+    - cron: "47 5 * * *"     # daily, before the 06:17 canary; off the hour, as GitHub drops those
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: compat
+  cancel-in-progress: false
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      qq: ${{ steps.plan.outputs.qq }}
+      infra_config: ${{ steps.plan.outputs.infra_config }}
+      python: ${{ steps.pins.outputs.python }}
+      node: ${{ steps.pins.outputs.node }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      # qqresults from this checkout, on the runner's own python3: nothing is installed.
+      - name: the repos and commits to check
+        id: plan
+        env:
+          GITHUB_TOKEN: ${{ github.token }}   # lists the org's public repos; read only
+        run: |
+          tools/bin/qqresults compat plan --org "${GITHUB_REPOSITORY_OWNER}" \
+            --skip .github/compat-skip.toml --out "$RUNNER_TEMP/plan/plan.json"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ github.repository_owner }}/infra-config
+          ref: ${{ steps.plan.outputs.infra_config }}
+          path: .qq/infra-config
+          persist-credentials: false
+      # The org's toolchain pins (config/kinds.toml), so every repo runs on the versions its
+      # generated CI would use.
+      - name: toolchain pins
+        id: pins
+        run: |
+          pin() { python3 .qq/infra-config/tools/qqcfg.py get kinds "toolchain.$1.pin" |
+                  python3 -c 'import json, re, sys; v = json.load(sys.stdin); assert re.fullmatch(r"[0-9][0-9.]*", v), v; print(v)'; }
+          echo "python=$(pin python)" >> "$GITHUB_OUTPUT"
+          echo "node=$(pin node)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: compat-plan-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/plan/plan.json
+          if-no-files-found: error
+          retention-days: 3   # compat-publish reads it once, right after the run
+
+  check:
+    needs: plan
+    # monitoring leaves exactly the runs named `compat (<repo>)` out of this repo's CI rollup, and
+    # compat-publish finds each repo's job by this name: tests/test_workflows.py keeps every other
+    # job from matching it.
+    name: compat (${{ matrix.repo }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25   # the kind commands, then up to 11 minutes of qq's path (2 x 330 s)
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: 4   # the org's concurrent jobs are shared with every repo's presubmit and queue
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # The runner context is not available in job-level env, so these are set here.
+      - name: paths
+        run: |
+          {
+            echo "QQ_HOME=$RUNNER_TEMP/qq-home"
+            echo "TOOLS=$GITHUB_WORKSPACE/.tools"   # beside the checked repo, not in it
+            echo "PIP_CACHE_DIR=$RUNNER_TEMP/pip-cache"
+            echo "npm_config_cache=$RUNNER_TEMP/npm-cache"
+          } >> "$GITHUB_ENV"
+      # The tools first, at the commits the plan resolved, outside the checked repo.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          path: .tools/test-pipelines
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ github.repository_owner }}/infra-config
+          ref: ${{ needs.plan.outputs.infra_config }}
+          path: .tools/infra-config
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ github.repository_owner }}/qq
+          ref: ${{ needs.plan.outputs.qq }}
+          path: .tools/qq
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: ${{ needs.plan.outputs.python }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: ${{ needs.plan.outputs.node }}
+          package-manager-cache: false   # v5+ restores an npm cache on its own otherwise
+      - name: set up qq
+        run: |
+          echo "$TOOLS/qq/bin" >> "$GITHUB_PATH"
+          python3 "$TOOLS/infra-config/tools/qqcfg.py" get kinds > "$TOOLS/kinds.json"
+          # The launcher qq builds from this commit, with the qqsync and qqrecipes it pins.
+          "$TOOLS/qq/bin/qq" --version
+          ls "$QQ_HOME"/launchers/*/bin/qqsync > /dev/null
+          git -C "$TOOLS/qq" log -1 --format='qq at %H'
+          git -C "$TOOLS/infra-config" log -1 --format='infra-config at %H'
+      # The names of the five steps below, and of the qq markers, are what compat-publish reads
+      # (qqresults compat.STEPS and QQ_MARKERS); tests/test_workflows.py keeps them in step.
+      - name: check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ github.repository_owner }}/${{ matrix.repo }}
+          ref: ${{ matrix.sha || matrix.branch }}
+          path: repo
+          persist-credentials: false
+      - name: manifest present
+        working-directory: repo
+        run: |
+          git log -1 --format='checking %H'
+          test -f infra/repo.toml || { echo "::error::no infra/repo.toml: not a qq repo yet"; exit 1; }
+      - name: manifest valid
+        working-directory: repo
+        run: |
+          qqsync=$(find "$QQ_HOME"/launchers -path '*/bin/qqsync' | head -n 1)
+          # Every kind infra-config knows, so a kind it does not know is an error.
+          mapfile -t kinds < <(python3 -c 'import json, sys; [print(k["name"]) for k in json.load(sys.stdin)["kind"]]' < "$TOOLS/kinds.json")
+          args=()
+          for k in "${kinds[@]}"; do args+=(--kind "$k"); done
+          "$qqsync" validate infra/repo.toml "${args[@]}"
+          "$qqsync" show > "$TOOLS/manifest.json"
+      - name: qq sync
+        id: sync
+        working-directory: repo
+        run: qq sync
+      - name: kind commands
+        working-directory: repo
+        run: |
+          "$TOOLS/test-pipelines/tools/bin/qqresults" compat commands --kinds "$TOOLS/kinds.json" \
+            --manifest "$TOOLS/manifest.json" --run .
+      # Back to the checked commit, keeping only what qq sync made (its links and record), so qq's
+      # path does not reuse what the kind commands installed or built. It runs whether or not
+      # they passed, since its column is about qq, not the repo.
+      - name: reset the checkout
+        id: reset
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
+        working-directory: repo
+        run: |
+          git reset --quiet --hard
+          git clean -ffdxq -e /.qq/toolchains -e /.qq/deps -e /.qq/sync.json
+      # qq's own path never fails the job: its outcome picks one marker step, which is what
+      # compat-publish reads. A failure here is a gap in qq, not in the repo. Each half has its own
+      # time limit, so a qq that hangs reads as qq timing out, not as the job (the repo) failing.
+      # It runs only on a checkout the reset left clean; else qq's column reads "not reached".
+      - name: qq build and test
+        id: qq
+        if: ${{ !cancelled() && steps.reset.outcome == 'success' }}
+        working-directory: repo
+        run: |
+          rc=0; timeout --kill-after=30 300 qq build || rc=$?
+          if [ "$rc" = 124 ]; then result="build timed out"
+          elif [ "$rc" != 0 ]; then result="build failed"
+          else
+            rc=0; timeout --kill-after=30 300 qq test || rc=$?
+            if [ "$rc" = 124 ]; then result="test timed out"
+            elif [ "$rc" != 0 ]; then result="test failed"
+            else result=passed; fi
+          fi
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+      - name: "qq: passed"
+        if: ${{ !cancelled() && steps.qq.outputs.result == 'passed' }}
+        run: "true"
+      - name: "qq: build failed"
+        if: ${{ !cancelled() && steps.qq.outputs.result == 'build failed' }}
+        run: "true"
+      - name: "qq: test failed"
+        if: ${{ !cancelled() && steps.qq.outputs.result == 'test failed' }}
+        run: "true"
+      - name: "qq: build timed out"
+        if: ${{ !cancelled() && steps.qq.outputs.result == 'build timed out' }}
+        run: "true"
+      - name: "qq: test timed out"
+        if: ${{ !cancelled() && steps.qq.outputs.result == 'test timed out' }}
+        run: "true"

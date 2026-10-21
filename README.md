@@ -173,7 +173,13 @@ a cross-repo source must upload from a workflow file of its own that holds only 
 (no pull request triggers, no job running code under test). An uploader started by workflow_run
 vouches for the run that triggered it, which collect cannot see: it must filter on the default
 branch, check that run's event and head repository, and never republish that run's artifacts
-unchecked (perf-publish.yml reads perf's validated `perf-data` branch instead). Failure records are taken only from
+unchecked (perf-publish.yml reads perf's validated `perf-data` branch instead). Since such an
+uploader's bundles describe the run that triggered it, a bundle it writes about its own repo is
+held to the same rules as one naming another repo: kind `other` only, and its commit is not
+checked against the uploader's head (the compatibility check's verdict on this repo is one).
+A bundle's role is its own claim, so the compatibility roles (`compat`, `compat-qq`) are taken
+only from `compat-publish.yml`'s workflow_run runs of a `--cross-repo` source, whose bundles
+must each carry one; any other bundle claiming them is refused. Failure records are taken only from
 push, schedule or dispatch runs on the default branch; the record must be for the repo, its id
 must be the one its kind, repo and subject give (unless the subject is the public
 `sha256:<16 hex>` digest of a free-text one, which cannot be checked against the id; the id must
@@ -467,6 +473,64 @@ nothing on GitHub remembers it, and a later such report from a fresh runner (wit
 and the action does not read the store. TODO(expert): a durable mark the action can check before
 opening an issue. The `failure-demo` workflow proves the done-when against the real API
 with a planted held canary, then links and closes it with the `link` action.
+
+## The compatibility check
+
+Every public repo of the org should work with qq without being onboarded (no gate, rulesets,
+merge queue, lkgr, canary or rollers), and a standing check keeps measuring how far qq gets. A
+repo is **compatible** when, on its default branch:
+
+1. it has `infra/repo.toml`, and `qqsync validate --kind <every kind in infra-config main's
+   config/kinds.toml>` passes;
+2. `qq sync` succeeds;
+3. each target kind's interim commands, the ones qq's generated CI runs, pass on the org's
+   toolchain pins.
+
+Apart from that, the check runs qq's own path, `qq build` then `qq test` through recipes. It
+never decides compatibility: a repo whose kind has no recipes adapter yet fails there, and that
+is a gap in qq, not in the repo, so the card shows it in a column of its own. It runs after the
+kind commands, on a reset checkout that keeps only what `qq sync` made, whether or not they
+passed, and each half has a five-minute limit, so a qq that hangs reads as "timed out" in qq's
+column, never as the repo failing.
+
+- `.github/workflows/compat.yml` runs daily at 05:47 UTC and on demand. Its `plan` job lists
+  the org's public repos, leaves out archived ones and those in `.github/compat-skip.toml` (one
+  line each with the reason; CODEOWNERS covers it), and resolves the qq and infra-config main
+  commits every job uses. Then one job per repo, named `compat (<repo>)`, checks the repo out at
+  the head the plan resolved, installs qq the way a contributor does (`bin/qq` from that qq
+  commit, with the qqsync and qqrecipes it pins), and runs the steps above. Kind names and
+  commands come from infra-config through `qqcfg get kinds`; the workflow names none
+  (`qqresults compat commands` runs them). qq runs the qq a repo's manifest pins (`[qq]` in
+  `infra/repo.toml`) when that is not the launcher's own version, as it does for a contributor;
+  the bundles name the launcher's commit as `executor`. Before qq's path the checkout is reset,
+  keeping only what `qq sync` made (`.qq/toolchains`, `.qq/deps`, `.qq/sync.json`); qq's path
+  runs only when that reset succeeded.
+- Those jobs run other repos' code, so they hold only `contents: read`, no secret, no persisted
+  credentials and no cache, and at most four run at once (the org's concurrent jobs are shared).
+  Nothing they upload is trusted. `.github/workflows/compat-publish.yml` runs no repo code: after
+  a compat run on main it reads each job's conclusion and its steps' conclusions through the
+  Actions API, and the plan from the plan job's artifact only if that is the one artifact of its
+  name and was created before the plan job finished (any job can upload into the run, and
+  upload-artifact can replace an artifact). It writes one bundle per repo (kind `other`, role
+  `compat`; commit, infra-config commit as `config_revision`, qq commit as `executor`) and one for
+  qq's path where it ran (role `compat-qq`), into one `qq-compat-*` artifact. A missing job, a
+  job that never finished, or a setup step that failed is a `CRASH` result that says so, never a
+  pass.
+- `scorecard.yml` collects those in a pass of its own (`--cross-repo quirq-ai/test-pipelines
+  --workflow .github/workflows/compat-publish.yml --artifact-prefix qq-compat-`), so the other
+  passes never list them and this pass lists nothing else. They never count toward a repo's
+  metrics: the card shows the latest check's verdicts in a Compatibility table, with when it
+  finished, the steps that failed and qq's path, and names the repos left out and why. A repo
+  with an older verdict that the latest check did not check is listed apart and not counted.
+- monitoring leaves exactly the runs named `compat (<repo>)` out of this repo's "CI on main"
+  rollup (its `config/checks.ts`); `tests/test_workflows.py` keeps every other job from being
+  named like that.
+- It never blocks a merge, is never a required check and opens no issues.
+
+```sh
+qqresults compat commands --kinds kinds.json --manifest manifest.json   # what a repo's job runs
+qqresults scorecard --store .qq/store --compat-skip .github/compat-skip.toml
+```
 
 ## v0 status
 

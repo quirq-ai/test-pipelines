@@ -1,0 +1,65 @@
+# Publish the compatibility check's verdicts as results bundles (README, "The compatibility
+# check").
+#
+# The only source of the qq-compat-* artifacts that scorecard.yml collects. It runs after
+# compat.yml completes on main, from the default branch's copy of this file, and runs no repo
+# code: it reads the compat run's job and step conclusions and its plan job's artifact through the
+# Actions API (qqresults compat publish) and writes one bundle per repo. It downloads nothing
+# else from the compat run, whose repo jobs run other repos' code and could upload into it.
+# Re-running this workflow writes the same verdicts again under a new run id; v0 accepts that
+# (kind "other" counts toward no rate, and the table shows each repo's latest).
+name: compat-publish
+on:
+  workflow_run:
+    workflows: [compat]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+  actions: read      # the compat run's jobs and its plan artifact
+jobs:
+  publish:
+    # Only a run of compat.yml on this repo's main, from its schedule or a dispatch: workflow_run
+    # also fires for runs on other branches. head_branch is a ref's short name, so a tag named
+    # main passes it: the first step refuses to publish while such a tag exists and checks that
+    # the commit is on the main branch (as perf's perf-publish.yml does).
+    if: >-
+      github.event.workflow_run.head_branch == 'main'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+      && github.event.workflow_run.path == '.github/workflows/compat.yml'
+      && contains(fromJSON('["schedule", "workflow_dispatch"]'), github.event.workflow_run.event)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: the compat run's commit is on main
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          rc=0; git ls-remote --exit-code origin refs/tags/main >/dev/null || rc=$?
+          if [ "$rc" != 2 ]; then
+            echo "::error::a tag named main exists, or ls-remote failed (exit $rc); not publishing"; exit 1
+          fi
+          if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+            git fetch --quiet --unshallow origin refs/heads/main
+          else
+            git fetch --quiet origin refs/heads/main
+          fi
+          git merge-base --is-ancestor "$HEAD_SHA" FETCH_HEAD ||
+            { echo "::error::$HEAD_SHA is not on main; not publishing"; exit 1; }
+      # qqresults from this checkout, on the runner's own python3: nothing is installed.
+      - name: write the verdicts as results bundles
+        id: bundle
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          COMPAT_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          tools/bin/qqresults compat publish --repo "$GITHUB_REPOSITORY" --run-id "$COMPAT_RUN_ID" \
+            --out "$RUNNER_TEMP/compat"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ steps.bundle.outputs.name }}
+          path: ${{ steps.bundle.outputs.bundle }}
+          if-no-files-found: error

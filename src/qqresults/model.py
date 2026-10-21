@@ -193,7 +193,7 @@ class Run(_Record):
     results_found: bool = True      # False when the run produced no test results at all
     job_status: str = ""            # how the job itself ended: success, failure or cancelled
     parent: str = ""                # for a retry or base run: the run whose failures it rechecks
-    role: str = ""                  # "", "retry" or "base"
+    role: str = ""                  # "", "retry", "base", "backfill", "compat" or "compat-qq"
     schema: str = SCHEMA
 
     _nested: ClassVar[dict[str, type[_Record]]] = {"change": Change}
