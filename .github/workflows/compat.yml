@@ -1,7 +1,7 @@
 # The compatibility check (README, "The compatibility check"): every public repo of the org, at
 # its default branch, run the way qq would run it, without onboarding it. One job per repo, named
-# `compat (<repo>)`; its conclusion is that repo's verdict. It never blocks a merge, is never a
-# required check and opens no issues.
+# `compat (<repo>)`; its steps up to the kind commands are that repo's verdict. It never blocks a
+# merge, is never a required check and opens no issues.
 #
 # The repo jobs run other repos' code, so they hold only `contents: read`, get no secret, keep no
 # credentials and use no cache (any workflow on this repo's default branch could restore one, so
@@ -76,7 +76,7 @@ jobs:
     # job from matching it.
     name: compat (${{ matrix.repo }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 25   # the kind commands, then up to 10 minutes of qq's path
+    timeout-minutes: 25   # the kind commands, then up to 11 minutes of qq's path (2 x 330 s)
     permissions:
       contents: read
     strategy:
@@ -166,6 +166,7 @@ jobs:
       # path does not reuse what the kind commands installed or built. It runs whether or not
       # they passed, since its column is about qq, not the repo.
       - name: reset the checkout
+        id: reset
         if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
         working-directory: repo
         run: |
@@ -174,9 +175,10 @@ jobs:
       # qq's own path never fails the job: its outcome picks one marker step, which is what
       # compat-publish reads. A failure here is a gap in qq, not in the repo. Each half has its own
       # time limit, so a qq that hangs reads as qq timing out, not as the job (the repo) failing.
+      # It runs only on a checkout the reset left clean; else qq's column reads "not reached".
       - name: qq build and test
         id: qq
-        if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.reset.outcome == 'success' }}
         working-directory: repo
         run: |
           rc=0; timeout --kill-after=30 300 qq build || rc=$?

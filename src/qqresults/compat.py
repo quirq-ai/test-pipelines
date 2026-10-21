@@ -290,9 +290,11 @@ def bundles(plan_data: dict, jobs: list[dict], origin: dict) -> list[bundle.Bund
 
     origin is the publishing run: {"repo", "run_id", "attempt", "at"} (compat-publish's own run,
     which collect checks the bundles against, and the time it publishes, for a job that never
-    finished). A repo passes only when its job succeeded and each of
-    STEPS did; a job that is missing, never ran or ended otherwise fails with a CRASH result that
-    says why, so a missing signal is never a pass.
+    finished). A repo passes only when each of STEPS succeeded and no step before the last of them
+    failed; a job that is missing, never ran or ended otherwise fails with a CRASH result that
+    says why, so a missing signal is never a pass. What runs after STEPS (the reset, qq's path,
+    the post steps) never fails the repo, nor does the job conclusion it leaves: qq's path has its
+    own column, and its time limit is the job's.
     """
     by_name: dict[str, list[dict]] = {}
     for j in jobs:
@@ -320,8 +322,10 @@ def bundles(plan_data: dict, jobs: list[dict], origin: dict) -> list[bundle.Bund
             status = _status(steps.get(step))
             results.append(_result(run_id, f"compat::{step}", status,
                                    "" if status is Status.PASS else f"step {steps.get(step) or 'not run'}"))
-        others = [n for n, c in steps.items() if n not in STEPS and n not in QQ_MARKERS
-                  and _status(c) in (Status.FAIL, Status.CRASH)]
+        names = list(steps)   # in the order they ran
+        before = names[:names.index(STEPS[-1])] if STEPS[-1] in steps else names
+        others = [n for n in before if n not in STEPS and n not in QQ_MARKERS
+                  and _status(steps[n]) in (Status.FAIL, Status.CRASH)]
         failed = any(r.status in (Status.FAIL, Status.CRASH) for r in results)
         if not found:
             why = "no job for this repo"
@@ -329,6 +333,8 @@ def bundles(plan_data: dict, jobs: list[dict], origin: dict) -> list[bundle.Bund
             why = f"{len(found)} jobs named {name}"
         elif others:
             why = f"failed at {others[0]!r}"        # a setup step: the steps after it never ran
+        elif all(r.status == Status.PASS for r in results):
+            why = ""
         elif conclusion != "success" and not failed:
             why = f"job {conclusion or 'not finished'}"
         elif conclusion == "success" and any(r.status != Status.PASS for r in results):

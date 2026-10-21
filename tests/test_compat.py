@@ -190,6 +190,8 @@ def test_a_repo_passes_only_when_every_step_did():
     (_job("a", "failure", {"check out": "success", "manifest present": "failure",
                            "manifest valid": "skipped"}), ""),
     (_job("a", "failure", {"set up node": "failure"}), "failed at 'set up node'"),
+    (_job("a", "failure", {"set up node": "failure", **{s: "skipped" for s in compat.STEPS}}),
+     "failed at 'set up node'"),
     (_job("a", "cancelled", {s: "success" for s in compat.STEPS[:2]}), "job cancelled"),
     (_job("a", None, {}), "job not finished"),
     (_job("a", "success", {s: "success" for s in compat.STEPS[:4]}), "a step did not run"),
@@ -212,6 +214,22 @@ def test_qq_timing_out_is_qqs_gap_not_the_repos():
     assert {r.test_id: r.status for r in b["b/qq"].results} == {"qq::build": "CRASH",
                                                                 "qq::test": "SKIP"}
     assert not b["b"].verdict.passed
+
+
+@pytest.mark.parametrize("conclusion,after", [
+    ("failure", {"reset the checkout": "failure", "qq build and test": "skipped"}),
+    ("cancelled", {"reset the checkout": "success", "qq build and test": "cancelled"}),
+    ("failure", {"reset the checkout": "success", "qq build and test": "success",
+                 "qq: passed": "success", "Post check out": "failure"}),
+])
+def test_what_runs_after_the_kind_commands_never_fails_the_repo(conclusion, after):
+    # A reset that cannot remove a file, the job's time limit reached in qq's path, a post step:
+    # none of them is the repo's, so its verdict is its STEPS alone.
+    ok = {s: "success" for s in compat.STEPS}
+    b = _verdicts([_job("a", conclusion, {**ok, **after})])
+    assert b["a"].verdict.passed
+    assert [r.message for r in b["a"].results if r.test_id == "compat::job"] == []
+    assert ("a/qq" in b) == ("qq: passed" in after)
 
 
 def test_two_jobs_with_one_name_are_not_a_verdict():

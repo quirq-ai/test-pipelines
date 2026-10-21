@@ -56,6 +56,20 @@ def test_the_reset_keeps_only_what_qq_sync_made():
     assert "-e /.qq/\n" not in text
 
 
+def test_qqs_path_runs_after_the_kind_commands_and_only_on_a_clean_checkout():
+    text = COMPAT.read_text()
+    names = _names(text)
+    order = [names.index(s) for s in ("kind commands", "reset the checkout", "qq build and test",
+                                      *compat.QQ_MARKERS)]
+    assert order == sorted(order)
+
+    def step(n):
+        return text.split(f"- name: {n}\n", 1)[1].split("\n      - ", 1)[0]
+    assert "id: reset\n" in step("reset the checkout")
+    qq = step("qq build and test")
+    assert "if: ${{ !cancelled() && steps.reset.outcome == 'success' }}\n" in qq
+
+
 def test_compat_workflows_pin_actions_and_keep_no_credentials():
     for p in (COMPAT, PUBLISH):
         text = p.read_text()

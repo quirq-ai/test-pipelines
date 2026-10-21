@@ -502,8 +502,9 @@ column, never as the repo failing.
   commands come from infra-config through `qqcfg get kinds`; the workflow names none
   (`qqresults compat commands` runs them). qq runs the qq a repo's manifest pins (`[qq]` in
   `infra/repo.toml`) when that is not the launcher's own version, as it does for a contributor;
-  the bundles name the launcher's commit as `executor`. Before the kind commands the checkout is
-  reset, keeping only what `qq sync` made (`.qq/toolchains`, `.qq/deps`, `.qq/sync.json`).
+  the bundles name the launcher's commit as `executor`. Before qq's path the checkout is reset,
+  keeping only what `qq sync` made (`.qq/toolchains`, `.qq/deps`, `.qq/sync.json`); qq's path
+  runs only when that reset succeeded.
 - Those jobs run other repos' code, so they hold only `contents: read`, no secret, no persisted
   credentials and no cache, and at most four run at once (the org's concurrent jobs are shared).
   Nothing they upload is trusted. `.github/workflows/compat-publish.yml` runs no repo code: after
