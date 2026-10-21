@@ -1,12 +1,12 @@
 # quirq infra scorecard v0
 
-Window 2026-10-13T23:22:47Z to 2026-10-20T23:22:47Z, generated 2026-10-20T23:22:47Z from the results store.
+Window 2026-10-14T05:00:23Z to 2026-10-21T05:00:23Z, generated 2026-10-21T05:00:23Z from the results store.
 
 ## Collect incomplete
 
 The collect before this card did not read everything, so the runs it missed are not counted below and this card is partial. A skip from an API error, such as a rate limit, is retried by the next collect.
 
-- quirq-ai/test-pipelines: 37 artifact(s) skipped: `quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-37206450387-1: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of '1cbbf5ea9efe329b135b7d00940e1460e03e3585' on 'fix-b1-origin'`; `quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-37206496558-1: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of '24bd915e336de0b960ba5458d029b0246899cf7e' on 'fix-b1-origin'`; `quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-37206870507-1: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of '05124c14695406fdd07afa1736a1a23ab2192305' on 'fix-b1-origin'`; `quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-37206915339-1: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of 'e5fd7c22ed6691913c78a5391bff54acc6392d86' on 'fix-b1-origin'`; `quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-37206957041-1-ff7c9462: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of '24710656d757dacb0075a6e0c5999e278f6f1d95' on 'fix-b2-security'`; and 32 more
+- quirq-ai/test-pipelines: 43 artifact(s) skipped: `quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-37206450387-1: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of '1cbbf5ea9efe329b135b7d00940e1460e03e3585' on 'fix-b1-origin'`; `quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-37206496558-1: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of '24bd915e336de0b960ba5458d029b0246899cf7e' on 'fix-b1-origin'`; `quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-37206870507-1: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of '05124c14695406fdd07afa1736a1a23ab2192305' on 'fix-b1-origin'`; `quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-37206915339-1: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of 'e5fd7c22ed6691913c78a5391bff54acc6392d86' on 'fix-b1-origin'`; `quirq-ai/test-pipelines artifact qq-failure-canary-held-aefebec4c11f668b-37206957041-1-ff7c9462: failure records are taken only from push, schedule, workflow_dispatch runs of a commit on the default branch, not a pull_request run of '24710656d757dacb0075a6e0c5999e278f6f1d95' on 'fix-b2-security'`; and 38 more
 
 ## quirq-ai/innernet
 
@@ -26,12 +26,12 @@ The collect before this card did not read everything, so the runs it missed are 
 | Metric | Value | Target | Detail |
 |---|---|---|---|
 | Gate time-to-green | not measured | P1: p50 under 15 min, p90 under 30 min | 1 green run(s) without a queue time; waiting on V0-GAT-04 records queue-entry time on gate runs |
-| Main-red time | not measured | under 60 min/week | waiting on post-submit runs that store results (the sink on each repo's main) |
-| Flake rate | 0 % | under 1% | 0 of 2 runs passed only on retry |
+| Main-red time | 0 min/week | under 60 min/week | 1 post-submit commits |
+| Flake rate | 0 % | under 1% | 0 of 6 runs passed only on retry |
 | Gate runs passed | 100 % | measured | 1 of 1 gate runs passed |
-| Post-submit runs passed | not measured | measured | waiting on postsubmit runs in the store |
-| Presubmit runs passed | 100 % | measured | 1 of 1 presubmit runs passed |
-| Runs with no test results | 0 runs | 0 | of 2 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Post-submit runs passed | 100 % | measured | 1 of 1 postsubmit runs passed |
+| Presubmit runs passed | 100 % | measured | 4 of 4 presubmit runs passed |
+| Runs with no test results | 0 runs | 0 | of 6 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
 | Failures fully recorded | not measured | 100% | waiting on held canary, rollback, auto-revert or fuzz records in the window (none opened) |
 
 ## quirq-ai/xo-space
