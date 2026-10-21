@@ -175,7 +175,8 @@ class FileStore:
         return failures.read(path).record if (path / failures.RECORD).is_file() else None
 
     def seen_artifact(self, name: str) -> bool:
-        """Whether a failure artifact was already imported (artifacts are immutable once uploaded)."""
+        """Whether an artifact not named after one bundle (failure records, compat verdicts) was
+        already imported (artifacts are immutable once uploaded)."""
         return (self.failures_dir / ".artifacts" / name).is_file()
 
     def mark_artifact(self, name: str) -> None:

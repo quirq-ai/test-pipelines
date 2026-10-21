@@ -51,6 +51,8 @@ QQ_MARKERS = {
     "qq: passed": (Status.PASS, Status.PASS),
     "qq: build failed": (Status.FAIL, Status.SKIP),
     "qq: test failed": (Status.PASS, Status.FAIL),
+    "qq: build timed out": (Status.CRASH, Status.SKIP),
+    "qq: test timed out": (Status.PASS, Status.CRASH),
 }
 
 NAME = re.compile(r"[A-Za-z0-9._-]+")
@@ -367,7 +369,8 @@ def publish(api: str, repo: str, compat_run: int, origin: dict, token: str, out:
 
 # --- the scorecard's Compatibility table -------------------------------------------------------
 
-QQ_STATES = {("PASS", "PASS"): "passes", ("FAIL", "SKIP"): "build fails", ("PASS", "FAIL"): "test fails"}
+QQ_STATES = {("PASS", "PASS"): "passes", ("FAIL", "SKIP"): "build fails", ("PASS", "FAIL"): "test fails",
+             ("CRASH", "SKIP"): "build timed out", ("PASS", "CRASH"): "test timed out"}
 
 
 def _check_of(run_id: str) -> str:

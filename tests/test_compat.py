@@ -203,6 +203,17 @@ def test_a_missing_or_broken_job_never_reads_as_a_pass(job, why):
         assert b["a"].run.finished_at == ORIGIN["at"]
 
 
+def test_qq_timing_out_is_qqs_gap_not_the_repos():
+    ok = {s: "success" for s in compat.STEPS}
+    b = _verdicts([_job("a", steps={**ok, "qq: test timed out": "success"}),
+                   _job("b", "failure", {**ok, "kind commands": "failure",
+                                         "qq: build timed out": "success"})])
+    assert b["a"].verdict.passed and not b["a/qq"].verdict.passed
+    assert {r.test_id: r.status for r in b["b/qq"].results} == {"qq::build": "CRASH",
+                                                                "qq::test": "SKIP"}
+    assert not b["b"].verdict.passed
+
+
 def test_two_jobs_with_one_name_are_not_a_verdict():
     b = _verdicts([_job("a"), _job("a")], _plan("a"))
     assert not b["a"].verdict.passed

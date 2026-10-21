@@ -488,7 +488,10 @@ repo is **compatible** when, on its default branch:
 
 Apart from that, the check runs qq's own path, `qq build` then `qq test` through recipes. It
 never decides compatibility: a repo whose kind has no recipes adapter yet fails there, and that
-is a gap in qq, not in the repo, so the card shows it in a column of its own.
+is a gap in qq, not in the repo, so the card shows it in a column of its own. It runs after the
+kind commands, on a reset checkout that keeps only what `qq sync` made, whether or not they
+passed, and each half has a five-minute limit, so a qq that hangs reads as "timed out" in qq's
+column, never as the repo failing.
 
 - `.github/workflows/compat.yml` runs daily at 05:47 UTC and on demand. Its `plan` job lists
   the org's public repos, leaves out archived ones and those in `.github/compat-skip.toml` (one

@@ -7,8 +7,9 @@
 # credentials and use no cache (any workflow on this repo's default branch could restore one, so
 # none here ever restores a cache: tests/test_workflows.py). Nothing they upload is trusted:
 # compat-publish.yml, which runs no repo code, reads their conclusions through the Actions API and
-# publishes the verdicts for the scorecard. The plan job runs no repo code either; its artifact is
-# the one compat-publish reads, and only if no later job replaced it.
+# publishes the verdicts for the scorecard. The plan job runs no checked repo's code either (only
+# this repo's qqresults and infra-config main's qqcfg); its artifact is the one compat-publish
+# reads, and only if no later job replaced it.
 #
 # Kind names and commands are not written here: they come from infra-config main's
 # config/kinds.toml through qqcfg, at the commit the plan resolved.
@@ -66,6 +67,7 @@ jobs:
           name: compat-plan-${{ github.run_attempt }}
           path: ${{ runner.temp }}/plan/plan.json
           if-no-files-found: error
+          retention-days: 3   # compat-publish reads it once, right after the run
 
   check:
     needs: plan
@@ -74,7 +76,7 @@ jobs:
     # job from matching it.
     name: compat (${{ matrix.repo }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25   # the kind commands, then up to 10 minutes of qq's path
     permissions:
       contents: read
     strategy:
@@ -88,10 +90,12 @@ jobs:
       # The runner context is not available in job-level env, so these are set here.
       - name: paths
         run: |
-          echo "QQ_HOME=$RUNNER_TEMP/qq-home" >> "$GITHUB_ENV"
-          echo "TOOLS=$GITHUB_WORKSPACE/.tools" >> "$GITHUB_ENV"   # beside the checked repo, not in it
-          echo "PIP_CACHE_DIR=$RUNNER_TEMP/pip-cache" >> "$GITHUB_ENV"
-          echo "npm_config_cache=$RUNNER_TEMP/npm-cache" >> "$GITHUB_ENV"
+          {
+            echo "QQ_HOME=$RUNNER_TEMP/qq-home"
+            echo "TOOLS=$GITHUB_WORKSPACE/.tools"   # beside the checked repo, not in it
+            echo "PIP_CACHE_DIR=$RUNNER_TEMP/pip-cache"
+            echo "npm_config_cache=$RUNNER_TEMP/npm-cache"
+          } >> "$GITHUB_ENV"
       # The tools first, at the commits the plan resolved, outside the checked repo.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -142,7 +146,7 @@ jobs:
       - name: manifest valid
         working-directory: repo
         run: |
-          qqsync=$(ls "$QQ_HOME"/launchers/*/bin/qqsync | head -n 1)
+          qqsync=$(find "$QQ_HOME"/launchers -path '*/bin/qqsync' | head -n 1)
           # Every kind infra-config knows, so a kind it does not know is an error.
           mapfile -t kinds < <(python3 -c 'import json, sys; [print(k["name"]) for k in json.load(sys.stdin)["kind"]]' < "$TOOLS/kinds.json")
           args=()
@@ -150,35 +154,53 @@ jobs:
           "$qqsync" validate infra/repo.toml "${args[@]}"
           "$qqsync" show > "$TOOLS/manifest.json"
       - name: qq sync
+        id: sync
         working-directory: repo
         run: qq sync
-      # qq's own path never fails the job: its outcome picks one marker step, which is what
-      # compat-publish reads. A failure here is a gap in qq, not in the repo.
-      - name: qq build and test
-        id: qq
-        working-directory: repo
-        run: |
-          if ! qq build; then echo "result=build failed" >> "$GITHUB_OUTPUT"
-          elif ! qq test; then echo "result=test failed" >> "$GITHUB_OUTPUT"
-          else echo "result=passed" >> "$GITHUB_OUTPUT"; fi
-      - name: "qq: passed"
-        if: steps.qq.outputs.result == 'passed'
-        run: "true"
-      - name: "qq: build failed"
-        if: steps.qq.outputs.result == 'build failed'
-        run: "true"
-      - name: "qq: test failed"
-        if: steps.qq.outputs.result == 'test failed'
-        run: "true"
-      # Back to the checked commit, keeping only what qq sync made (its links and record), so the
-      # kind commands do not reuse what qq's path built (.qq/venv, .qq/out and the like).
-      - name: reset the checkout
-        working-directory: repo
-        run: |
-          git reset --quiet --hard
-          git clean -ffdxq -e /.qq/toolchains -e /.qq/deps -e /.qq/sync.json
       - name: kind commands
         working-directory: repo
         run: |
           "$TOOLS/test-pipelines/tools/bin/qqresults" compat commands --kinds "$TOOLS/kinds.json" \
             --manifest "$TOOLS/manifest.json" --run .
+      # Back to the checked commit, keeping only what qq sync made (its links and record), so qq's
+      # path does not reuse what the kind commands installed or built. It runs whether or not
+      # they passed, since its column is about qq, not the repo.
+      - name: reset the checkout
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
+        working-directory: repo
+        run: |
+          git reset --quiet --hard
+          git clean -ffdxq -e /.qq/toolchains -e /.qq/deps -e /.qq/sync.json
+      # qq's own path never fails the job: its outcome picks one marker step, which is what
+      # compat-publish reads. A failure here is a gap in qq, not in the repo. Each half has its own
+      # time limit, so a qq that hangs reads as qq timing out, not as the job (the repo) failing.
+      - name: qq build and test
+        id: qq
+        if: ${{ !cancelled() && steps.sync.outcome == 'success' }}
+        working-directory: repo
+        run: |
+          rc=0; timeout --kill-after=30 300 qq build || rc=$?
+          if [ "$rc" = 124 ]; then result="build timed out"
+          elif [ "$rc" != 0 ]; then result="build failed"
+          else
+            rc=0; timeout --kill-after=30 300 qq test || rc=$?
+            if [ "$rc" = 124 ]; then result="test timed out"
+            elif [ "$rc" != 0 ]; then result="test failed"
+            else result=passed; fi
+          fi
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+      - name: "qq: passed"
+        if: ${{ !cancelled() && steps.qq.outputs.result == 'passed' }}
+        run: "true"
+      - name: "qq: build failed"
+        if: ${{ !cancelled() && steps.qq.outputs.result == 'build failed' }}
+        run: "true"
+      - name: "qq: test failed"
+        if: ${{ !cancelled() && steps.qq.outputs.result == 'test failed' }}
+        run: "true"
+      - name: "qq: build timed out"
+        if: ${{ !cancelled() && steps.qq.outputs.result == 'build timed out' }}
+        run: "true"
+      - name: "qq: test timed out"
+        if: ${{ !cancelled() && steps.qq.outputs.result == 'test timed out' }}
+        run: "true"
