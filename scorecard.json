@@ -102,7 +102,7 @@
       }
     ]
   },
-  "generated_at": "2026-10-21T18:20:43Z",
+  "generated_at": "2026-10-21T19:11:22Z",
   "not_measured": [
     {
       "detail": "",
@@ -335,7 +335,7 @@
     ],
     "quirq-ai/test-pipelines": [
       {
-        "detail": "2 green run(s) without a queue time",
+        "detail": "3 green run(s) without a queue time",
         "extra": {},
         "name": "Gate time-to-green",
         "target": "P1: p50 under 15 min, p90 under 30 min",
@@ -344,7 +344,7 @@
         "waiting_on": "V0-GAT-04 records queue-entry time on gate runs"
       },
       {
-        "detail": "1 post-submit commits",
+        "detail": "2 post-submit commits",
         "extra": {},
         "name": "Main-red time",
         "target": "under 60 min/week",
@@ -353,7 +353,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 7 runs passed only on retry",
+        "detail": "0 of 11 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -362,7 +362,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "2 of 2 gate runs passed",
+        "detail": "3 of 3 gate runs passed",
         "extra": {},
         "name": "Gate runs passed",
         "target": "measured",
@@ -371,7 +371,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "1 of 1 postsubmit runs passed",
+        "detail": "2 of 2 postsubmit runs passed",
         "extra": {},
         "name": "Post-submit runs passed",
         "target": "measured",
@@ -380,7 +380,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "4 of 4 presubmit runs passed",
+        "detail": "6 of 6 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
@@ -389,7 +389,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "of 7 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 11 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -485,7 +485,7 @@
       }
     ]
   },
-  "since": "2026-10-14T18:20:43Z",
+  "since": "2026-10-14T19:11:22Z",
   "skipped": 0,
-  "until": "2026-10-21T18:20:43Z"
+  "until": "2026-10-21T19:11:22Z"
 }
