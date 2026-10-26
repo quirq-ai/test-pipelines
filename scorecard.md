@@ -1,6 +1,6 @@
 # quirq infra scorecard v0
 
-Window 2026-10-18T20:58:13Z to 2026-10-25T20:58:13Z, generated 2026-10-25T20:58:13Z from the results store.
+Window 2026-10-19T04:58:52Z to 2026-10-26T04:58:52Z, generated 2026-10-26T04:58:52Z from the results store.
 
 ## Collect incomplete
 
