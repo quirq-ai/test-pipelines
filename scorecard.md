@@ -1,6 +1,6 @@
 # quirq infra scorecard v0
 
-Window 2026-10-26T06:24:52Z to 2026-11-02T06:24:52Z, generated 2026-11-02T06:24:52Z from the results store.
+Window 2026-10-26T21:47:15Z to 2026-11-02T21:47:15Z, generated 2026-11-02T21:47:16Z from the results store.
 
 ## Collect incomplete
 
@@ -25,13 +25,13 @@ The collect before this card did not read everything, so the runs it missed are 
 
 | Metric | Value | Target | Detail |
 |---|---|---|---|
-| Gate time-to-green | 8 min | P1: p50 under 15 min, p90 under 30 min | p50 8.0 / p90 8.0 over 1 green gate run |
-| Main-red time | 0 min/week | under 60 min/week | 1 post-submit commits |
-| Flake rate | 0 % | under 1% | 0 of 8 runs passed only on retry |
-| Gate runs passed | 100 % | measured | 1 of 1 gate runs passed |
-| Post-submit runs passed | 100 % | measured | 1 of 1 postsubmit runs passed |
+| Gate time-to-green | 8.9 min | P1: p50 under 15 min, p90 under 30 min | p50 8.9 / p90 9.7 over 2 green gate runs |
+| Main-red time | 0 min/week | under 60 min/week | 2 post-submit commits |
+| Flake rate | 0 % | under 1% | 0 of 10 runs passed only on retry |
+| Gate runs passed | 100 % | measured | 2 of 2 gate runs passed |
+| Post-submit runs passed | 100 % | measured | 2 of 2 postsubmit runs passed |
 | Presubmit runs passed | 83.3 % | measured | 5 of 6 presubmit runs passed |
-| Runs with no test results | 0 runs | 0 | of 8 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Runs with no test results | 0 runs | 0 | of 10 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
 | Failures fully recorded | not measured | 100% | waiting on held canary, rollback, auto-revert or fuzz records in the window (none opened) |
 
 ## Compatibility (qq without onboarding)

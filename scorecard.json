@@ -102,7 +102,7 @@
       }
     ]
   },
-  "generated_at": "2026-11-02T06:24:52Z",
+  "generated_at": "2026-11-02T21:47:16Z",
   "not_measured": [
     {
       "detail": "",
@@ -261,19 +261,19 @@
   "repos": {
     "quirq-ai/xo-space": [
       {
-        "detail": "p50 8.0 / p90 8.0 over 1 green gate run",
+        "detail": "p50 8.9 / p90 9.7 over 2 green gate runs",
         "extra": {
-          "p50": 8.0,
-          "p90": 8.0
+          "p50": 8.9,
+          "p90": 9.7
         },
         "name": "Gate time-to-green",
         "target": "P1: p50 under 15 min, p90 under 30 min",
         "unit": "min",
-        "value": 8.0,
+        "value": 8.9,
         "waiting_on": ""
       },
       {
-        "detail": "1 post-submit commits",
+        "detail": "2 post-submit commits",
         "extra": {},
         "name": "Main-red time",
         "target": "under 60 min/week",
@@ -282,7 +282,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "0 of 8 runs passed only on retry",
+        "detail": "0 of 10 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -291,7 +291,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "1 of 1 gate runs passed",
+        "detail": "2 of 2 gate runs passed",
         "extra": {},
         "name": "Gate runs passed",
         "target": "measured",
@@ -300,7 +300,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "1 of 1 postsubmit runs passed",
+        "detail": "2 of 2 postsubmit runs passed",
         "extra": {},
         "name": "Post-submit runs passed",
         "target": "measured",
@@ -318,7 +318,7 @@
         "waiting_on": ""
       },
       {
-        "detail": "of 8 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 10 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -337,7 +337,7 @@
       }
     ]
   },
-  "since": "2026-10-26T06:24:52Z",
+  "since": "2026-10-26T21:47:16Z",
   "skipped": 0,
-  "until": "2026-11-02T06:24:52Z"
+  "until": "2026-11-02T21:47:16Z"
 }
