@@ -1,0 +1,1 @@
+{"counts":{"EXPECTED":3144,"UNEXPECTED":1},"inputs":[],"passed":false,"reason":"1 unexpected test(s)","run_id":"github/quirq-ai/xo-space/42215138910/1/xo-space-presubmit","schema":"quirq-results/1","tests":[{"reason":"","status":"UNEXPECTED","test_id":"tests.test_gateway_restart.GatewayLauncherDetachTests::test_the_shutdown_line_tells_an_agent_sh_stop_from_an_outside_signal"}]}
