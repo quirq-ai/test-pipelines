@@ -1,6 +1,6 @@
 # quirq infra scorecard v0
 
-Window 2026-11-13T20:31:35Z to 2026-11-20T20:31:35Z, generated 2026-11-20T20:31:36Z from the results store.
+Window 2026-11-14T07:24:25Z to 2026-11-21T07:24:25Z, generated 2026-11-21T07:24:26Z from the results store.
 
 ## Collect incomplete
 
@@ -27,11 +27,11 @@ The collect before this card did not read everything, so the runs it missed are 
 |---|---|---|---|
 | Gate time-to-green | 10.9 min | P1: p50 under 15 min, p90 under 30 min | p50 10.9 / p90 10.9 over 1 green gate run |
 | Main-red time | 0 min/week | under 60 min/week | 1 post-submit commits |
-| Flake rate | 0 % | under 1% | 0 of 4 runs passed only on retry |
+| Flake rate | 0 % | under 1% | 0 of 3 runs passed only on retry |
 | Gate runs passed | 100 % | measured | 1 of 1 gate runs passed |
 | Post-submit runs passed | 100 % | measured | 1 of 1 postsubmit runs passed |
-| Presubmit runs passed | 100 % | measured | 2 of 2 presubmit runs passed |
-| Runs with no test results | 0 runs | 0 | of 4 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
+| Presubmit runs passed | 100 % | measured | 1 of 1 presubmit runs passed |
+| Runs with no test results | 0 runs | 0 | of 3 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red |
 | Failures fully recorded | not measured | 100% | waiting on held canary, rollback, auto-revert or fuzz records in the window (none opened) |
 
 ## Compatibility (qq without onboarding)
