@@ -1,0 +1,1 @@
+{"counts":{"EXPECTED":4307,"UNEXPECTED":1},"inputs":[],"passed":false,"reason":"1 unexpected test(s)","run_id":"github/quirq-ai/xo-space/46030745803/1/xo-space-presubmit","schema":"quirq-results/1","tests":[{"reason":"","status":"UNEXPECTED","test_id":"tests.test_agy_runtime.ModeTests::test_the_session_is_idle_only_once_agys_loop_has_nothing_running"}]}
