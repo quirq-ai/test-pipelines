@@ -102,7 +102,7 @@
       }
     ]
   },
-  "generated_at": "2026-11-27T21:27:53Z",
+  "generated_at": "2026-11-28T08:02:47Z",
   "not_measured": [
     {
       "detail": "",
@@ -279,7 +279,7 @@
         "waiting_on": "post-submit runs that store results (the sink on each repo's main)"
       },
       {
-        "detail": "0 of 7 runs passed only on retry",
+        "detail": "0 of 8 runs passed only on retry",
         "extra": {},
         "name": "Flake rate",
         "target": "under 1%",
@@ -306,16 +306,16 @@
         "waiting_on": "postsubmit runs in the store"
       },
       {
-        "detail": "5 of 7 presubmit runs passed",
+        "detail": "6 of 8 presubmit runs passed",
         "extra": {},
         "name": "Presubmit runs passed",
         "target": "measured",
         "unit": "%",
-        "value": 71.4,
+        "value": 75.0,
         "waiting_on": ""
       },
       {
-        "detail": "of 7 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
+        "detail": "of 8 presubmit, gate and post-submit runs; a repo with no test reports (only a typecheck, say) shows up here, not as red",
         "extra": {},
         "name": "Runs with no test results",
         "target": "0",
@@ -334,7 +334,7 @@
       }
     ]
   },
-  "since": "2026-11-20T21:27:53Z",
+  "since": "2026-11-21T08:02:47Z",
   "skipped": 0,
-  "until": "2026-11-27T21:27:53Z"
+  "until": "2026-11-28T08:02:47Z"
 }
